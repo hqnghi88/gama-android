@@ -1,0 +1,8 @@
+build/
+.gradle/
+*.hprof
+*.args
+local.properties
+keystore.properties
+*.class
+*.bak

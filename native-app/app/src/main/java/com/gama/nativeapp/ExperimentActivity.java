@@ -1,0 +1,1417 @@
+package com.gama.nativeapp;
+
+import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
+import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+
+import android.animation.LayoutTransition;
+import android.app.Activity;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.cardview.widget.CardView;
+import androidx.core.content.ContextCompat;
+import androidx.core.graphics.drawable.DrawableCompat;
+
+import com.gama.nativeapp.display.AndroidDisplaySurface;
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.floatingactionbutton.FloatingActionButton;
+import com.google.android.material.slider.Slider;
+import com.google.android.material.tabs.TabLayout;
+
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.PrintStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+
+public class ExperimentActivity extends Activity {
+
+    private static final String TAG = "ExperimentActivity";
+
+    // UI components
+    private MaterialToolbar toolbar;
+    private TextView toolbarTitle;
+    private TabLayout tabLayout;
+    private FrameLayout displayContainer;
+    private LinearLayout consolePanel;
+    private LinearLayout layersPanel;
+    private LinearLayout paramsPanel;
+    private TextView logView;
+    private ScrollView logScroll;
+    private TextView cycleText;
+    private ViewGroup contentArea;
+
+    // Control FABs
+    private FloatingActionButton playPauseFab;
+    private FloatingActionButton stepFab;
+    private FloatingActionButton stopFab;
+    private FloatingActionButton layersFab;
+
+    // Display tabs
+    private HorizontalScrollView displayTabScroll;
+    private LinearLayout displayTabBar;
+    private String activeDisplayName;
+
+    // Drag handle for resizing
+    private View dragHandle;
+    private LinearLayout displayWrapper;
+    private LinearLayout bottomPanel;
+    private LinearLayout.LayoutParams displayWrapperLp;
+    private LinearLayout.LayoutParams bottomPanelLp;
+
+    // State
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private Object compiledModel;
+    private String modelName;
+    private boolean isDarkTheme = false;
+    private volatile boolean isRunning = false;
+    private volatile boolean isPaused = false;
+    private Object currentExpPlan;
+    private Object currentController;
+    private Runnable statePollRunnable;
+    private Runnable clockUpdateRunnable;
+
+    // Redirect target for System.out/System.err, stored so onDestroy can restore
+    // the originals. Capturing the live System.out each launch chained the
+    // anonymous OutputStreams together, and each stream pinned a destroyed
+    // activity forever (static System.out -> ... -> old activity).
+    private PrintStream originalOut;
+    private PrintStream originalErr;
+
+    // Sensor bridge
+    private SensorBridge sensorBridge;
+
+    // Cached reflection
+    private java.lang.reflect.Field pausedField;
+    private java.lang.reflect.Field aliveField;
+    private java.lang.reflect.Field scopeField;
+    private java.lang.reflect.Field execThreadField;
+    private java.lang.reflect.Field lockField;
+    private java.lang.reflect.Method getClockMethod;
+    private java.lang.reflect.Method getCycleMethod;
+    private java.lang.reflect.Method releaseLockMethod;
+
+    // Layer state
+    private final List<LayerInfo> layerInfos = new ArrayList<>();
+
+    static class LayerInfo {
+        String name;
+        boolean visible = true;
+        float opacity = 1.0f;
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        setTheme(R.style.Theme_GamaNative);
+        super.onCreate(savedInstanceState);
+        setGuiActivity(this);
+        modelName = getIntent().getStringExtra("model_name");
+        isDarkTheme = getSharedPreferences("gama_prefs", 0).getBoolean("dark_theme", false);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setFitsSystemWindows(true);
+        root.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+        root.setLayoutTransition(new LayoutTransition());
+
+        buildToolbar(root);
+
+        tabLayout = new TabLayout(this);
+        tabLayout.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        tabLayout.setSelectedTabIndicatorColor(ContextCompat.getColor(this, R.color.primary));
+        tabLayout.setTabTextColors(ColorStateList.valueOf(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999))));
+        tabLayout.setTabTextColors(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999)), ContextCompat.getColor(this, R.color.primary));
+        tabLayout.addTab(tabLayout.newTab().setText("Display").setIcon(
+                ContextCompat.getDrawable(this, R.drawable.ic_fit)));
+        tabLayout.addTab(tabLayout.newTab().setText("Console").setIcon(
+                ContextCompat.getDrawable(this, R.drawable.ic_console)));
+        tabLayout.addTab(tabLayout.newTab().setText("Layers").setIcon(
+                ContextCompat.getDrawable(this, R.drawable.ic_layers)));
+        tabLayout.addTab(tabLayout.newTab().setText("Params"));
+        tabLayout.setTabGravity(TabLayout.GRAVITY_FILL);
+        tabLayout.setTabMode(TabLayout.MODE_FIXED);
+        tabLayout.setElevation(dp(4));
+        root.addView(tabLayout, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        contentArea = new FrameLayout(this);
+
+        buildDisplayArea();
+        buildConsolePanel();
+        buildLayersPanel();
+        buildParamsPanel();
+
+        FrameLayout contentFrame = new FrameLayout(this);
+        contentFrame.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+        contentFrame.addView(contentArea, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        root.addView(contentFrame);
+
+        buildFabs(contentFrame);
+
+        setContentView(root);
+
+        sensorBridge = new SensorBridge(this);
+        sensorBridge.start();
+
+        tabLayout.addOnTabSelectedListener(new TabLayout.OnTabSelectedListener() {
+            @Override public void onTabSelected(TabLayout.Tab tab) {
+                showPanel(tab.getPosition());
+            }
+            @Override public void onTabUnselected(TabLayout.Tab tab) {}
+            @Override public void onTabReselected(TabLayout.Tab tab) {}
+        });
+
+        startEngine();
+    }
+
+    private void buildToolbar(LinearLayout root) {
+        toolbar = new MaterialToolbar(this);
+        toolbar.setBackgroundTintList(ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.toolbar_background)));
+        toolbar.setNavigationIcon(null);
+
+        LinearLayout toolbarContent = new LinearLayout(this);
+        toolbarContent.setOrientation(LinearLayout.HORIZONTAL);
+        toolbarContent.setGravity(Gravity.CENTER_VERTICAL);
+        toolbarContent.setPadding(dp(4), 0, dp(8), 0);
+
+        TextView backBtn = new TextView(this);
+        backBtn.setText("\u2190 Back");
+        backBtn.setTextSize(14);
+        backBtn.setTextColor(Color.WHITE);
+        backBtn.setTypeface(null, Typeface.BOLD);
+        backBtn.setGravity(Gravity.CENTER);
+        backBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
+        backBtn.setMinWidth(0);
+        backBtn.setMinHeight(0);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+        bg.setCornerRadius(dp(8));
+        bg.setColor(0xFF2196F3);
+        backBtn.setBackground(bg);
+        backBtn.setOnClickListener(v -> finish());
+        toolbarContent.addView(backBtn);
+
+        toolbarTitle = new TextView(this);
+        toolbarTitle.setText(modelName != null ? modelName : "GAMA");
+        toolbarTitle.setTextSize(16);
+        toolbarTitle.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        toolbarTitle.setTypeface(null, Typeface.BOLD);
+        toolbarTitle.setPadding(dp(8), 0, 0, 0);
+        toolbarTitle.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        toolbarContent.addView(toolbarTitle);
+
+        cycleText = new TextView(this);
+        cycleText.setText("0 cycles");
+        cycleText.setTextSize(11);
+        cycleText.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
+        cycleText.setTypeface(Typeface.MONOSPACE);
+        cycleText.setPadding(dp(8), dp(4), dp(8), dp(4));
+        cycleText.setBackgroundColor(thc(0x33000000, 0x33FFFFFF));
+        cycleText.setMaxLines(1);
+        cycleText.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        toolbarContent.addView(cycleText);
+
+        TextView themeBtn = new TextView(this);
+        themeBtn.setText(isDarkTheme ? "\u2600" : "\u263E");
+        themeBtn.setTextSize(16);
+        themeBtn.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
+        themeBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        themeBtn.setOnClickListener(v -> toggleTheme());
+        toolbarContent.addView(themeBtn);
+
+        toolbar.addView(toolbarContent);
+        root.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+    }
+
+    private void buildDisplayArea() {
+        LinearLayout displayLayout = new LinearLayout(this);
+        displayLayout.setOrientation(LinearLayout.VERTICAL);
+        displayLayout.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+        displayWrapper = new LinearLayout(this);
+        displayWrapper.setOrientation(LinearLayout.VERTICAL);
+
+        displayTabScroll = new HorizontalScrollView(this);
+        displayTabScroll.setHorizontalScrollBarEnabled(false);
+        displayTabScroll.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+        displayTabScroll.setVisibility(View.GONE);
+        displayTabBar = new LinearLayout(this);
+        displayTabBar.setOrientation(LinearLayout.HORIZONTAL);
+        displayTabBar.setPadding(dp(8), dp(4), dp(8), dp(4));
+        displayTabScroll.addView(displayTabBar);
+        displayWrapper.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        LinearLayout displayToolbar = new LinearLayout(this);
+        displayToolbar.setOrientation(LinearLayout.HORIZONTAL);
+        displayToolbar.setPadding(dp(4), dp(2), dp(4), dp(2));
+        displayToolbar.setBackgroundColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
+        displayToolbar.setGravity(Gravity.CENTER);
+        displayToolbar.setVisibility(View.GONE);
+
+        String[][] tools = {
+            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}
+        };
+        for (String[] tool : tools) {
+            TextView btn = new TextView(this);
+            btn.setText(" " + tool[0] + " ");
+            btn.setTextColor(thc(0xFFAAAAAA, 0xFF999999));
+            btn.setTextSize(11);
+            btn.setPadding(dp(6), dp(4), dp(6), dp(4));
+            btn.setGravity(Gravity.CENTER);
+            btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
+            displayToolbar.addView(btn);
+        }
+        displayToolbar.setTag("displayToolbar");
+        displayWrapper.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        displayContainer = new FrameLayout(this);
+        displayContainer.setBackgroundColor(thc(0xFFE8E8E8, thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242))));
+        displayContainer.setLayoutParams(new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        displayWrapper.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
+        displayWrapperLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 3f);
+        displayLayout.addView(displayWrapper, displayWrapperLp);
+
+        dragHandle = new View(this);
+        dragHandle.setBackgroundColor(thc(0xFFDDDDDD, 0xFF424242));
+        dragHandle.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, dp(4)));
+        setupDragHandle();
+        displayLayout.addView(dragHandle);
+
+        bottomPanel = new LinearLayout(this);
+        bottomPanel.setOrientation(LinearLayout.VERTICAL);
+        bottomPanelLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f);
+        displayLayout.addView(bottomPanel, bottomPanelLp);
+
+        contentArea.addView(displayLayout);
+    }
+
+    private void setupDragHandle() {
+        final float[] startY = new float[1];
+        final int[] startDisplayWeight = new int[1];
+        final int[] startBottomWeight = new int[1];
+
+        dragHandle.setOnTouchListener((v, event) -> {
+            switch (event.getAction()) {
+                case MotionEvent.ACTION_DOWN:
+                    startY[0] = event.getRawY();
+                    startDisplayWeight[0] = (int) displayWrapperLp.weight;
+                    startBottomWeight[0] = (int) bottomPanelLp.weight;
+                    v.setBackgroundColor(thc(0xFF006847, 0xFF2E7D32));
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    float dy = startY[0] - event.getRawY();
+                    float totalHeight = ((View) v.getParent()).getHeight();
+                    if (totalHeight <= 0) return true;
+                    float deltaWeight = (dy / totalHeight) * 6f;
+                    float newDisplay = Math.max(0.5f, startDisplayWeight[0] + deltaWeight);
+                    float newBottom = Math.max(0.5f, startBottomWeight[0] - deltaWeight);
+                    displayWrapperLp.weight = newDisplay;
+                    bottomPanelLp.weight = newBottom;
+                    ((View) v.getParent()).requestLayout();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    v.setBackgroundColor(thc(0xFFDDDDDD, 0xFF424242));
+                    return true;
+            }
+            return false;
+        });
+    }
+
+    private void buildConsolePanel() {
+        consolePanel = new LinearLayout(this);
+        consolePanel.setOrientation(LinearLayout.VERTICAL);
+        consolePanel.setBackgroundColor(thc(0xFF1E1E1E, thc(0xFF0D0D0D, 0xFF000000)));
+        consolePanel.setVisibility(View.GONE);
+
+        LinearLayout consoleHeader = new LinearLayout(this);
+        consoleHeader.setOrientation(LinearLayout.HORIZONTAL);
+        consoleHeader.setPadding(dp(12), dp(8), dp(12), dp(8));
+        consoleHeader.setBackgroundColor(thc(0xFF2D2D2D, 0xFF37474F));
+
+        TextView consoleTab = new TextView(this);
+        consoleTab.setText("Console");
+        consoleTab.setTextColor(thc(0xFFCCCCCC, 0xFFBDBDBD));
+        consoleTab.setTextSize(12);
+        consoleTab.setTypeface(null, Typeface.BOLD);
+        consoleHeader.addView(consoleTab);
+
+        View spacer = new View(this);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 0, 1f));
+        consoleHeader.addView(spacer);
+
+        MaterialButton clearBtn = new MaterialButton(this);
+        clearBtn.setText("Clear");
+        clearBtn.setTextSize(10);
+        clearBtn.setCornerRadius(dp(12));
+        clearBtn.setTextColor(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999)));
+        clearBtn.setBackgroundTintList(ColorStateList.valueOf(thc(0xFF444444, 0xFF666666)));
+        clearBtn.setMinimumHeight(0);
+        clearBtn.setMinimumWidth(0);
+        clearBtn.setPadding(dp(8), dp(2), dp(8), dp(2));
+        clearBtn.setOnClickListener(v -> logView.setText(""));
+        consoleHeader.addView(clearBtn);
+        consolePanel.addView(consoleHeader, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        logScroll = new ScrollView(this);
+        logScroll.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+        logView = new TextView(this);
+        logView.setTextSize(11);
+        logView.setTypeface(Typeface.MONOSPACE);
+        logView.setTextColor(0xFF00FF00);
+        logView.setPadding(dp(12), dp(8), dp(12), dp(8));
+        logView.setBackgroundColor(thc(0xFF0D0D0D, 0xFF000000));
+        logView.setMovementMethod(new ScrollingMovementMethod());
+        logView.setVerticalScrollBarEnabled(true);
+        logScroll.addView(logView);
+        consolePanel.addView(logScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+        bottomPanel.addView(consolePanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+    }
+
+    private void buildLayersPanel() {
+        layersPanel = new LinearLayout(this);
+        layersPanel.setOrientation(LinearLayout.VERTICAL);
+        layersPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        layersPanel.setVisibility(View.GONE);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setPadding(dp(16), dp(12), dp(16), dp(12));
+        header.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+        TextView title = new TextView(this);
+        title.setText("Layer Controls");
+        title.setTextSize(15);
+        title.setTextColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
+        title.setTypeface(null, Typeface.BOLD);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        header.addView(title);
+
+        layersPanel.addView(header, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        ScrollView layerScroll = new ScrollView(this);
+        layerScroll.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+        LinearLayout layerList = new LinearLayout(this);
+        layerList.setId(R.id.layer_list);
+        layerList.setOrientation(LinearLayout.VERTICAL);
+        layerList.setPadding(dp(16), dp(8), dp(16), dp(8));
+        layerScroll.addView(layerList);
+
+        layersPanel.addView(layerScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        bottomPanel.addView(layersPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+    }
+
+    private void buildParamsPanel() {
+        paramsPanel = new LinearLayout(this);
+        paramsPanel.setOrientation(LinearLayout.VERTICAL);
+        paramsPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        paramsPanel.setVisibility(View.GONE);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setPadding(dp(16), dp(12), dp(16), dp(12));
+        header.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+        TextView title = new TextView(this);
+        title.setText("Parameters");
+        title.setTextSize(15);
+        title.setTextColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
+        title.setTypeface(null, Typeface.BOLD);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        header.addView(title);
+        paramsPanel.addView(header, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+
+        ScrollView paramScroll = new ScrollView(this);
+        paramScroll.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+        LinearLayout paramList = new LinearLayout(this);
+        paramList.setOrientation(LinearLayout.VERTICAL);
+        paramList.setPadding(dp(16), dp(8), dp(16), dp(8));
+        paramScroll.addView(paramList);
+
+        // Speed slider
+        MaterialCardView speedCard = new MaterialCardView(this);
+        speedCard.setRadius(dp(8));
+        speedCard.setCardElevation(dp(1));
+        speedCard.setContentPadding(dp(16), dp(12), dp(16), dp(12));
+        speedCard.setCardBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+        LinearLayout.LayoutParams speedCardLp = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
+        speedCardLp.setMargins(0, dp(4), 0, dp(4));
+        speedCard.setLayoutParams(speedCardLp);
+
+        LinearLayout speedRow = new LinearLayout(this);
+        speedRow.setOrientation(LinearLayout.HORIZONTAL);
+        speedRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView speedLabel = new TextView(this);
+        speedLabel.setText("Speed");
+        speedLabel.setTextSize(14);
+        speedLabel.setTextColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
+        speedLabel.setTypeface(null, Typeface.BOLD);
+        speedLabel.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        speedRow.addView(speedLabel);
+
+        TextView speedValue = new TextView(this);
+        speedValue.setText("50 ms");
+        speedValue.setTextSize(12);
+        speedValue.setTextColor(thc(0xFF006847, 0xFF2E7D32));
+        speedValue.setTypeface(Typeface.MONOSPACE);
+        speedRow.addView(speedValue);
+        speedCard.addView(speedRow);
+
+        Slider speedSlider = new Slider(this);
+        speedSlider.setValueFrom(1);
+        speedSlider.setValueTo(500);
+        speedSlider.setValue(50);
+        speedSlider.setStepSize(1);
+        speedSlider.setTrackHeight(dp(3));
+        speedSlider.setThumbRadius(dp(8));
+        speedSlider.setContentDescription("Simulation speed");
+        speedSlider.addOnChangeListener((slider, value, fromUser) -> {
+            int ms = (int) value;
+            speedValue.setText(ms + " ms");
+            if (currentController != null) {
+                try {
+                    Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
+                    ctrlInterface.getMethod("setCycleDuration", long.class).invoke(currentController, (long) ms);
+                } catch (Exception e) {
+                    Log.w(TAG, "Set speed error", e);
+                }
+            }
+        });
+        speedCard.addView(speedSlider);
+        paramList.addView(speedCard);
+
+        paramsPanel.addView(paramScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        bottomPanel.addView(paramsPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+    }
+
+    private void buildFabs(ViewGroup root) {
+        LinearLayout fabContainer = new LinearLayout(this);
+        fabContainer.setOrientation(LinearLayout.VERTICAL);
+        fabContainer.setGravity(Gravity.END | Gravity.BOTTOM);
+        fabContainer.setPadding(0, 0, dp(16), dp(16));
+
+        layersFab = new FloatingActionButton(this);
+        layersFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_layers));
+        layersFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.secondary)));
+        layersFab.setSize(FloatingActionButton.SIZE_MINI);
+        layersFab.setContentDescription("Toggle Layers");
+        layersFab.hide();
+        LinearLayout.LayoutParams layersLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        layersLp.setMargins(0, 0, 0, dp(8));
+        layersFab.setLayoutParams(layersLp);
+        layersFab.setOnClickListener(v -> toggleLayersSheet());
+        fabContainer.addView(layersFab);
+
+        stopFab = new FloatingActionButton(this);
+        stopFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_stop));
+        stopFab.setBackgroundTintList(ColorStateList.valueOf(thc(0xFFE53935, 0xFFCF6679)));
+        stopFab.setSize(FloatingActionButton.SIZE_MINI);
+        stopFab.setContentDescription("Stop");
+        stopFab.hide();
+        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        stopLp.setMargins(0, 0, 0, dp(8));
+        stopFab.setLayoutParams(stopLp);
+        stopFab.setOnClickListener(v -> stopSimulation());
+        fabContainer.addView(stopFab);
+
+        stepFab = new FloatingActionButton(this);
+        stepFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_step));
+        stepFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.tertiary)));
+        stepFab.setSize(FloatingActionButton.SIZE_MINI);
+        stepFab.setContentDescription("Step");
+        stepFab.hide();
+        LinearLayout.LayoutParams stepLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        stepLp.setMargins(0, 0, 0, dp(8));
+        stepFab.setLayoutParams(stepLp);
+        stepFab.setOnClickListener(v -> stepSimulation());
+        fabContainer.addView(stepFab);
+
+        playPauseFab = new FloatingActionButton(this);
+        playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
+        playPauseFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary)));
+        playPauseFab.setSize(FloatingActionButton.SIZE_NORMAL);
+        playPauseFab.setContentDescription("Play/Pause");
+        playPauseFab.hide();
+        playPauseFab.setOnClickListener(v -> togglePlayPause());
+        fabContainer.addView(playPauseFab);
+
+        root.addView(fabContainer, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+    }
+
+    private void showPanel(int position) {
+        displayWrapper.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
+        dragHandle.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
+        consolePanel.setVisibility(position == 1 ? View.VISIBLE : View.GONE);
+        layersPanel.setVisibility(position == 2 ? View.VISIBLE : View.GONE);
+        paramsPanel.setVisibility(position == 3 ? View.VISIBLE : View.GONE);
+
+        if (position == 2) refreshLayerList();
+    }
+
+    private void toggleLayersSheet() {
+        int idx = tabLayout.getSelectedTabPosition();
+        if (idx == 2) {
+            tabLayout.selectTab(tabLayout.getTabAt(0));
+        } else {
+            tabLayout.selectTab(tabLayout.getTabAt(2));
+        }
+    }
+
+    private void refreshLayerList() {
+        LinearLayout layerList = findViewById(R.id.layer_list);
+        if (layerList == null) return;
+        layerList.removeAllViews();
+
+        if (layerInfos.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No layers available");
+            empty.setTextSize(14);
+            empty.setTextColor(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999)));
+            empty.setPadding(0, dp(16), 0, dp(16));
+            empty.setGravity(Gravity.CENTER);
+            layerList.addView(empty);
+            return;
+        }
+
+        for (int i = 0; i < layerInfos.size(); i++) {
+            LayerInfo info = layerInfos.get(i);
+            MaterialCardView card = new MaterialCardView(this);
+            card.setRadius(dp(8));
+            card.setCardElevation(dp(1));
+            card.setContentPadding(dp(12), dp(8), dp(12), dp(8));
+            card.setCardBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+            LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
+            cardLp.setMargins(0, dp(4), 0, dp(4));
+            card.setLayoutParams(cardLp);
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView nameText = new TextView(this);
+            nameText.setText(info.name);
+            nameText.setTextSize(13);
+            nameText.setTextColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
+            int icon = info.visible ? R.drawable.ic_layers : R.drawable.ic_stop;
+            nameText.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    ContextCompat.getDrawable(this, icon), null, null, null);
+            nameText.setPadding(dp(8), dp(4), dp(8), dp(4));
+            nameText.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+            row.addView(nameText);
+
+            TextView visBtn = new TextView(this);
+            visBtn.setText(info.visible ? "VISIBLE" : "HIDDEN");
+            visBtn.setTextSize(10);
+            visBtn.setTypeface(null, Typeface.BOLD);
+            visBtn.setTextColor(info.visible ? thc(0xFF4CAF50, 0xFF81C784) : thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999)));
+            visBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+            final int idx = i;
+            visBtn.setOnClickListener(v -> {
+                info.visible = !info.visible;
+                refreshLayerList();
+            });
+            row.addView(visBtn);
+
+            card.addView(row);
+
+            Slider opacitySlider = new Slider(this);
+            opacitySlider.setValueFrom(0);
+            opacitySlider.setValueTo(1);
+            opacitySlider.setValue(info.opacity);
+            opacitySlider.setStepSize(0.05f);
+            opacitySlider.setTrackHeight(dp(3));
+            opacitySlider.setThumbRadius(dp(8));
+            opacitySlider.setContentDescription(info.name + " opacity");
+            opacitySlider.addOnChangeListener((slider, value, fromUser) -> {
+                info.opacity = value;
+            });
+            card.addView(opacitySlider);
+
+            layerList.addView(card);
+        }
+    }
+
+    private void startEngine() {
+        if (!GamaNativeBootstrap.isInitialized()) {
+            log("Initializing GAMA engine...");
+            new Thread(() -> {
+                try {
+                    GamaNativeBootstrap.initialize(this, new GamaNativeBootstrap.ProgressCallback() {
+                        @Override public void onProgress(String msg) { log("  " + msg); }
+                        @Override public void onSuccess(String msg) { log("  " + msg); startCompilation(); }
+                        @Override public void onFailure(String msg, Throwable t) { log("  FAIL: " + msg); }
+                    });
+                } catch (Exception e) {
+                    Log.e(TAG, "Bootstrap failed", e);
+                    log("Bootstrap error: " + e.getMessage());
+                }
+            }).start();
+        } else {
+            startCompilation();
+        }
+    }
+
+    private void startCompilation() {
+        runOnUiThread(() -> {
+            String assetPath = getIntent().getStringExtra("asset_path");
+            String jarPath = getIntent().getStringExtra("jar_path");
+            String filePath = getIntent().getStringExtra("file_path");
+            boolean fromLibrary = getIntent().getBooleanExtra("from_library", false);
+
+            String effectivePath = jarPath != null ? jarPath : modelName;
+
+            if (filePath != null) {
+                compileModelFromFilePath(filePath);
+            } else if (assetPath != null) {
+                compileModelFromAsset(assetPath);
+            } else if (fromLibrary && effectivePath != null) {
+                compileModelFromLibrary(effectivePath);
+            } else if (effectivePath != null) {
+                compileModelFromLibrary(effectivePath);
+            }
+        });
+    }
+
+    // ---- Tab/UI Switching ----
+
+    public void onDisplayRegistered(String displayName, AndroidDisplaySurface surface) {
+        Log.i(TAG, "onDisplayRegistered: " + displayName + " (container=" + (getDisplayContainer() != null) + ")");
+        if (activeDisplayName == null) {
+            activeDisplayName = displayName;
+            surface.setVisibility(View.VISIBLE);
+        } else {
+            surface.setVisibility(View.GONE);
+        }
+
+        MaterialButton tab = new MaterialButton(this);
+        tab.setText(displayName);
+        tab.setTextSize(11);
+        tab.setTypeface(null, Typeface.BOLD);
+        tab.setCornerRadius(dp(16));
+        tab.setPadding(dp(12), dp(4), dp(12), dp(4));
+        tab.setMinimumHeight(0);
+        tab.setMinimumWidth(0);
+        boolean isActive = activeDisplayName.equals(displayName);
+        tab.setBackgroundTintList(ColorStateList.valueOf(isActive ? thc(0xFF006847, 0xFF2E7D32) : thc(0xFFE0E0E0, 0xFF424242)));
+        tab.setTextColor(isActive ? thc(0xFFFFFFFF, 0xFF1E1E2E) : thc(0xFF666666, 0xFF999999));
+        LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(WRAP_CONTENT, dp(32));
+        tabLp.setMargins(dp(4), dp(2), dp(4), dp(2));
+        tab.setLayoutParams(tabLp);
+        tab.setOnClickListener(v -> selectDisplay(displayName));
+        displayTabBar.addView(tab);
+
+        if (displayTabBar.getChildCount() > 1) {
+            displayTabScroll.setVisibility(View.VISIBLE);
+        }
+        View dt = displayWrapper.findViewWithTag("displayToolbar");
+        if (dt != null) dt.setVisibility(View.VISIBLE);
+        showFabs(true);
+    }
+
+    private void selectDisplay(String displayName) {
+        if (displayName.equals(activeDisplayName)) return;
+        activeDisplayName = displayName;
+
+        for (int i = 0; i < displayContainer.getChildCount(); i++) {
+            displayContainer.getChildAt(i).setVisibility(View.GONE);
+        }
+        for (int i = 0; i < displayTabBar.getChildCount(); i++) {
+            View tabView = displayTabBar.getChildAt(i);
+            if (tabView instanceof MaterialButton) {
+                MaterialButton tab = (MaterialButton) tabView;
+                boolean isActive = tab.getText().toString().trim().equals(displayName);
+                tab.setBackgroundTintList(ColorStateList.valueOf(isActive ? thc(0xFF006847, 0xFF2E7D32) : thc(0xFFE0E0E0, 0xFF424242)));
+                tab.setTextColor(isActive ? thc(0xFFFFFFFF, 0xFF1E1E2E) : thc(0xFF666666, 0xFF999999));
+            }
+        }
+
+        java.util.Map<String, AndroidDisplaySurface> surfaces =
+                com.gama.nativeapp.gui.AndroidGuiHandler.getInstance().getDisplaySurfaces();
+        AndroidDisplaySurface activeSurface = surfaces.get(displayName);
+        if (activeSurface != null) {
+            activeSurface.setVisibility(View.VISIBLE);
+            activeSurface.invalidate();
+        }
+    }
+
+    private void showFabs(boolean show) {
+        if (show) {
+            playPauseFab.show();
+            stepFab.show();
+            stopFab.show();
+            layersFab.show();
+        } else {
+            playPauseFab.hide();
+            stepFab.hide();
+            stopFab.hide();
+            layersFab.hide();
+        }
+    }
+
+    private void handleDisplayAction(String action) {
+        View target = getActiveDisplayView();
+        if (target == null) return;
+        try {
+            switch (action) {
+                case "+":
+                    target.getClass().getMethod("zoomIn").invoke(target);
+                    break;
+                case "\u2212":
+                    target.getClass().getMethod("zoomOut").invoke(target);
+                    break;
+                case "\u2195":
+                    target.getClass().getMethod("zoomFit").invoke(target);
+                    break;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Display action failed", e);
+        }
+    }
+
+    private View getActiveDisplayView() {
+        if (activeDisplayName == null) return null;
+        try {
+            java.util.Map<String, AndroidDisplaySurface> surfaces =
+                    com.gama.nativeapp.gui.AndroidGuiHandler.getInstance().getDisplaySurfaces();
+            return surfaces.get(activeDisplayName);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private int thc(int light, int dark) { return isDarkTheme ? dark : light; }
+
+    private void toggleTheme() {
+        isDarkTheme = !isDarkTheme;
+        getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
+        recreate();
+    }
+
+    // ---- Simulation Controls ----
+
+    private void togglePlayPause() {
+        if (!isRunning || currentController == null) return;
+        isPaused = !isPaused;
+        handler.post(() -> {
+            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this,
+                    isPaused ? R.drawable.ic_play : R.drawable.ic_pause));
+        });
+        try {
+            if (pausedField != null) {
+                pausedField.setBoolean(currentController, isPaused);
+            }
+            if (lockField != null && releaseLockMethod != null && !isPaused) {
+                Object lock = lockField.get(currentController);
+                if (lock != null) releaseLockMethod.invoke(lock);
+            }
+            log("Paused=" + isPaused);
+        } catch (Exception e) {
+            Log.w(TAG, "Toggle pause error", e);
+        }
+    }
+
+    private void stepSimulation() {
+        if (!isRunning || !isPaused || currentController == null) return;
+        try {
+            if (pausedField != null) pausedField.setBoolean(currentController, false);
+            if (lockField != null && releaseLockMethod != null) {
+                Object lock = lockField.get(currentController);
+                if (lock != null) releaseLockMethod.invoke(lock);
+            }
+            log("Step executed");
+        } catch (Exception e) { Log.w(TAG, "Step error", e); }
+    }
+
+    private void stopSimulation() {
+        if (!isRunning) return;
+        isRunning = false;
+        isPaused = false;
+        if (statePollRunnable != null) handler.removeCallbacks(statePollRunnable);
+        if (clockUpdateRunnable != null) handler.removeCallbacks(clockUpdateRunnable);
+        try {
+            if (currentController != null) {
+                Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
+                ctrlInterface.getMethod("close").invoke(currentController);
+                // The desktop path removes the controller from the static GAMA.controllers
+                // list (see GAMA.closeController). Calling close() directly leaks the whole
+                // experiment graph (plan -> model -> types -> sim -> displays -> activity)
+                // because the controller stays reachable from that static list forever.
+                Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
+                controllersField.setAccessible(true);
+                java.util.List controllers = (java.util.List) controllersField.get(null);
+                boolean removed = controllers.remove(currentController);
+                Log.i(TAG, "Stopped: removed=" + removed + " controllers.size=" + controllers.size());
+            }
+        } catch (Exception e) { Log.w(TAG, "Stop error", e); }
+        handler.post(() -> {
+            toolbarTitle.setText(modelName + " (stopped)");
+            cycleText.setText("Stopped");
+            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
+        });
+    }
+
+    // ---- Compilation ----
+
+    private void showCompilationError(String summary, List<Object> errors) {
+        StringBuilder sb = new StringBuilder(summary).append("\n\n");
+        for (Object err : errors) sb.append("\u2022 ").append(err).append("\n");
+        String fullMsg = sb.toString();
+        log(fullMsg);
+        handler.post(() -> {
+            contentArea.removeAllViews();
+            ScrollView scroll = new ScrollView(this);
+            TextView errText = new TextView(this);
+            errText.setText(fullMsg);
+            errText.setTextSize(12);
+            errText.setTextColor(thc(0xFFE53935, 0xFFCF6679));
+            errText.setTypeface(Typeface.MONOSPACE);
+            errText.setPadding(dp(16), dp(16), dp(16), dp(16));
+            scroll.addView(errText);
+            contentArea.addView(scroll);
+        });
+    }
+
+    private void compileModelFromAsset(String assetPath) {
+        log("Compiling: " + assetPath);
+        new Thread(() -> {
+            try {
+                File cacheDir = getCacheDir();
+                File modelFile = new File(cacheDir, assetPath);
+                modelFile.getParentFile().mkdirs();
+                try (InputStream is = getAssets().open(assetPath);
+                     FileOutputStream fos = new FileOutputStream(modelFile)) {
+                    byte[] buf = new byte[4096]; int n;
+                    while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                }
+                extractIncludesFromJarForAsset(modelFile, assetPath);
+                Object model = compileFile(modelFile);
+                if (model != null) handler.post(() -> showExperiments(model));
+            } catch (Exception e) {
+                Log.e(TAG, "Compilation error", e);
+                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                log(msg);
+                handler.post(() -> showError(msg));
+            }
+        }).start();
+    }
+
+    private void compileModelFromFilePath(String filePath) {
+        log("Compiling: " + filePath);
+        new Thread(() -> {
+            try {
+                File modelFile = new File(filePath);
+                if (!modelFile.exists()) {
+                    log("ERROR: File not found");
+                    handler.post(() -> showError("File not found: " + filePath));
+                    return;
+                }
+                Object model = compileFile(modelFile);
+                if (model != null) handler.post(() -> showExperiments(model));
+            } catch (Exception e) {
+                Log.e(TAG, "File compilation error", e);
+                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                log(msg);
+                handler.post(() -> showError(msg));
+            }
+        }).start();
+    }
+
+    private void compileModelFromLibrary(String jarEntryPath) {
+        log("Compiling from library: " + jarEntryPath);
+        new Thread(() -> {
+            try {
+                File cacheDir = getCacheDir();
+                File cacheJar = LibraryJarUtil.ensureCached(this);
+                if (cacheJar == null) {
+                    log("ERROR: Library jar not available");
+                    return;
+                }
+
+                JarFile jarFile = new JarFile(cacheJar);
+                JarEntry entry = jarFile.getJarEntry(jarEntryPath);
+                if (entry == null) {
+                    jarFile.close();
+                    log("ERROR: Entry not found");
+                    handler.post(() -> showError("Entry not found in library: " + jarEntryPath));
+                    return;
+                }
+
+                String parentPath = jarEntryPath.substring(0, jarEntryPath.lastIndexOf('/') + 1);
+                String projectRoot = parentPath.endsWith("models/") ?
+                        parentPath.substring(0, parentPath.length() - "models/".length()) : "";
+
+                boolean force = LibraryJarUtil.isExtractionStale(this);
+                java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry e = entries.nextElement();
+                    String eName = e.getName();
+                    if (e.isDirectory() || !eName.startsWith(projectRoot)) continue;
+                    String relativePath = eName.substring(projectRoot.length());
+                    if (relativePath.isEmpty()) continue;
+                    File outFile = new File(cacheDir, projectRoot + relativePath);
+                    if (outFile.exists() && !force) continue;
+                    outFile.getParentFile().mkdirs();
+                    try (InputStream is = jarFile.getInputStream(e);
+                         FileOutputStream fos = new FileOutputStream(outFile)) {
+                        byte[] buf = new byte[4096]; int n;
+                        while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                    }
+                }
+                LibraryJarUtil.markExtracted(this);
+                jarFile.close();
+
+                File modelFile = new File(cacheDir, jarEntryPath);
+                Object model = compileFile(modelFile);
+                if (model != null) handler.post(() -> showExperiments(model));
+            } catch (Exception e) {
+                Log.e(TAG, "Library compilation error", e);
+                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                log(msg);
+                handler.post(() -> showError(msg));
+            }
+        }).start();
+    }
+
+    private Object compileFile(File modelFile) throws Exception {
+        Class<?> builderClass = Class.forName("gaml.compiler.gaml.validation.GamlModelBuilder");
+        Object builder = builderClass.getMethod("getDefaultInstance").invoke(null);
+        Class<?> uriClass = Class.forName("org.eclipse.emf.common.util.URI");
+        Object uri = uriClass.getMethod("createFileURI", String.class).invoke(null, modelFile.getAbsolutePath());
+        List<Object> errors = new ArrayList<>();
+        Class<?> modelClass = Class.forName("gama.core.kernel.model.IModel");
+        Object model = builderClass.getMethod("compile", uriClass, List.class).invoke(builder, uri, errors);
+
+        if (model == null) {
+            showCompilationError("Compilation FAILED (" + errors.size() + " errors)", errors);
+            return null;
+        }
+
+        compiledModel = model;
+        String name = (String) modelClass.getMethod("getName").invoke(model);
+        log("Compiled: " + name);
+        return model;
+    }
+
+    private void extractIncludesFromJarForAsset(File modelFile, String assetPath) {
+        try {
+            File cacheJar = LibraryJarUtil.ensureCached(this);
+            if (cacheJar == null) return;
+            JarFile jarFile = new JarFile(cacheJar);
+            String modelFileName = assetPath.substring(assetPath.lastIndexOf('/') + 1);
+            boolean force = LibraryJarUtil.isExtractionStale(this);
+            java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry e = entries.nextElement();
+                String eName = e.getName();
+                if (e.isDirectory() || !eName.contains("/includes/")) continue;
+                String includePath = eName.substring(eName.indexOf("/includes/") + "/includes/".length());
+                File outFile = new File(modelFile.getParentFile(), "../includes/" + includePath);
+                if (outFile.exists() && !force) continue;
+                outFile.getParentFile().mkdirs();
+                try (InputStream is = jarFile.getInputStream(e);
+                     FileOutputStream fos = new FileOutputStream(outFile)) {
+                    byte[] buf = new byte[4096]; int n;
+                    while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                }
+            }
+            LibraryJarUtil.markExtracted(this);
+            jarFile.close();
+        } catch (Exception e) { log("Includes: " + e.getMessage()); }
+    }
+
+    private void showExperiments(Object model) {
+        try {
+            Class<?> modelClass = Class.forName("gama.core.kernel.model.IModel");
+            java.lang.reflect.Method getExps = modelClass.getMethod("getExperiments");
+            Iterable<?> experiments = (Iterable<?>) getExps.invoke(model);
+            List<Object> expList = new ArrayList<>();
+            for (Object exp : experiments) expList.add(exp);
+
+            log("Found " + expList.size() + " experiment(s)");
+
+            if (expList.isEmpty()) {
+                log("No experiments found");
+                showError("No experiments found in model");
+                return;
+            }
+
+            Toast.makeText(this, "Found " + expList.size() + " experiment(s)!", Toast.LENGTH_LONG).show();
+
+            // Create a simple dialog to pick experiment
+            String[] names = new String[expList.size()];
+            for (int i = 0; i < expList.size(); i++) {
+                names[i] = (String) expList.get(i).getClass().getMethod("getName").invoke(expList.get(i));
+                log("  Experiment: " + names[i]);
+            }
+
+            String requested = getIntent().getStringExtra("experiment_name");
+            if (requested != null && !requested.isEmpty()) {
+                for (int i = 0; i < expList.size(); i++) {
+                    if (requested.equals(names[i])) {
+                        log("Auto-starting experiment: " + names[i]);
+                        runExperiment(expList.get(i), names[i]);
+                        return;
+                    }
+                }
+                log("Experiment '" + requested + "' not found, showing picker");
+            }
+
+            new androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Select Experiment")
+                    .setItems(names, (dialog, which) -> {
+                        dialog.dismiss();
+                        try {
+                            runExperiment(expList.get(which), names[which]);
+                        } catch (Exception ex) {
+                            log("Error: " + ex.getMessage());
+                        }
+                    })
+                    .setCancelable(false)
+                    .show();
+        } catch (Exception e) {
+            log("Error listing experiments: " + e.getMessage());
+            showError("Error: " + e.getMessage());
+        }
+    }
+
+    private void showError(String message) {
+        handler.post(() -> {
+            contentArea.removeAllViews();
+            TextView errText = new TextView(this);
+            errText.setText(message);
+            errText.setTextSize(14);
+            errText.setTextColor(thc(0xFFE53935, 0xFFCF6679));
+            errText.setGravity(Gravity.CENTER);
+            errText.setPadding(dp(32), dp(32), dp(32), dp(32));
+            contentArea.addView(errText);
+        });
+    }
+
+    private void runExperiment(Object expPlan, String expName) {
+        log("Starting: " + expName);
+        currentExpPlan = expPlan;
+        isRunning = true;
+        isPaused = false;
+        activeDisplayName = null;
+        displayTabBar.removeAllViews();
+        displayTabScroll.setVisibility(View.GONE);
+        displayContainer.removeAllViews();
+        layerInfos.clear();
+
+        try {
+            Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
+            Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
+            guiHandlerClass.getMethod("clearDisplayState", Activity.class).invoke(guiHandler, this);
+        } catch (Exception e) { Log.w(TAG, "Clear state error", e); }
+
+        handler.post(() -> toolbarTitle.setText(expName));
+
+        new Thread(() -> {
+            try {
+                Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
+                Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
+
+                Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                gamaClass.getMethod("setHeadlessGui", Class.forName("gama.core.common.interfaces.IGui"))
+                        .invoke(null, guiHandler);
+                gamaClass.getMethod("setRegularGui", Class.forName("gama.core.common.interfaces.IGui"))
+                        .invoke(null, guiHandler);
+
+                Class<?> expClass = Class.forName("gama.core.kernel.experiment.IExperimentPlan");
+                expClass.getMethod("setHeadless", boolean.class).invoke(expPlan, false);
+                expClass.getMethod("open").invoke(expPlan);
+
+                Object controller = expClass.getMethod("getController").invoke(expPlan);
+                currentController = controller;
+
+                Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
+                ctrlInterface.getMethod("setCycleDuration", long.class).invoke(controller, 0L);
+
+                java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
+                controllersField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                java.util.List controllers = (java.util.List) controllersField.get(null);
+                controllers.add(controller);
+                Log.i(TAG, "Started: controllers.size=" + controllers.size());
+
+                setupStdoutRedirect();
+                ctrlInterface.getMethod("processStart", boolean.class).invoke(controller, true);
+
+                Class<?> absControllerClass = Class.forName("gama.core.kernel.experiment.DefaultExperimentController").getSuperclass();
+                java.lang.reflect.Field pField = absControllerClass.getDeclaredField("paused");
+                pField.setAccessible(true); pField.setBoolean(controller, false);
+                java.lang.reflect.Field lField = absControllerClass.getDeclaredField("lock");
+                lField.setAccessible(true);
+                Object lock = lField.get(controller);
+                lock.getClass().getMethod("release").invoke(lock);
+
+                log("Experiment started");
+                startStatePolling(controller);
+            } catch (Exception e) {
+                Log.e(TAG, "Run error", e);
+                log("ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                Throwable cause = e.getCause();
+                while (cause != null) {
+                    log("  CAUSE: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+                    cause = cause.getCause();
+                }
+                handler.post(() -> { isRunning = false; toolbarTitle.setText(modelName + " (error)"); });
+            }
+        }).start();
+    }
+
+    private void setupStdoutRedirect() {
+        try {
+            if (originalOut == null) originalOut = System.out;
+            if (originalErr == null) originalErr = System.err;
+            final PrintStream origErr = originalErr;
+            final PrintStream origOut = originalOut;
+            System.setErr(new PrintStream(new java.io.OutputStream() {
+                @Override public void write(int b) { origErr.write(b); }
+                @Override public void write(byte[] b, int off, int len) {
+                    origErr.write(b, off, len);
+                    String s = new String(b, off, len).trim();
+                    if (!s.isEmpty()) Log.e(TAG, s);
+                }
+            }, true));
+            System.setOut(new PrintStream(new java.io.OutputStream() {
+                @Override public void write(int b) { origOut.write(b); }
+                @Override public void write(byte[] b, int off, int len) {
+                    origOut.write(b, off, len);
+                    String s = new String(b, off, len).trim();
+                    if (!s.isEmpty()) Log.i(TAG, s);
+                }
+            }, true));
+        } catch (Exception e) { Log.w(TAG, "Redirect error", e); }
+    }
+
+    private void startStatePolling(Object controller) {
+        cacheReflectionFields(controller);
+        final long startTime = System.currentTimeMillis();
+        final int[] lastCycle = {-1};
+        final long[] lastInvalidate = {0};
+
+        statePollRunnable = () -> {
+            if (!isRunning) return;
+            try {
+                if (aliveField != null) {
+                    boolean alive = aliveField.getBoolean(controller);
+                    if (!alive) {
+                        Log.i(TAG, "Experiment finished (alive=false)");
+                        handler.post(() -> {
+                            toolbarTitle.setText(modelName + " (finished)");
+                            cycleText.setText("Completed");
+                            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
+                        });
+                        isRunning = false;
+                        return;
+                    }
+                }
+
+                int cycleCount = -1;
+                try {
+                    if (scopeField != null && getClockMethod != null && getCycleMethod != null) {
+                        Object scope = scopeField.get(controller);
+                        if (scope != null) {
+                            Object clock = getClockMethod.invoke(scope);
+                            if (clock != null) cycleCount = (int) getCycleMethod.invoke(clock);
+                        }
+                    }
+                } catch (Exception e) {}
+
+                boolean changed = cycleCount >= 0 && cycleCount != lastCycle[0];
+                if (cycleCount >= 0) lastCycle[0] = cycleCount;
+
+                long elapsed = System.currentTimeMillis() - startTime;
+                long min = (elapsed / 1000) / 60;
+                long sec = (elapsed / 1000) % 60;
+
+                long now = System.currentTimeMillis();
+                boolean stale = now - lastInvalidate[0] > 1000;
+                final int finalCycle = cycleCount;
+                handler.post(() -> {
+                    String cycleStr = finalCycle >= 0 ? String.valueOf(finalCycle) : "?";
+                    cycleText.setText(cycleStr + " cycles  " +
+                            String.format("%02d:%02d", min, sec));
+                    if (changed || stale) {
+                        lastInvalidate[0] = System.currentTimeMillis();
+                        updateDisplays();
+                    }
+                });
+            } catch (Exception e) {
+                Log.w(TAG, "Poll error: " + e.getMessage());
+            }
+            if (isRunning) handler.postDelayed(statePollRunnable, 100);
+        };
+        handler.postDelayed(statePollRunnable, 100);
+    }
+
+    private void cacheReflectionFields(Object controller) {
+        try {
+            Class<?> ctrlClass = controller.getClass();
+            Class<?> absClass = ctrlClass.getSuperclass();
+            try { pausedField = absClass.getDeclaredField("paused"); pausedField.setAccessible(true); } catch (Exception e) {}
+            try { aliveField = absClass.getDeclaredField("experimentAlive"); aliveField.setAccessible(true); } catch (Exception e) {}
+            try { scopeField = absClass.getDeclaredField("scope"); scopeField.setAccessible(true); } catch (Exception e) {}
+            try { lockField = absClass.getDeclaredField("lock"); lockField.setAccessible(true); } catch (Exception e) {}
+            try { getClockMethod = Class.forName("gama.core.runtime.IScope").getMethod("getClock"); } catch (Exception e) {}
+            try { getCycleMethod = Class.forName("gama.core.kernel.simulation.SimulationClock").getMethod("getCycle"); } catch (Exception e) {}
+            try { Object lockObj = lockField != null ? lockField.get(controller) : null;
+                if (lockObj != null) releaseLockMethod = lockObj.getClass().getMethod("release"); } catch (Exception e) {}
+        } catch (Exception e) { Log.e(TAG, "Cache fields error", e); }
+    }
+
+    private volatile boolean displayOutputsCached = false;
+
+    private void updateDisplays() {
+        try {
+            Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
+            Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> outputsMap =
+                    (java.util.Map<String, Object>) guiHandlerClass.getMethod("getDisplayOutputs").invoke(guiHandler);
+
+            if (outputsMap == null || outputsMap.isEmpty()) {
+                Log.w(TAG, "updateDisplays: no outputs, probing...");
+                guiHandlerClass.getMethod("probeAndCreateSurface").invoke(null);
+                return;
+            }
+
+            Log.i(TAG, "updateDisplays: " + outputsMap.size() + " output(s)");
+            boolean hasSurface = false;
+            for (Object ldoObj : outputsMap.values()) {
+                try {
+                    Object surfObj = ldoObj.getClass().getMethod("getSurface").invoke(ldoObj);
+                    if (surfObj instanceof View surfView) {
+                        Log.i(TAG, "updateDisplays: invalidating " + surfView.getClass().getSimpleName());
+                        surfView.post(surfView::invalidate);
+                        hasSurface = true;
+                    } else {
+                        Log.w(TAG, "updateDisplays: surface is not a View: " + (surfObj != null ? surfObj.getClass().getSimpleName() : "null"));
+                    }
+                } catch (Exception de) {
+                    Log.w(TAG, "updateDisplays: getSurface error: " + de.getMessage());
+                }
+            }
+            if (!hasSurface) {
+                Log.w(TAG, "updateDisplays: no valid surface found, probing...");
+                guiHandlerClass.getMethod("probeAndCreateSurface").invoke(null);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "updateDisplays error: " + e.getMessage());
+            displayOutputsCached = false;
+        }
+    }
+
+    private static void setGuiActivity(Activity activity) {
+        try {
+            Class<?> handlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
+            handlerClass.getMethod("setActivity", Activity.class).invoke(null, activity);
+        } catch (Throwable e) { Log.w(TAG, "Set activity error", e); }
+    }
+
+    public void log(String message) {
+        Log.i(TAG, message);
+        handler.post(() -> {
+            logView.append(message + "\n");
+            logScroll.fullScroll(ScrollView.FOCUS_DOWN);
+        });
+    }
+
+    /** Switch the visible panel to the console tab so engine writes/errors are seen. */
+    public void showConsoleView() {
+        runOnUiThread(() -> showPanel(1));
+    }
+
+    private int dp(int dp) { return (int) (dp * getResources().getDisplayMetrics().density); }
+
+    public FrameLayout getDisplayContainer() { return displayContainer; }
+
+    public void updateCycleInfo(long cycle, long elapsedMs) {
+        long seconds = elapsedMs / 1000;
+        long min = seconds / 60;
+        long sec = seconds % 60;
+        handler.post(() -> cycleText.setText(cycle + " cycles  " +
+                String.format("%02d:%02d", min, sec)));
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (sensorBridge != null) sensorBridge.stop();
+        if (statePollRunnable != null) handler.removeCallbacks(statePollRunnable);
+        if (clockUpdateRunnable != null) handler.removeCallbacks(clockUpdateRunnable);
+        // stopSimulation() must run while isRunning is still true: its first
+        // statement is `if (!isRunning) return;`. Setting isRunning=false here
+        // (before the close() below) silently skipped the whole disposal and
+        // leaked every experiment (controller -> plan -> model -> sim ->
+        // displays) on each launch.
+        if (currentController != null) stopSimulation();
+        try {
+            if (originalOut != null) System.setOut(originalOut);
+            if (originalErr != null) System.setErr(originalErr);
+        } catch (Exception e) { Log.w(TAG, "Restore stream error", e); }
+        originalOut = null;
+        originalErr = null;
+        try {
+            Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
+            Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
+            guiHandlerClass.getMethod("clearDisplayState", Activity.class).invoke(guiHandler, this);
+        } catch (Exception e) {}
+        setGuiActivity(null);
+        isRunning = false;
+    }
+
+    private Drawable createBackIcon() {
+        int size = dp(32);
+        Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bmp);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.WHITE);
+        paint.setStrokeWidth(dp(4));
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+        int cx = size / 2, cy = size / 2;
+        int pad = dp(8);
+        canvas.drawLine(cx + pad, cy - pad, cx - pad, cy, paint);
+        canvas.drawLine(cx - pad, cy, cx + pad, cy + pad, paint);
+        return new BitmapDrawable(getResources(), bmp);
+    }
+}

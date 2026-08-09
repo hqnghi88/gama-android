@@ -1,0 +1,614 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Strip Java 21 pattern-matching classes + ASM-patch SimulationRunner$1 to fix deadlock
+tasks.register('patchGamaJars') {
+    doLast {
+        def libsDir = file("$buildDir/../../app/libs")
+        def patchedClasses = ['gama/gaml/descriptions/SkillDescription.class']
+
+        fileTree(libsDir).matching { include '*.jar' }.each { jarFile ->
+            def tmpDir = file("$buildDir/tmp/jar_patch/${jarFile.name}")
+            tmpDir.mkdirs()
+            exec {
+                commandLine 'jar', 'xf', jarFile.absolutePath
+                workingDir tmpDir
+            }
+            def removed = false
+            patchedClasses.each { cls ->
+                def f = file("${tmpDir}/${cls}")
+                if (f.exists()) { f.delete(); removed = true }
+            }
+            if (removed) {
+                exec {
+                    commandLine 'jar', 'cf', jarFile.absolutePath, '-C', tmpDir, '.'
+                }
+                logger.lifecycle("Patched JAR: ${jarFile.name}")
+            }
+
+            tmpDir.deleteDir()
+        }
+
+        // Compile AndroidTaskWrapper.java (needs gama.core on classpath for ParallelAgentRunner)
+        def wrapperOutDir = file("$buildDir/tmp/android_wrapper")
+        wrapperOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                '-d', wrapperOutDir.absolutePath,
+                "${projectDir}/../tools/AndroidTaskWrapper.java"
+        }
+        logger.lifecycle("Compiled AndroidTaskWrapper.java")
+
+        // Find ASM JARs in Gradle cache
+        def asmJar = fileTree("${System.getProperty('user.home')}/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm/9.6")
+            .matching { include '**/*.jar' }.files.first()
+        def asmTreeJar = fileTree("${System.getProperty('user.home')}/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm-tree/9.6")
+            .matching { include '**/*.jar' }.files.first()
+
+        // Compile ParallelRunnerPatcher.java
+        def patcherOutDir = file("$buildDir/tmp/patcher")
+        patcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', patcherOutDir.absolutePath,
+                "${projectDir}/../tools/ParallelRunnerPatcher.java"
+        }
+        logger.lifecycle("Compiled ParallelRunnerPatcher.java")
+
+        // Run ParallelRunnerPatcher to patch GamaExecutorService + ParallelAgentRunner
+        exec {
+            commandLine 'java', '-cp',
+                "${patcherOutDir.absolutePath}:${wrapperOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'ParallelRunnerPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                "${wrapperOutDir.absolutePath}/gama/core/runtime/concurrent/AndroidTaskWrapper.class"
+        }
+        logger.lifecycle("ParallelRunnerPatcher completed")
+
+        // Compile Display3DPatcher.java
+        def display3dPatcherOutDir = file("$buildDir/tmp/display3d_patcher")
+        display3dPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', display3dPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/Display3DPatcher.java"
+        }
+        logger.lifecycle("Compiled Display3DPatcher.java")
+
+        // Run Display3DPatcher to remove3D early-return in LayeredDisplayOutput.createSurface()
+        exec {
+            commandLine 'java', '-cp',
+                "${display3dPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'Display3DPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("Display3DPatcher completed")
+
+        // Compile TypeSwitchPatcher.java
+        def typeSwitchPatcherOutDir = file("$buildDir/tmp/typeswitch_patcher")
+        typeSwitchPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', typeSwitchPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/TypeSwitchPatcher.java"
+        }
+        logger.lifecycle("Compiled TypeSwitchPatcher.java")
+
+        // Run TypeSwitchPatcher on all gama JARs that have typeSwitch invokedynamic
+        exec {
+            commandLine 'java', '-cp',
+                "${typeSwitchPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'TypeSwitchPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                "${libsDir}/gama.extension.image_0.0.0.202605140230.jar",
+                "${libsDir}/gama.extension.network_0.0.0.202605140230.jar",
+                "${libsDir}/gama.ui.experiment_0.0.0.202605140230.jar",
+                "${libsDir}/gama.ui.shared_0.0.0.202605140230.jar",
+                "${libsDir}/gama.ui.viewers_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("TypeSwitchPatcher completed")
+
+        // Patch GamaPopulation: replace lambda with anonymous class to fix D8 IncompatibleClassChangeError
+        // Also patch GamlAgent: fix microPopulations caching
+        // Also patch GamlModelBuilder: catch validation NPEs and skip hasErrors() check
+        // Also patch AbstractAgent/ExperimentAgent/DefaultExperimentController: add diagnostic logging
+        def gamaCoreSrc = file("${projectDir}/../../gama.core/src")
+        def gamlCompilerSrc = file("${projectDir}/../../gaml.compiler/src")
+        def allLibJars = fileTree(libsDir).matching { include '*.jar'; exclude '*.original.jar'; exclude '*.bak*' }
+        def resolvedDeps = []
+        try {
+            resolvedDeps = project.configurations.getByName('debugCompileClasspath').files.collect { it.absolutePath }
+        } catch (e) {
+            logger.warn("Could not resolve debugCompileClasspath: ${e.message}")
+        }
+        def allClasspath = ([*allLibJars.files.collect { it.absolutePath }, *resolvedDeps]).join(':')
+        file("$buildDir/tmp/gama_pop_patch").mkdirs()
+        exec {
+            commandLine 'javac', '--release', '21', '-proc:none',
+                '-cp', allClasspath,
+                '-d', "$buildDir/tmp/gama_pop_patch",
+                "${gamaCoreSrc}/gama/core/metamodel/population/GamaPopulation.java",
+                "${gamaCoreSrc}/gama/core/metamodel/agent/GamlAgent.java",
+                "${gamaCoreSrc}/gama/core/metamodel/agent/AbstractAgent.java",
+                "${gamaCoreSrc}/gama/core/kernel/experiment/ExperimentAgent.java",
+                "${gamaCoreSrc}/gama/core/kernel/experiment/DefaultExperimentController.java",
+                "${gamaCoreSrc}/gama/core/kernel/experiment/AbstractExperimentController.java",
+                "${gamaCoreSrc}/gama/core/kernel/experiment/IExperimentController.java",
+                "${gamaCoreSrc}/gama/core/kernel/experiment/SimulationRecorderFactory.java",
+                "${gamlCompilerSrc}/gaml/compiler/gaml/validation/GamlModelBuilder.java",
+                "${gamaCoreSrc}/gama/core/outputs/AbstractOutputManager.java",
+                "${gamaCoreSrc}/gama/core/outputs/LayeredDisplayOutput.java",
+                "${gamaCoreSrc}/gama/core/outputs/layers/ImageLayer.java",
+                "${gamaCoreSrc}/gama/core/kernel/simulation/SimulationPopulation.java",
+                "${gamaCoreSrc}/gama/core/util/file/GamaGridFile.java",
+                "${gamaCoreSrc}/gama/core/metamodel/topology/grid/GridPopulation.java",
+                "${gamaCoreSrc}/gama/core/util/GamaList.java",
+                "${gamaCoreSrc}/gama/core/outputs/layers/charts/ChartOutput.java",
+                "${gamaCoreSrc}/gama/core/outputs/layers/charts/ChartLayerStatement.java",
+                "${gamaCoreSrc}/gama/core/outputs/layers/charts/ChartJFreeChartOutputPie.java"
+        }
+        exec {
+            commandLine 'jar', 'uf', "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/metamodel/population/GamaPopulation.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/metamodel/population/GamaPopulation$1.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/metamodel/agent/GamlAgent.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/metamodel/agent/AbstractAgent.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/ExperimentAgent.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/ExperimentAgent$1.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/ExperimentAgent$ExperimentAgentScope.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/DefaultExperimentController.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/DefaultExperimentController$1.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/AbstractExperimentController.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/IExperimentController.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/SimulationRecorderFactory.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/experiment/SimulationRecorderFactory$NoopRecorder.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/AbstractOutputManager.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/LayeredDisplayOutput.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/layers/ImageLayer.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/kernel/simulation/SimulationPopulation.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/util/file/GamaGridFile.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/util/file/GamaGridFile$Records.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/metamodel/topology/grid/GridPopulation.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/util/GamaList.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/layers/charts/ChartOutput.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/layers/charts/ChartLayerStatement.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/layers/charts/ChartLayerStatement$DataDeclarationSequence.class',
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gama/core/outputs/layers/charts/ChartJFreeChartOutputPie.class'
+        }
+        exec {
+            commandLine 'jar', 'uf', "${libsDir}/gaml.compiler_0.0.0.202605140230.jar",
+                '-C', "$buildDir/tmp/gama_pop_patch",
+                'gaml/compiler/gaml/validation/GamlModelBuilder.class'
+        }
+        logger.lifecycle("GamaPopulation + GamlAgent + GamlModelBuilder fixes patched into jars")
+
+        // Compile LayerManager$1 stub (missing $SwitchMap synthetic class)
+        file("$buildDir/tmp/layermanager_patch").mkdirs()
+        exec {
+            commandLine 'javac', '--release', '21',
+                '-cp', "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                '-d', "$buildDir/tmp/layermanager_patch",
+                "${projectDir}/../tools/LayerManager1.java"
+        }
+        exec {
+            commandLine 'jar', 'uf', "${libsDir}/gama.core_0.0.0.202605140230.jar",
+                '-C', "$buildDir/tmp/layermanager_patch",
+                'gama/core/outputs/display/LayerManager$1.class'
+        }
+        logger.lifecycle("LayerManager\$1 stub patched into gama.core jar")
+
+        // Compile CrsPatcher.java
+        def crsPatcherOutDir = file("$buildDir/tmp/crs_patcher")
+        crsPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', crsPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/CrsPatcher.java"
+        }
+        logger.lifecycle("Compiled CrsPatcher.java")
+
+        // Run CrsPatcher to widen CRS.decode catch in ProjectionFactory
+        exec {
+            commandLine 'java', '-cp',
+                "${crsPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'CrsPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("CrsPatcher completed")
+
+        // Compile ColorsPatcher.java
+        def colorsPatcherOutDir = file("$buildDir/tmp/colors_patcher")
+        colorsPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', colorsPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/ColorsPatcher.java"
+        }
+        logger.lifecycle("Compiled ColorsPatcher.java")
+
+        // Run ColorsPatcher to wrap BREWER init in try-catch
+        exec {
+            commandLine 'java', '-cp',
+                "${colorsPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'ColorsPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("ColorsPatcher completed")
+
+        // Compile PrecisePredicatePatcher.java
+        def containersPatcherOutDir = file("$buildDir/tmp/containers_patcher")
+        containersPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', containersPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/PrecisePredicatePatcher.java"
+        }
+        logger.lifecycle("Compiled PrecisePredicatePatcher.java")
+
+        // Run PrecisePredicatePatcher to fix Predicate type mismatch
+        def predicateArgs = fileTree(libsDir).matching { include 'gama.*.jar' }.files
+            .findAll { !it.name.contains('.original.') }
+            .collect { it.absolutePath }
+        exec {
+            commandLine(['java', '-cp',
+                "${containersPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'PrecisePredicatePatcher'] + predicateArgs)
+        }
+        logger.lifecycle("PrecisePredicatePatcher completed")
+
+        // Compile SimulationRunnerPatcher.java
+        def simRunnerPatcherOutDir = file("$buildDir/tmp/simrunner_patcher")
+        simRunnerPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', simRunnerPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/SimulationRunnerPatcher.java"
+        }
+        logger.lifecycle("Compiled SimulationRunnerPatcher.java")
+
+        // Run SimulationRunnerPatcher to fix SimulationPopulation.stepAgents() deadlock
+        exec {
+            commandLine 'java', '-cp',
+                "${simRunnerPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'SimulationRunnerPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("SimulationRunnerPatcher completed")
+
+        // Compile MeshLayerPatcher.java
+        def meshLayerPatcherOutDir = file("$buildDir/tmp/meshlayer_patcher")
+        meshLayerPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', meshLayerPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/MeshLayerPatcher.java"
+        }
+        logger.lifecycle("Compiled MeshLayerPatcher.java")
+
+        // Run MeshLayerPatcher to add null check in MeshLayerData.buildValues()
+        exec {
+            commandLine 'java', '-cp',
+                "${meshLayerPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'MeshLayerPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("MeshLayerPatcher completed")
+
+        // Compile LayerManagerPatcher.java
+        def layerManagerPatcherOutDir = file("$buildDir/tmp/layermanager_patcher")
+        layerManagerPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', layerManagerPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/LayerManagerPatcher.java"
+        }
+        logger.lifecycle("Compiled LayerManagerPatcher.java")
+
+        // Run LayerManagerPatcher to redirect createLayer -> createLayerSafe
+        exec {
+            commandLine 'java', '-cp',
+                "${layerManagerPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'LayerManagerPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("LayerManagerPatcher completed")
+
+        // Compile ImageLayerPatcher.java
+        def imageLayerPatcherOutDir = file("$buildDir/tmp/imagelayer_patcher")
+        imageLayerPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', imageLayerPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/ImageLayerPatcher.java"
+        }
+        logger.lifecycle("Compiled ImageLayerPatcher.java")
+
+        // Run ImageLayerPatcher to add null check in computeEnvelope
+        exec {
+            commandLine 'java', '-cp',
+                "${imageLayerPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'ImageLayerPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("ImageLayerPatcher completed")
+
+        // Compile CacheBuilderPatcher.java
+        def cacheBuilderPatcherOutDir = file("$buildDir/tmp/cb_patcher")
+        cacheBuilderPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', cacheBuilderPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/CacheBuilderPatcher.java"
+        }
+        logger.lifecycle("Compiled CacheBuilderPatcher.java")
+
+        // Run CacheBuilderPatcher to fix GamaGisFile expireAfterAccess(Duration)
+        exec {
+            commandLine 'java', '-cp',
+                "${cacheBuilderPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'CacheBuilderPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("CacheBuilderPatcher completed")
+
+        // Compile SpiPatcher.java
+        def spiPatcherOutDir = file("$buildDir/tmp/spi_patcher")
+        spiPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-d', spiPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/SpiPatcher.java"
+        }
+        logger.lifecycle("Compiled SpiPatcher.java")
+
+        // Run SpiPatcher to remove LongitudeFirstFactory from gt-referencing SPI
+        exec {
+            commandLine 'java', '-cp',
+                "${spiPatcherOutDir.absolutePath}",
+                'SpiPatcher',
+                "${libsDir}/gt-referencing-25.0.jar"
+        }
+        logger.lifecycle("SpiPatcher completed")
+
+        // Compile ProjectionPatcher.java
+        def projectionPatcherOutDir = file("$buildDir/tmp/projection_patcher")
+        projectionPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', projectionPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/ProjectionPatcher.java"
+        }
+        logger.lifecycle("Compiled ProjectionPatcher.java")
+
+        // Run ProjectionPatcher to add IllegalAccessError catch in Projection.transform
+        exec {
+            commandLine 'java', '-cp',
+                "${projectionPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'ProjectionPatcher',
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("ProjectionPatcher completed")
+
+        // Compile MapProjectionPatcher.java
+        def mapProjectionPatcherOutDir = file("$buildDir/tmp/mapprojection_patcher")
+        mapProjectionPatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', mapProjectionPatcherOutDir.absolutePath,
+                "${projectDir}/../tools/MapProjectionPatcher.java"
+        }
+        logger.lifecycle("Compiled MapProjectionPatcher.java")
+
+        // Run MapProjectionPatcher to replace Point2D$Double field access with getX/getY/setLocation
+        exec {
+            commandLine 'java', '-cp',
+                "${mapProjectionPatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'MapProjectionPatcher',
+                "${libsDir}/gt-referencing-25.0.jar"
+        }
+        logger.lifecycle("MapProjectionPatcher completed")
+
+        // Compile EclipseCorePatcher.java
+        def eclipsePatcherOutDir = file("$buildDir/tmp/eclipse_patcher")
+        eclipsePatcherOutDir.mkdirs()
+        exec {
+            commandLine 'javac',
+                '--release', '21',
+                '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                '-d', eclipsePatcherOutDir.absolutePath,
+                "${projectDir}/../tools/EclipseCorePatcher.java"
+        }
+        logger.lifecycle("Compiled EclipseCorePatcher.java")
+
+        // Run EclipseCorePatcher to add IWorkspace.getRoot() and IWorkspaceRoot
+        exec {
+            commandLine 'java', '-cp',
+                "${eclipsePatcherOutDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
+                'EclipseCorePatcher',
+                "${libsDir}/eclipse-core-stubs.jar",
+                "${libsDir}/gama.core_0.0.0.202605140230.jar"
+        }
+        logger.lifecycle("EclipseCorePatcher completed")
+    }
+}
+
+tasks.configureEach { task ->
+    if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
+        task.dependsOn 'patchGamaJars'
+    }
+    if (task.name == 'compileDebugJavaWithJavac' || task.name == 'compileReleaseJavaWithJavac') {
+        task.dependsOn 'patchGamaJars'
+    }
+}
+
+def keystoreProperties = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProperties.load(it) }
+}
+
+android {
+    namespace 'com.gama.nativeapp'
+    compileSdk 34
+
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId "com.gama.nativeapp"
+        minSdk 26
+        targetSdk 34
+        versionCode 11
+        versionName "0.1.11"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging {
+        resources {
+            excludes += ['about.ini', 'about.mappings', 'about.properties', 'plugin.xml', 'plugin.properties',
+                         'modeling32.png', 'lib/native/**', 'META-INF/DEPENDENCIES',
+                         'META-INF/LICENSE', 'META-INF/NOTICE', 'META-INF/README*',
+                         'META-INF/*.DSA', 'META-INF/*.SF', 'META-INF/*.RSA',
+                         '*.exsd', 'schema/*.exsd',
+                         '*.namespaces', '*.imports', '*.extensions', '*.launch', '*.target']
+            pickFirsts += ['META-INF/MANIFEST.MF']
+        }
+        jniLibs {
+            excludes += ['**']
+        }
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force 'com.google.inject:guice:5.1.0'
+        force 'aopalliance:aopalliance:1.0'
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
+
+    implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['gama.extension.physics*', '*.original.jar'])
+
+    implementation 'org.locationtech.jts:jts-core:1.19.0'
+    implementation 'org.jgrapht:jgrapht-core:1.5.2'
+    implementation 'org.jfree:jfreechart:1.5.4'
+    implementation 'org.java-websocket:Java-WebSocket:1.5.4'
+    implementation 'org.locationtech.jts:jts-io:1.19.0'
+    implementation 'com.google.guava:guava:33.2.1-jre'
+    implementation 'one.util:streamex:0.8.3'
+    implementation 'org.apache.commons:commons-math3:3.6.1'
+
+    implementation files('libs/guice-5.1.0-patched.jar')
+    implementation 'javax.inject:javax.inject:1'
+    implementation 'aopalliance:aopalliance:1.0'
+
+    implementation('org.eclipse.xtext:org.eclipse.xtext:2.35.0') {
+        exclude group: 'org.eclipse.platform'
+        exclude group: 'org.ow2.asm'
+        exclude group: 'ch.qos.reload4j'
+        exclude group: 'com.google.inject'
+        exclude group: 'aopalliance'
+    }
+    implementation('org.eclipse.xtext:org.eclipse.xtext.xbase:2.35.0') {
+        exclude group: 'org.eclipse.platform'
+        exclude group: 'org.ow2.asm'
+        exclude group: 'com.google.inject'
+    }
+    implementation('org.eclipse.xtext:org.eclipse.xtext.util:2.35.0') {
+        exclude group: 'org.eclipse.platform'
+        exclude group: 'com.google.inject'
+    }
+    implementation('org.eclipse.xtend:org.eclipse.xtend.lib:2.35.0') {
+        exclude group: 'org.eclipse.platform'
+        exclude group: 'com.google.inject'
+    }
+    implementation('org.eclipse.emf:org.eclipse.emf.ecore:2.31.0') {
+        exclude group: 'org.eclipse.platform'
+    }
+    implementation('org.eclipse.emf:org.eclipse.emf.common:2.31.0') {
+        exclude group: 'org.eclipse.platform'
+    }
+    implementation('org.eclipse.emf:org.eclipse.emf.ecore.xmi:2.18.0') {
+        exclude group: 'org.eclipse.platform'
+    }
+
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.10.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}

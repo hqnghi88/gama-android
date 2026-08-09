@@ -1,0 +1,1714 @@
+package com.gama.nativeapp.display;
+
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
+
+import java.awt.geom.Rectangle2D;
+import java.awt.image.BufferedImage;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryCollection;
+import org.locationtech.jts.geom.Lineal;
+import org.locationtech.jts.geom.LinearRing;
+import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.MultiLineString;
+import org.locationtech.jts.geom.MultiPolygon;
+import org.locationtech.jts.geom.Point;
+import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.geom.Puntal;
+
+import gama.core.common.interfaces.IAsset;
+import gama.core.common.interfaces.ILayer;
+import gama.core.common.interfaces.IImageProvider;
+import gama.core.metamodel.agent.IAgent;
+import gama.core.metamodel.shape.GamaPoint;
+import gama.core.metamodel.shape.IShape;
+import gama.core.outputs.display.AbstractDisplayGraphics;
+import gama.core.outputs.layers.MeshLayerData;
+import gama.core.outputs.layers.OverlayLayer;
+import gama.core.outputs.layers.charts.ChartOutput;
+import gama.core.runtime.IScope;
+import gama.core.util.GamaColor;
+import gama.core.util.file.GamaGeometryFile;
+import gama.core.util.file.GamaObjFile;
+import gama.core.util.matrix.GamaField;
+import gama.extension.image.GamaImageFile;
+import gama.core.util.matrix.IField;
+import gama.gaml.operators.Cast;
+import gama.gaml.operators.Maths;
+import gama.gaml.statements.draw.DrawingAttributes;
+import gama.gaml.statements.draw.IMeshColorProvider;
+import gama.gaml.statements.draw.MeshDrawingAttributes;
+import gama.gaml.statements.draw.ShapeDrawingAttributes;
+import gama.gaml.statements.draw.TextDrawingAttributes;
+
+public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
+
+    private Canvas canvas;
+    private Canvas mainCanvas;
+    private Bitmap overlayBitmap;
+    private Canvas overlayCanvas;
+    private boolean overlayActive = false;
+    private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint bgPaint = new Paint();
+    private final Path workPath = new Path();
+    private final RectF workRect = new RectF();
+
+    private float currentAlpha = 1f;
+    private Rectangle2D.Double rect = new Rectangle2D.Double();
+    private int drawnShapesCount = 0;
+
+    private final AndroidScene3D scene3d = new AndroidScene3D();
+
+    private GamaField elevationField;
+    private double elevationEnvW, elevationEnvH, elevationScale;
+
+    void beginFrame() {
+        elevationField = null;
+    }
+
+    /**
+     * Height of the display's elevation grid at world coordinates (x, y), computed the same
+     * way the triangulated field mesh is drawn: bilinear interpolation of the field values
+     * over the environment bounds, scaled by the mesh z scale. Returns 0 when no elevation
+     * grid has been drawn this frame (agents then stay at their declared location).
+     */
+    private double terrainLift(double x, double y) {
+        if (elevationField == null || !(elevationEnvW > 0) || !(elevationEnvH > 0)) return 0;
+        int cols = elevationField.numCols, rows = elevationField.numRows;
+        double[] data = elevationField.getMatrix();
+        if (data == null || cols < 2 || rows < 2) return 0;
+        double fx = x / elevationEnvW * (cols - 1);
+        double fy = y / elevationEnvH * (rows - 1);
+        if (fx < 0) fx = 0; else if (fx > cols - 1) fx = cols - 1;
+        if (fy < 0) fy = 0; else if (fy > rows - 1) fy = rows - 1;
+        int i0 = (int) fx, j0 = (int) fy;
+        int i1 = Math.min(i0 + 1, cols - 1);
+        int j1 = Math.min(j0 + 1, rows - 1);
+        double ti = fx - i0, tj = fy - j0;
+        double v00 = data[j0 * cols + i0];
+        double v10 = data[j0 * cols + i1];
+        double v01 = data[j1 * cols + i0];
+        double v11 = data[j1 * cols + i1];
+        if (Double.isNaN(v00) || Double.isNaN(v10) || Double.isNaN(v01) || Double.isNaN(v11)) return 0;
+        return ((v00 * (1 - ti) + v10 * ti) * (1 - tj) + (v01 * (1 - ti) + v11 * ti) * tj) * elevationScale;
+    }
+
+    boolean is3dMode() {
+        return data != null && data.is3D();
+    }
+
+    void rotateCamera3D(float dyawDeg, float dpitchDeg) {
+        scene3d.rotateBy(dyawDeg, dpitchDeg);
+    }
+
+    void resetCamera3D() {
+        scene3d.resetRotation();
+    }
+
+    private static class CachedLayerImage {
+        final Bitmap bitmap;
+        final float x, y;
+        final int w, h;
+        final String layerName;
+        CachedLayerImage(Bitmap b, float x, float y, int w, int h, String name) {
+            this.bitmap = b; this.x = x; this.y = y; this.w = w; this.h = h; this.layerName = name;
+        }
+    }
+    private final Map<String, CachedLayerImage> cachedImages = new HashMap<>();
+
+    private final Map<String, Object> textureCache = new HashMap<>();
+
+    public int getDrawnShapesCount() { return drawnShapesCount; }
+    public void resetDrawnShapesCount() { drawnShapesCount = 0; layerCount = 0; shapeDrawCount = 0; }
+
+    public AndroidDisplayGraphics() {
+        fillPaint.setStyle(Paint.Style.FILL);
+        strokePaint.setStyle(Paint.Style.STROKE);
+        strokePaint.setStrokeWidth(1f);
+        textPaint.setTypeface(android.graphics.Typeface.create("Helvetica", android.graphics.Typeface.BOLD));
+        textPaint.setTextSize(24f);
+    }
+
+    // Override ratio methods to use surface's getEnvWidth/getEnvHeight which read
+    // the real simulation envelope, instead of data.getEnvWidth which may be a stale fallback.
+    @Override
+    public double getxRatioBetweenPixelsAndModelUnits() {
+        double envW = getSurface() != null ? getSurface().getEnvWidth() : data.getEnvWidth();
+        if (envW <= 0) return 1.0;
+        if (currentLayer != null) {
+            double layerW = currentLayer.getData().getSizeInPixels().x;
+            if (layerW > 0) return layerW / envW;
+        }
+        return getDisplayWidth() / envW;
+    }
+
+    @Override
+    public double getyRatioBetweenPixelsAndModelUnits() {
+        double envH = getSurface() != null ? getSurface().getEnvHeight() : data.getEnvHeight();
+        if (envH <= 0) return 1.0;
+        if (currentLayer instanceof OverlayLayer) return getxRatioBetweenPixelsAndModelUnits();
+        if (currentLayer != null) {
+            double layerH = currentLayer.getData().getSizeInPixels().y;
+            if (layerH > 0) return layerH / envH;
+        }
+        return getDisplayHeight() / envH;
+    }
+
+    public void setCanvas(Canvas c) { mainCanvas = c; this.canvas = c; }
+    public Canvas getCanvas() { return canvas; }
+
+    private int gamaColorToArgb(GamaColor c) {
+        if (c == null) return 0xFF000000;
+        int argb = c.getRGB();
+        if ((argb >>> 24) == 0) return 0xFF000000 | (argb & 0xFFFFFF);
+        return argb;
+    }
+
+    private int awtColorToArgb(java.awt.Color c) {
+        if (c == null) return 0xFF000000;
+        return c.getRGB();
+    }
+
+    private int colorWithAlpha(GamaColor c, double alpha) {
+        int argb = gamaColorToArgb(c);
+        int colorA = (argb >>> 24) & 0xFF;
+        int a = (int) (alpha * colorA);
+        return (argb & 0x00FFFFFF) | (Math.min(255, Math.max(0, a)) << 24);
+    }
+
+    private float toPixelX(double modelX) { return (float) xFromModelUnitsToPixels(modelX); }
+    private float toPixelY(double modelY) { return (float) yFromModelUnitsToPixels(modelY); }
+    private float toPixelW(double modelW) { return (float) wFromModelUnitsToPixels(modelW); }
+    private float toPixelH(double modelH) { return (float) hFromModelUnitsToPixels(modelH); }
+
+    private int shapeDrawCount = 0;
+    @Override
+    public Rectangle2D drawShape(Geometry gg, DrawingAttributes attributes) {
+        if (gg == null || canvas == null) return null;
+        if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
+            drawnShapesCount++;
+            drawShape3D(gg, attributes);
+            return rect;
+        }
+        drawnShapesCount++;
+        shapeDrawCount++;
+
+        Geometry geometry = gg;
+
+        if (geometry instanceof GeometryCollection && !(geometry instanceof MultiPolygon) && !(geometry instanceof MultiLineString)) {
+            Rectangle2D.Double result = new Rectangle2D.Double();
+            for (int i = 0; i < geometry.getNumGeometries(); i++) {
+                Rectangle2D r = drawShape(geometry.getGeometryN(i), attributes);
+                if (r != null) result.add(r);
+            }
+            return result;
+        }
+
+        boolean isLine = geometry instanceof Lineal || geometry instanceof Puntal;
+
+        GamaColor border = isLine ? attributes.getColor() : attributes.getBorder();
+        if (border == null && attributes.isEmpty()) border = attributes.getColor();
+        if (highlight) {
+            if (border != null) border = attributes.getColor();
+        }
+
+        GamaPoint loc = attributes.getLocation();
+        double locDx = 0, locDy = 0;
+        if (loc != null) {
+            locDx = toPixelX(loc.getX()) - getXOffsetInPixels();
+            locDy = toPixelY(loc.getY()) - getYOffsetInPixels();
+        }
+
+        workPath.reset();
+        geometryToPath(geometry, workPath, locDx, locDy);
+
+        try {
+            float left = toPixelX(geometry.getEnvelopeInternal().getMinX());
+            float top = toPixelY(geometry.getEnvelopeInternal().getMaxY());
+            float right = toPixelX(geometry.getEnvelopeInternal().getMaxX());
+            float bottom = toPixelY(geometry.getEnvelopeInternal().getMinY());
+            float rw = right - left;
+            float rh = Math.abs(bottom - top);
+            rect.setRect(left + locDx, Math.min(top, bottom) + locDy, rw, rh);
+
+            if (!isLine && !attributes.isEmpty()) {
+                fillPaint.setColor(colorWithAlpha(attributes.getColor(), currentAlpha));
+                canvas.drawPath(workPath, fillPaint);
+            }
+            if (isLine || border != null || attributes.isEmpty()) {
+                strokePaint.setColor(colorWithAlpha(border != null ? border : attributes.getColor(), currentAlpha));
+                canvas.drawPath(workPath, strokePaint);
+            }
+            return rect;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void geometryToPath(Geometry geom, Path path, double locDx, double locDy) {
+        if (geom instanceof LinearRing || "Polygon".equals(geom.getGeometryType())) {
+            LinearRing shell = (geom instanceof LinearRing) ? (LinearRing) geom :
+                    ((org.locationtech.jts.geom.Polygon) geom).getExteriorRing();
+            coordsToPath(shell.getCoordinates(), path, true, locDx, locDy);
+            if (geom instanceof org.locationtech.jts.geom.Polygon) {
+                org.locationtech.jts.geom.Polygon poly = (org.locationtech.jts.geom.Polygon) geom;
+                for (int i = 0; i < poly.getNumInteriorRing(); i++) {
+                    coordsToPath(poly.getInteriorRingN(i).getCoordinates(), path, true, locDx, locDy);
+                }
+            }
+        } else if ("MultiPolygon".equals(geom.getGeometryType())) {
+            for (int i = 0; i < geom.getNumGeometries(); i++) {
+                geometryToPath(geom.getGeometryN(i), path, locDx, locDy);
+            }
+        } else if ("MultiLineString".equals(geom.getGeometryType())) {
+            for (int i = 0; i < geom.getNumGeometries(); i++) {
+                geometryToPath(geom.getGeometryN(i), path, locDx, locDy);
+            }
+        } else if ("LineString".equals(geom.getGeometryType()) || "LinearRing".equals(geom.getGeometryType())) {
+            coordsToPath(geom.getCoordinates(), path, false, locDx, locDy);
+        } else if ("Point".equals(geom.getGeometryType())) {
+            Coordinate c = geom.getCoordinate();
+            path.addCircle(toPixelX(c.x) + (float) locDx, toPixelY(c.y) + (float) locDy, 3f, Path.Direction.CW);
+        } else if (geom instanceof GeometryCollection) {
+            for (int i = 0; i < geom.getNumGeometries(); i++) {
+                geometryToPath(geom.getGeometryN(i), path, locDx, locDy);
+            }
+        } else {
+            Coordinate[] coords = geom.getCoordinates();
+            if (coords != null && coords.length > 0) {
+                coordsToPath(coords, path, false, locDx, locDy);
+            }
+        }
+    }
+
+    private void coordsToPath(Coordinate[] coords, Path path, boolean close, double locDx, double locDy) {
+        if (coords == null || coords.length == 0) return;
+        path.moveTo(toPixelX(coords[0].x) + (float) locDx, toPixelY(coords[0].y) + (float) locDy);
+        for (int i = 1; i < coords.length; i++) {
+            path.lineTo(toPixelX(coords[i].x) + (float) locDx, toPixelY(coords[i].y) + (float) locDy);
+        }
+        if (close) path.close();
+    }
+
+    // ------------------------------------------------------------------
+    // 3D rendering support. In 3D mode the geometry reaches this class
+    // untransformed (ShapeDrawer leaves it alone when is2D() is false), so the
+    // location/depth facets have to be applied here, mimicking the desktop
+    // OpenGL GeometryDrawer.
+    // ------------------------------------------------------------------
+
+    private void drawShape3D(Geometry geometry, DrawingAttributes attributes) {
+        if (geometry == null) return;
+        double[] center = bboxCenter3D(geometry);
+        double k = modelScale(geometry, attributes.getSize());
+        drawShape3DRec(geometry, attributes, center, k);
+    }
+
+    /** 3D bounding-box center of a geometry (z = 0 when a vertex has no z). */
+    private double[] bboxCenter3D(Geometry geometry) {
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+        for (Coordinate c : geometry.getCoordinates()) {
+            double z = Double.isNaN(c.z) ? 0 : c.z;
+            if (c.x < minX) minX = c.x;
+            if (c.x > maxX) maxX = c.x;
+            if (c.y < minY) minY = c.y;
+            if (c.y > maxY) maxY = c.y;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+        if (minX > maxX) return new double[]{0, 0, 0};
+        return new double[]{(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2};
+    }
+
+    /** Uniform model scale factor so the model's max bounding dimension matches the target size. */
+    private double modelScale(Geometry geometry, gama.core.common.geometry.Scaling3D size) {
+        double k = 1;
+        if (size == null) return k;
+        double target = size.getX();
+        if (size.getY() > target) target = size.getY();
+        if (size.getZ() > target) target = size.getZ();
+        if (target <= 0) return k;
+        double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+        for (Coordinate c : geometry.getCoordinates()) {
+            double z = Double.isNaN(c.z) ? 0 : c.z;
+            if (c.x < minX) minX = c.x;
+            if (c.x > maxX) maxX = c.x;
+            if (c.y < minY) minY = c.y;
+            if (c.y > maxY) maxY = c.y;
+            if (z < minZ) minZ = z;
+            if (z > maxZ) maxZ = z;
+        }
+        if (minX > maxX) return k;
+        double nat = Math.max(maxX - minX, Math.max(maxY - minY, maxZ - minZ));
+        if (nat > 0) k = target / nat;
+        return k;
+    }
+
+    private void drawShape3DRec(Geometry geometry, DrawingAttributes attributes, double[] center, double k) {
+        if (geometry instanceof GeometryCollection gc && !(gc instanceof MultiLineString)) {
+            for (int i = 0; i < gc.getNumGeometries(); i++) {
+                drawShape3DRec(gc.getGeometryN(i), attributes, center, k);
+            }
+            return;
+        }
+        try {
+            GamaColor color = attributes.getColor();
+            GamaColor borderColor = attributes.getBorder();
+            if (borderColor == null && attributes.isEmpty()) borderColor = color;
+            if (highlight && borderColor != null) borderColor = color;
+            int fill = colorWithAlpha(color, currentAlpha);
+            int border = borderColor != null ? colorWithAlpha(borderColor, currentAlpha) : 0;
+            GamaPoint loc = attributes.getLocation();
+            Double depthD = attributes.getDepth();
+            double depth = depthD != null ? depthD : 0.0;
+            IShape.Type type = attributes.getType();
+
+            List<?> texAttrs = attributes.getTextures();
+            Object tex = texAttrs != null && !texAttrs.isEmpty() ? loadTexture(texAttrs, getSurface().getScope()) : null;
+            int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
+
+            if (geometry instanceof Polygon poly) {
+                Coordinate[] shell = poly.getExteriorRing().getCoordinates();
+                if (shell == null || shell.length < 3) return;
+                double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY;
+                double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY;
+                double minZ = Double.POSITIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
+                for (Coordinate c : shell) {
+                    if (c.x < minX) minX = c.x;
+                    if (c.x > maxX) maxX = c.x;
+                    if (c.y < minY) minY = c.y;
+                    if (c.y > maxY) maxY = c.y;
+                    double cz = Double.isNaN(c.z) ? 0 : c.z;
+                    if (cz < minZ) minZ = cz;
+                    if (cz > maxZ) maxZ = cz;
+                }
+                double w = maxX - minX;
+                double h = maxY - minY;
+                double cx = loc != null ? loc.getX() : (minX + maxX) / 2;
+                double cy = loc != null ? loc.getY() : (minY + maxY) / 2;
+
+                if (type == IShape.Type.CUBE || type == IShape.Type.BOX) {
+                    double lift = loc != null ? terrainLift(loc.getX(), loc.getY()) : 0;
+                    double cz = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : (depth > 0 ? depth / 2 : 0);
+                    cz += lift;
+                    double d = depth > 0 ? depth : Math.max(w, h);
+                    if (tex != null) {
+                        double bz0 = cz - d / 2, bz1 = cz + d / 2;
+                        Coordinate[] boxShell = new Coordinate[] {
+                            new Coordinate(cx - w / 2, cy - h / 2), new Coordinate(cx + w / 2, cy - h / 2),
+                            new Coordinate(cx + w / 2, cy + h / 2), new Coordinate(cx - w / 2, cy + h / 2) };
+                        addPrism3D(boxShell, bz0, bz1, 0, 0, fill, border, tex, tint);
+                    } else {
+                        gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+                        if (rot != null) {
+                            addRotatedBox(cx, cy, cz, w, h, d, rot, fill, border, 1f);
+                        } else {
+                            scene3d.addBox(cx, cy, cz, w, h, d, fill, border, 1f);
+                        }
+                    }
+                } else {
+                    double ox = 0, oy = 0, oz = 0;
+                    if (loc != null) {
+                        double lift = terrainLift(loc.getX(), loc.getY());
+                        ox = loc.getX() - center[0];
+                        oy = loc.getY() - center[1];
+                        oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
+                    }
+                    gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+                    if (depth > 0) {
+                        double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
+                        z0 += terrainLift(cx, cy);
+                        Coordinate[] ts = transformShell(shell, center, k, rot);
+                        addPrism3D(ts, z0, z0 + depth, ox, oy, fill, border, tex, tint);
+                    } else {
+                        float[] model = new float[shell.length * 3];
+                        for (int i = 0; i < shell.length; i++) {
+                            double vz = Double.isNaN(shell[i].z) ? 0 : shell[i].z;
+                            double[] p = transformVertex(shell[i].x, shell[i].y, vz, center, k, rot);
+                            model[i * 3] = (float) (p[0] + ox);
+                            model[i * 3 + 1] = (float) (p[1] + oy);
+                            model[i * 3 + 2] = (float) (p[2] + oz);
+                        }
+                        if (tex != null) {
+                            scene3d.addTexturedPoly(model, shell.length, envelopeUvs(model, shell.length), tex, tint, 0, 0);
+                        } else {
+                            scene3d.addPoly(model, shell.length, fill, border, 1f, false);
+                        }
+                    }
+                }
+            } else if (geometry instanceof LineString ls) {
+                addLine3D(ls, border, 1f);
+            } else if (geometry instanceof MultiLineString mls) {
+                for (int i = 0; i < mls.getNumGeometries(); i++) {
+                    addLine3D((LineString) mls.getGeometryN(i), border, 1f);
+                }
+            } else if (geometry instanceof LinearRing ring) {
+                addLine3D(ring, border, 1f);
+            } else if (geometry instanceof Point pt) {
+                Coordinate c = pt.getCoordinate();
+                double z = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ())
+                        : (Double.isNaN(c.z) ? 0 : c.z);
+                double cxPt = loc != null ? loc.getX() : c.x;
+                double cyPt = loc != null ? loc.getY() : c.y;
+                scene3d.addBox(c.x, c.y, z + terrainLift(cxPt, cyPt), 1, 1, 1, fill, border, 1f);
+            }
+        } catch (Exception e) {
+            android.util.Log.w("ANDROID_3D", "drawShape3D: " + e);
+        }
+    }
+
+    /** Scale a vertex about the geometry center, then rotate it about the center. */
+    private double[] transformVertex(double x, double y, double z, double[] center, double k,
+            gama.core.common.geometry.AxisAngle rot) {
+        double rx = (x - center[0]) * k;
+        double ry = (y - center[1]) * k;
+        double rz = (z - center[2]) * k;
+        if (rot != null) {
+            double[] p = rotatePoint(rx, ry, rz, 0, 0, 0, rot);
+            rx = p[0];
+            ry = p[1];
+            rz = p[2];
+        }
+        return new double[] { center[0] + rx, center[1] + ry, center[2] + rz };
+    }
+
+    /**
+     * Rotate a point about an origin using the same quaternion GAMA builds in
+     * Rotation3D(AxisAngle): the half-angle is negated, so the effective rotation
+     * is -angle around the (normalized) axis. Matches desktop rendering exactly.
+     */
+    private static double[] rotatePoint(double px, double py, double pz,
+            double cx, double cy, double cz, gama.core.common.geometry.AxisAngle rot) {
+        double rx = px - cx, ry = py - cy, rz = pz - cz;
+        gama.core.metamodel.shape.GamaPoint axis = rot.getAxis();
+        double ax = axis.getX(), ay = axis.getY(), az = axis.getZ();
+        double norm = Math.sqrt(ax * ax + ay * ay + az * az);
+        if (norm == 0) {
+            ax = 0;
+            ay = 0;
+            az = 1;
+            norm = 1;
+        }
+        double a = -0.5 * Math.toRadians(rot.getAngle());
+        double q0 = Math.cos(a);
+        double s = Math.sin(a) / norm;
+        double q1 = s * ax, q2 = s * ay, q3 = s * az;
+        double t = q1 * rx + q2 * ry + q3 * rz;
+        double nx = 2 * (q0 * (q0 * rx + q2 * rz - q3 * ry) + q1 * t) - rx;
+        double ny = 2 * (q0 * (q0 * ry + q3 * rx - q1 * rz) + q2 * t) - ry;
+        double nz = 2 * (q0 * (q0 * rz + q1 * ry - q2 * rx) + q3 * t) - rz;
+        return new double[] { nx + cx, ny + cy, nz + cz };
+    }
+
+    /** Axis-aligned box rotated about its center by the given AxisAngle (degrees). */
+    private void addRotatedBox(double cx, double cy, double cz, double w, double h, double d,
+                               gama.core.common.geometry.AxisAngle rot, int fill, int border, float stroke) {
+        double hw = w / 2, hh = h / 2, hd = d / 2;
+        double[] corners = new double[8 * 3];
+        int idx = 0;
+        for (double sx : new double[]{-hw, hw}) {
+            for (double sy : new double[]{-hh, hh}) {
+                for (double sz : new double[]{-hd, hd}) {
+                    double[] p = rotatePoint(sx, sy, sz, 0, 0, 0, rot);
+                    corners[idx++] = cx + p[0];
+                    corners[idx++] = cy + p[1];
+                    corners[idx++] = cz + p[2];
+                }
+            }
+        }
+        int i000 = 0, i100 = 1, i110 = 3, i010 = 2, i001 = 4, i101 = 5, i111 = 7, i011 = 6;
+        addBoxFace(corners, i001, i101, i111, i011, fill, border, stroke, true);   // +z
+        addBoxFace(corners, i010, i110, i100, i000, fill, border, stroke, true);   // -z
+        addBoxFace(corners, i100, i110, i111, i101, fill, border, stroke, true);   // +x
+        addBoxFace(corners, i001, i011, i010, i000, fill, border, stroke, true);   // -x
+        addBoxFace(corners, i110, i010, i011, i111, fill, border, stroke, true);   // +y
+        addBoxFace(corners, i000, i100, i101, i001, fill, border, stroke, true);   // -y
+    }
+
+    private void addBoxFace(double[] c, int a, int b, int cc, int d,
+                            int fill, int border, float stroke, boolean cull) {
+        float[] model = new float[]{
+                (float) c[a * 3], (float) c[a * 3 + 1], (float) c[a * 3 + 2],
+                (float) c[b * 3], (float) c[b * 3 + 1], (float) c[b * 3 + 2],
+                (float) c[cc * 3], (float) c[cc * 3 + 1], (float) c[cc * 3 + 2],
+                (float) c[d * 3], (float) c[d * 3 + 1], (float) c[d * 3 + 2]
+        };
+        scene3d.addPoly(model, 4, fill, border, stroke, cull);
+    }
+
+    private Coordinate[] transformShell(Coordinate[] shell, double[] center, double k,
+            gama.core.common.geometry.AxisAngle rot) {
+        Coordinate[] out = new Coordinate[shell.length];
+        for (int i = 0; i < shell.length; i++) {
+            double vz = Double.isNaN(shell[i].z) ? 0 : shell[i].z;
+            double[] p = transformVertex(shell[i].x, shell[i].y, vz, center, k, rot);
+            out[i] = new Coordinate(p[0], p[1], p[2]);
+        }
+        return out;
+    }
+
+    private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border) {
+        addPrism3D(shell, z0, z1, ox, oy, fill, border, null, 0);
+    }
+
+    private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border,
+                            Object tex, int tint) {
+        int n = shell.length;
+        float[] bottom = new float[n * 3];
+        float[] top = new float[n * 3];
+        for (int i = 0; i < n; i++) {
+            bottom[i * 3] = (float) (shell[i].x + ox);
+            bottom[i * 3 + 1] = (float) (shell[i].y + oy);
+            bottom[i * 3 + 2] = (float) z0;
+            top[i * 3] = (float) (shell[i].x + ox);
+            top[i * 3 + 1] = (float) (shell[i].y + oy);
+            top[i * 3 + 2] = (float) z1;
+        }
+        if (tex != null) {
+            scene3d.addTexturedPoly(top, n, envelopeUvs(top, n), tex, tint, 0, 0);
+            for (int i = 0; i < n - 1; i++) {
+                scene3d.addPoly(wall(bottom, top, i), 4, fill, border, 1f, false);
+            }
+        } else {
+            scene3d.addPoly(bottom, n, fill, border, 1f, false);
+            scene3d.addPoly(top, n, fill, border, 1f, false);
+            for (int i = 0; i < n - 1; i++) {
+                scene3d.addPoly(wall(bottom, top, i), 4, fill, border, 1f, false);
+            }
+        }
+    }
+
+    private float[] wall(float[] bottom, float[] top, int i) {
+        float[] wall = new float[12];
+        wall[0] = bottom[i * 3]; wall[1] = bottom[i * 3 + 1]; wall[2] = bottom[i * 3 + 2];
+        wall[3] = bottom[(i + 1) * 3]; wall[4] = bottom[(i + 1) * 3 + 1]; wall[5] = bottom[(i + 1) * 3 + 2];
+        wall[6] = top[(i + 1) * 3]; wall[7] = top[(i + 1) * 3 + 1]; wall[8] = top[(i + 1) * 3 + 2];
+        wall[9] = top[i * 3]; wall[10] = top[i * 3 + 1]; wall[11] = top[i * 3 + 2];
+        return wall;
+    }
+
+    /** Per-vertex u,v over a polygon's own envelope, mirroring the desktop OpenGL texture mapping. */
+    private float[] envelopeUvs(float[] model, int n) {
+        float minX = Float.POSITIVE_INFINITY, maxX = Float.NEGATIVE_INFINITY;
+        float minY = Float.POSITIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
+        for (int i = 0; i < n; i++) {
+            float x = model[i * 3], y = model[i * 3 + 1];
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        float w = maxX - minX, h = maxY - minY;
+        float[] uv = new float[n * 2];
+        for (int i = 0; i < n; i++) {
+            float x = model[i * 3], y = model[i * 3 + 1];
+            uv[i * 2] = w > 0 ? 1f - (x - minX) / w : 0f;
+            uv[i * 2 + 1] = h > 0 ? (y - minY) / h : 0f;
+        }
+        return uv;
+    }
+
+    private void addLine3D(LineString ls, int color, float stroke) {
+        Coordinate[] cs = ls.getCoordinates();
+        if (cs.length < 2) return;
+        for (int i = 0; i < cs.length - 1; i++) {
+            float[] m = new float[6];
+            m[0] = (float) cs[i].x;
+            m[1] = (float) cs[i].y;
+            m[2] = Double.isNaN(cs[i].z) ? 0f : (float) cs[i].z;
+            m[3] = (float) cs[i + 1].x;
+            m[4] = (float) cs[i + 1].y;
+            m[5] = Double.isNaN(cs[i + 1].z) ? 0f : (float) cs[i + 1].z;
+            scene3d.addLine(m, color, stroke);
+        }
+    }
+
+    @Override
+    public Rectangle2D drawImage(BufferedImage img, DrawingAttributes attributes) {
+        if (img == null || canvas == null) return null;
+        if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
+            return drawImage3D(img, attributes);
+        }
+
+        float curX, curY;
+        if (attributes.getLocation() == null) {
+            curX = (float) getXOffsetInPixels();
+            curY = (float) getYOffsetInPixels();
+        } else {
+            curX = toPixelX(attributes.getLocation().getX());
+            curY = toPixelY(attributes.getLocation().getY());
+        }
+
+        int curWidth, curHeight;
+        if (attributes.getSize() == null) {
+            curWidth = getLayerWidth();
+            curHeight = getLayerHeight();
+        } else {
+            curWidth = (int) toPixelW(attributes.getSize().getX());
+            curHeight = (int) toPixelH(attributes.getSize().getY());
+        }
+
+        boolean fullWorld = attributes.getSize() == null && attributes.getLocation() == null;
+        Bitmap bitmap = bufferedImageToBitmap(img, !fullWorld);
+        if (bitmap == null) return null;
+
+        if (currentLayer != null) {
+            String layerName = currentLayer.getName();
+            cachedImages.put(layerName, new CachedLayerImage(bitmap, curX, curY, curWidth, curHeight, layerName));
+        }
+
+        canvas.save();
+        Double angle = attributes.getAngle();
+        if (angle != null) {
+            float centerX = curX + curWidth / 2f;
+            float centerY = curY + curHeight / 2f;
+            canvas.rotate(angle.floatValue(), centerX, centerY);
+        }
+        canvas.drawBitmap(bitmap, null, new RectF(curX, curY, curX + curWidth, curY + curHeight), bitmapPaint);
+        canvas.restore();
+        drawnShapesCount++;
+
+        rect.setRect(curX, curY, curWidth, curHeight);
+        return rect;
+    }
+
+    /** Renders a 2D image as a billboard in the 3D scene. */
+    private Rectangle2D drawImage3D(BufferedImage img, DrawingAttributes attributes) {
+        if (img == null) return null;
+        boolean dynamicImage = attributes.getSize() == null && attributes.getLocation() == null;
+        Bitmap bitmap = bufferedImageToBitmap(img, !dynamicImage);
+        if (bitmap == null) return null;
+
+        IScope scope = getSurface().getScope();
+        GamaPoint loc = attributes.getLocation();
+        double x = loc != null ? loc.getX() : 0;
+        double y = loc != null ? loc.getY() : 0;
+        double z = (loc != null && !Double.isNaN(loc.getZ())) ? loc.getZ() : 0.5;
+        z += terrainLift(x, y);
+
+        gama.core.common.geometry.Scaling3D size = attributes.getSize();
+        double w = size != null ? size.getX() : 1.0;
+        double h = size != null ? size.getY() : 1.0;
+        if (w <= 0) w = 1.0;
+        if (h <= 0) h = 1.0;
+
+        // A 3D image with no location/size (e.g. the GridLayer's cell image) covers
+        // the whole environment, like ImageLayer in desktop GAMA.
+        if (size == null && loc == null) {
+            try {
+                if (scope != null) {
+                    gama.core.metamodel.agent.IMacroAgent sim = scope.getSimulation();
+                    if (sim != null) {
+                        gama.core.common.geometry.Envelope3D env = sim.getEnvelope();
+                        if (env != null) {
+                            x = env.getMinX() + env.getWidth() / 2;
+                            y = env.getMinY() + env.getHeight() / 2;
+                            w = env.getWidth();
+                            h = env.getHeight();
+                            env.dispose();
+                        }
+                    }
+                }
+            } catch (Throwable t) {}
+        }
+
+        int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
+
+        // A display-layer background image (e.g. "image terrain") is placed at the
+        // environment centre with the full environment size (see ImageLayer.privateDraw).
+        // Such images must lie flat on the ground plane so they rotate with the world.
+        boolean fullWorld = false;
+        try {
+            gama.core.metamodel.agent.IMacroAgent sim = scope != null ? scope.getSimulation() : null;
+            if (sim != null) {
+                gama.core.common.geometry.Envelope3D env = sim.getEnvelope();
+                if (env != null) {
+                    fullWorld = w >= env.getWidth() * 0.9 && h >= env.getHeight() * 0.9;
+                    env.dispose();
+                }
+            }
+        } catch (Throwable t) {}
+
+        if (fullWorld) {
+            scene3d.addTexturedPoly(new float[]{
+                    (float) (x - w / 2), (float) (y - h / 2), (float) z,
+                    (float) (x + w / 2), (float) (y - h / 2), (float) z,
+                    (float) (x + w / 2), (float) (y + h / 2), (float) z,
+                    (float) (x - w / 2), (float) (y + h / 2), (float) z
+            }, 4, new float[]{0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f}, bitmap, tint, 0, 0f);
+        } else {
+            // Agent sprite: a flat quad lying in the XY (ground) plane at height z,
+            // rotated by the agent's heading (DrawingAttributes.getRotation()) around
+            // its Z axis. GAMA's default 3D camera looks straight down, so sprites must
+            // lie in the ground plane to be visible and to match desktop GAMA's
+            // orientation (rotate: heading turns them in the XY plane).
+            gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+            double hw = w / 2, hh = h / 2;
+            double[] center = {x, y, z};
+            double[][] corners = {
+                    {x - hw, y - hh, z}, {x + hw, y - hh, z},
+                    {x + hw, y + hh, z}, {x - hw, y + hh, z}
+            };
+            float[] model = new float[12];
+            for (int i = 0; i < 4; i++) {
+                double[] p = transformVertex(corners[i][0], corners[i][1], corners[i][2], center, 1.0, rot);
+                model[i * 3] = (float) p[0];
+                model[i * 3 + 1] = (float) p[1];
+                model[i * 3 + 2] = (float) p[2];
+            }
+            scene3d.addTexturedPoly(model, 4, new float[]{0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f}, bitmap, tint, 0, 0f);
+        }
+
+        drawnShapesCount++;
+        rect.setRect(0, 0, 0, 0);
+        return rect;
+    }
+
+    public static Bitmap bufferedImageToBitmap(BufferedImage img) {
+        return bufferedImageToBitmap(img, true);
+    }
+
+    /** Converts a BufferedImage to a Bitmap. When `cache` is false the per-image
+     * cache is bypassed: used for dynamic images (e.g. GridLayer cell buffers that
+     * GAMA reuses across frames), whose pixels change every step. */
+    public static Bitmap bufferedImageToBitmap(BufferedImage img, boolean cache) {
+        if (img == null) return null;
+        Bitmap cached = cache ? IMAGE_TO_BITMAP.get(img) : null;
+        if (cached != null) return cached;
+        int w = img.getWidth();
+        int h = img.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        int[] pixels = new int[w * h];
+        img.getRGB(0, 0, w, h, pixels, 0, w);
+        int type = img.getType();
+
+        int nonWhite = 0;
+        int sample = Math.min(pixels.length, 100);
+        for (int i = 0; i < sample; i++) {
+            if (pixels[i] != 0 && pixels[i] != -1 && pixels[i] != (int)0xFFFFFFFF) nonWhite++;
+        }
+        int centerY = h / 2;
+        int centerX = w / 2;
+        int centerPx = pixels[centerY * w + centerX];
+        int belowPx = pixels[(centerY + h/6) * w + centerX];
+        int leftPx = pixels[centerY * w + (centerX - w/6)];
+        int rightPx = pixels[centerY * w + (centerX + w/6)];
+        int topPx = pixels[(centerY - h/6) * w + centerX];
+
+        if (type == BufferedImage.TYPE_INT_ARGB || type == BufferedImage.TYPE_INT_ARGB_PRE) {
+            // Pixels already contain alpha in the high byte from getRGB(). Just use as-is.
+        } else if (type == BufferedImage.TYPE_INT_RGB || type == BufferedImage.TYPE_3BYTE_BGR) {
+            int tl = pixels[0];
+            int tr = pixels[w - 1];
+            int bl = pixels[(h - 1) * w];
+            int br = pixels[(h - 1) * w + w - 1];
+            int bg = (tl == tr && tl == bl) ? tl : (tl == tr) ? tl : (bl == br) ? bl : -1;
+            if (bg != -1) {
+                for (int i = 0; i < pixels.length; i++) {
+                    if (pixels[i] == bg) {
+                        pixels[i] = 0;
+                    } else {
+                        pixels[i] = pixels[i] | 0xFF000000;
+                    }
+                }
+            } else {
+                for (int i = 0; i < pixels.length; i++) {
+                    pixels[i] = pixels[i] | 0xFF000000;
+                }
+            }
+        } else if (img.getColorModel().hasAlpha()) {
+            for (int i = 0; i < pixels.length; i++) {
+                int a = (pixels[i] >> 24) & 0xFF;
+                if (a == 0) {
+                    pixels[i] = 0;
+                }
+            }
+        } else {
+            for (int i = 0; i < pixels.length; i++) {
+                pixels[i] = pixels[i] | 0xFF000000;
+            }
+        }
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+        if (cache) {
+            if (IMAGE_TO_BITMAP.size() > 256) IMAGE_TO_BITMAP.clear();
+            IMAGE_TO_BITMAP.put(img, bmp);
+        }
+        return bmp;
+    }
+
+    /** Caches the Bitmap conversion per source BufferedImage (GAMA reuses image objects per frame). */
+    private static final java.util.IdentityHashMap<BufferedImage, Bitmap> IMAGE_TO_BITMAP =
+            new java.util.IdentityHashMap<>();
+
+    /** Converts a BufferedImage to a texture bitmap without any background keying. */
+    private static Bitmap textureToBitmap(BufferedImage img) {
+        if (img == null) return null;
+        int w = img.getWidth();
+        int h = img.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        int[] pixels = new int[w * h];
+        img.getRGB(0, 0, w, h, pixels, 0, w);
+        int type = img.getType();
+        if (type != BufferedImage.TYPE_INT_ARGB && type != BufferedImage.TYPE_INT_ARGB_PRE) {
+            boolean hasAlpha = img.getColorModel() != null && img.getColorModel().hasAlpha();
+            for (int i = 0; i < pixels.length; i++) {
+                if (!hasAlpha) {
+                    pixels[i] = pixels[i] | 0xFF000000;
+                } else if (((pixels[i] >>> 24) & 0xFF) == 0 && pixels[i] != 0) {
+                    pixels[i] = pixels[i] | 0xFF000000;
+                }
+            }
+        }
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+        return bmp;
+    }
+
+    /** Resolves the first element of a draw attributes texture list to a cached Bitmap or AnimatedTexture. */
+    private Object loadTexture(List<?> textures, IScope scope) {
+        if (textures == null || textures.isEmpty()) return null;
+        try {
+            Object first = textures.get(0);
+            BufferedImage bi = null;
+            String key = null;
+            if (first instanceof IImageProvider ip) {
+                if (first instanceof GamaImageFile gf) {
+                    key = gf.getPath(scope);
+                } else {
+                    key = ip.getClass().getName();
+                }
+                if (key != null && key.toLowerCase().endsWith(".gif")) {
+                    Object cachedGif = textureCache.get(key);
+                    if (cachedGif != null) return cachedGif;
+                    AndroidScene3D.AnimatedTexture at = decodeAnimatedGif(key);
+                    if (at != null) {
+                        textureCache.put(key, at);
+                        return at;
+                    }
+                }
+                bi = ip.getImage(scope, true);
+            } else if (first instanceof BufferedImage b) {
+                bi = b;
+                key = "bi@" + System.identityHashCode(b);
+            }
+            if (bi == null || key == null) return null;
+            Object cached = textureCache.get(key);
+            if (cached != null) return cached;
+            Bitmap bmp = textureToBitmap(bi);
+            if (bmp != null) textureCache.put(key, bmp);
+            return bmp;
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "loadTexture failed: " + t);
+            return null;
+        }
+    }
+
+    /**
+     * Decodes an animated GIF into its frames using android.graphics.Movie. The
+     * per-frame delays are parsed from the GIF blocks so the animation plays at
+     * its native pace. Returns null when the file is not an animated GIF.
+     */
+    static AndroidScene3D.AnimatedTexture decodeAnimatedGif(String path) {
+        try {
+            android.graphics.Movie movie;
+            try (java.io.FileInputStream fis = new java.io.FileInputStream(path)) {
+                movie = android.graphics.Movie.decodeStream(fis);
+            }
+            if (movie == null) return null;
+            int w = movie.width(), h = movie.height();
+            if (w <= 0 || h <= 0) return null;
+
+            java.util.List<Integer> delays = new java.util.ArrayList<>();
+            try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(path, "r")) {
+                byte[] hdr = new byte[6];
+                raf.readFully(hdr);
+                String magic = new String(hdr, "US-ASCII");
+                if (!"GIF87a".equals(magic) && !"GIF89a".equals(magic)) return null;
+                raf.readUnsignedShort();
+                raf.readUnsignedShort();
+                int packed = raf.readUnsignedByte();
+                raf.readUnsignedByte();
+                raf.readUnsignedByte();
+                if ((packed & 0x80) != 0) {
+                    raf.skipBytes(3 * (1 << ((packed & 0x07) + 1)));
+                }
+                int pendingDelay = 10;
+                boolean hasFrame = false;
+                while (true) {
+                    int block = raf.read();
+                    if (block == -1 || block == 0x3B) break;
+                    if (block == 0x21) {
+                        int label = raf.read();
+                        if (label == 0xF9) {
+                            raf.readUnsignedByte();
+                            raf.readUnsignedByte();
+                            int delayCs = raf.readUnsignedByte() | (raf.readUnsignedByte() << 8);
+                            raf.readUnsignedByte();
+                            raf.readUnsignedByte();
+                            pendingDelay = Math.max(1, delayCs) * 10;
+                        } else {
+                            int sz;
+                            while ((sz = raf.read()) > 0) raf.skipBytes(sz);
+                        }
+                    } else if (block == 0x2C) {
+                        raf.readUnsignedShort();
+                        raf.readUnsignedShort();
+                        raf.readUnsignedShort();
+                        raf.readUnsignedShort();
+                        int lp = raf.readUnsignedByte();
+                        if ((lp & 0x80) != 0) {
+                            raf.skipBytes(3 * (1 << ((lp & 0x07) + 1)));
+                        }
+                        raf.readUnsignedByte();
+                        int sz;
+                        while ((sz = raf.read()) > 0) raf.skipBytes(sz);
+                        delays.add(pendingDelay);
+                        hasFrame = true;
+                    }
+                }
+                if (!hasFrame) return null;
+            }
+
+            int n = delays.size();
+            Bitmap[] frames = new Bitmap[n];
+            int t = 0;
+            for (int i = 0; i < n; i++) {
+                Bitmap f = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                Canvas fc = new Canvas(f);
+                movie.setTime(t);
+                movie.draw(fc, 0, 0);
+                frames[i] = f;
+                t += Math.max(1, delays.get(i));
+            }
+            int[] delayArr = new int[n];
+            for (int i = 0; i < n; i++) delayArr[i] = delays.get(i);
+            return new AndroidScene3D.AnimatedTexture(frames, delayArr);
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "decodeAnimatedGif failed for " + path + ": " + t);
+            return null;
+        }
+    }
+
+    /** Loads and caches the texture image referenced by an OBJ material map, resolved next to the MTL file. */
+    private Bitmap loadObjTexture(IScope scope, GamaObjFile file, String mapName) {
+        try {
+            String mtl = file.mtlPath;
+            if (mtl == null || mapName == null) return null;
+            int idx = mtl.lastIndexOf('/');
+            String base = idx >= 0 ? mtl.substring(0, idx + 1) : mtl;
+            String path = base + mapName;
+            Object cached = textureCache.get(path);
+            if (cached instanceof Bitmap) return (Bitmap) cached;
+            BufferedImage bi = gama.extension.image.ImageCache.getInstance().getImageFromFile(scope, path, true, null, null);
+            if (bi == null) return null;
+            Bitmap bmp = textureToBitmap(bi);
+            if (bmp != null) textureCache.put(path, bmp);
+            return bmp;
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "loadObjTexture failed for " + mapName + ": " + t);
+            return null;
+        }
+    }
+
+    @Override
+    public Rectangle2D drawString(String string, TextDrawingAttributes attributes) {
+        if (string == null || canvas == null) return null;
+        if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
+            return drawString3D(string, attributes);
+        }
+
+        if (string.contains("\n")) {
+            Rectangle2D.Double result = new Rectangle2D.Double();
+            for (String s : string.split("\n")) {
+                Rectangle2D r = drawString(s, attributes);
+                if (r != null) {
+                    attributes.getLocation().setY(attributes.getLocation().getY() + r.getHeight());
+                    result.add(r);
+                }
+            }
+            return result;
+        }
+
+        textPaint.setColor(highlight ? gamaColorToArgb(data.getHighlightColor()) : gamaColorToArgb(attributes.getColor()));
+
+        float curX, curY;
+        if (attributes.getLocation() == null) {
+            curX = (float) getXOffsetInPixels();
+            curY = (float) getYOffsetInPixels();
+        } else {
+            curX = toPixelX(attributes.getLocation().getX());
+            curY = toPixelY(attributes.getLocation().getY());
+        }
+
+        if (attributes.getFont() != null) {
+            textPaint.setTextSize(attributes.getFont().getSize());
+        }
+
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float textWidth = textPaint.measureText(string);
+        float textHeight = fm.descent - fm.ascent;
+
+        curX -= textWidth * attributes.anchor.x;
+        curY += (textHeight - fm.descent) * attributes.anchor.y;
+
+        canvas.save();
+        if (attributes.getAngle() != null) {
+            canvas.rotate(attributes.getAngle().floatValue(),
+                    curX + textWidth / 2, curY + textHeight / 2);
+        }
+        canvas.drawText(string, curX, curY - fm.ascent, textPaint);
+        canvas.restore();
+
+        rect.setRect(curX, curY - textHeight, textWidth, textHeight);
+        return rect;
+    }
+
+    private Rectangle2D drawString3D(String string, TextDrawingAttributes attributes) {
+        GamaPoint loc = attributes.getLocation();
+        double x = loc != null ? loc.getX() : 0;
+        double y = loc != null ? loc.getY() : 0;
+        double z = loc != null && !Double.isNaN(loc.getZ()) ? loc.getZ() : 0;
+        float size = attributes.getFont() != null ? attributes.getFont().getSize() : 24f;
+        int color = highlight ? gamaColorToArgb(data.getHighlightColor()) : gamaColorToArgb(attributes.getColor());
+        scene3d.addText(x, y, z, string, color, size,
+                attributes.anchor != null ? (float) attributes.anchor.x : 0.5f,
+                attributes.anchor != null ? (float) attributes.anchor.y : 0.5f);
+        rect.setRect(x, y, 0, 0);
+        return rect;
+    }
+
+    @Override
+    public Rectangle2D drawChart(ChartOutput chart) {
+        if (chart == null || canvas == null) return null;
+        try {
+            BufferedImage im = chart.getImage(getLayerWidth(), getLayerHeight(), data.isAntialias());
+            if (im != null) {
+                im.syncBitmapToData();
+            }
+            if (im != null) {
+                drawImage(im, new DrawingAttributes(null, null, null, null, null, null));
+            }
+        } catch (Throwable t) {
+            android.util.Log.e("ANDROID_DRAW", "drawChart error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+            StackTraceElement[] stack = t.getStackTrace();
+            int limit = Math.min(stack.length, 15);
+            for (int i = 0; i < limit; i++) {
+                android.util.Log.e("ANDROID_DRAW", "  at " + stack[i].toString());
+            }
+        }
+        drawnShapesCount++;
+        return rect;
+    }
+
+    @Override
+    public Rectangle2D drawAsset(IAsset file, DrawingAttributes attributes) {
+        IScope scope = getSurface().getScope();
+        if (file instanceof IImageProvider im) {
+            java.awt.image.BufferedImage bi = im.getImage(scope, attributes.useCache());
+            if (bi == null) return null;
+            return drawImage(bi, attributes);
+        }
+        if (file instanceof GamaObjFile obj && is3dMode() && !(currentLayer instanceof OverlayLayer)) {
+            return drawObj3D(scope, obj, attributes);
+        }
+        if (!(file instanceof GamaGeometryFile)) return null;
+        gama.core.metamodel.shape.IShape shape = Cast.asGeometry(scope, file);
+        if (shape == null) return null;
+        GamaPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
+        return drawShape(shape.getInnerGeometry(), new ShapeDrawingAttributes(
+                attributes.getSize(), attributes.getDepth(), attributes.getRotation(),
+                loc, attributes.isEmpty(), attributes.getColor(), attributes.getBorder(),
+                null, attributes.getAgentIdentifier(), null, attributes.getLineWidth(), null));
+    }
+
+    /**
+     * Renders a GamaObjFile face by face in 3D, mirroring the desktop ObjFileDrawer:
+     * per-face vertex/UV data from the file, material colours and textures resolved
+     * next to the MTL file. The placement/scale/rotation transform is identical to
+     * the generic geometry path so the object stays put.
+     */
+    /** Rotate a vertex in OBJ coordinates (Y-up) by initRotation. */
+    private double[] rotateVertexOBJ(double[] v, gama.core.common.geometry.AxisAngle rot) {
+        if (rot == null || rot.angle == 0.0) return v;
+        double a = Math.toRadians(rot.angle);
+        gama.core.metamodel.shape.GamaPoint axis = rot.getAxis();
+        double ux = axis.getX(), uy = axis.getY(), uz = axis.getZ();
+        double x = v[0], y = v[1], z = v[2];
+        double c = Math.cos(a), s = Math.sin(a), t = 1 - c;
+        double rx = (c + ux * ux * t) * x + (ux * uy * t - uz * s) * y + (ux * uz * t + uy * s) * z;
+        double ry = (uy * ux * t + uz * s) * x + (c + uy * uy * t) * y + (uy * uz * t - ux * s) * z;
+        double rz = (uz * ux * t - uy * s) * x + (uz * uy * t + ux * s) * y + (c + uz * uz * t) * z;
+        return new double[] { rx, ry, rz };
+    }
+
+    private static final java.util.HashMap<String, gama.core.metamodel.shape.IShape> OBJ_GEOM_CACHE =
+            new java.util.HashMap<>();
+
+    private Rectangle2D drawObj3D(IScope scope, GamaObjFile file, DrawingAttributes attributes) {
+        try {
+            try {
+                file.loadObject(scope, true);
+            } catch (Throwable lte) {
+                android.util.Log.w("ANDROID_3D", "OBJ3D loadObject threw: " + lte);
+            }
+            gama.core.metamodel.shape.IShape shape;
+            try {
+                String key = file.getFile(scope).getAbsolutePath();
+                shape = OBJ_GEOM_CACHE.get(key);
+                if (shape == null) {
+                    shape = Cast.asGeometry(scope, file);
+                    if (shape != null) OBJ_GEOM_CACHE.put(key, shape);
+                }
+            } catch (Throwable ct) {
+                android.util.Log.w("ANDROID_3D", "OBJ3D asGeometry threw: " + ct);
+                shape = null;
+            }
+            if (shape == null || file.faces.isEmpty()) return null;
+            Geometry geom = shape.getInnerGeometry();
+            double[] center = bboxCenter3D(geom);
+            double k = modelScale(geom, attributes.getSize());
+            GamaPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
+            double ox = 0, oy = 0, oz = 0;
+            if (loc != null) {
+                double lift = terrainLift(loc.getX(), loc.getY());
+                ox = loc.getX() - center[0];
+                oy = loc.getY() - center[1];
+                oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
+            }
+            gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+            gama.core.common.geometry.AxisAngle fileInitRot = file.getInitRotation();
+            int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
+
+            int nmat = file.matTimings.size();
+            int matIndex = 0;
+            int nextMatStart = -1;
+            String matName = null;
+            if (file.materials != null && nmat > 0) {
+                matName = file.matTimings.get(0)[0];
+                nextMatStart = Integer.parseInt(file.matTimings.get(0)[1]);
+            }
+            Bitmap matTex = null;
+            int matColor = 0xFFC0C0C0;
+            if (file.materials != null && matName != null) {
+                float[] kd = file.materials.getKd(matName);
+                if (kd != null) {
+                    matColor = 0xFF000000 | ((int) Math.round(kd[0] * 255) << 16)
+                            | ((int) Math.round(kd[1] * 255) << 8) | (int) Math.round(kd[2] * 255);
+                }
+                String map = file.materials.getMapKd(matName);
+                if (map == null) map = file.materials.getMapKa(matName);
+                if (map == null) map = file.materials.getMapd(matName);
+                matTex = map != null ? loadObjTexture(scope, file, map) : null;
+            }
+
+            for (int i = 0; i < file.faces.size(); i++) {
+                if (file.materials != null && matIndex < nmat && i == nextMatStart) {
+                    matName = file.matTimings.get(matIndex)[0];
+                    float[] kd = file.materials.getKd(matName);
+                    if (kd != null) {
+                        matColor = 0xFF000000 | ((int) Math.round(kd[0] * 255) << 16)
+                                | ((int) Math.round(kd[1] * 255) << 8) | (int) Math.round(kd[2] * 255);
+                    }
+                    String map = file.materials.getMapKd(matName);
+                    if (map == null) map = file.materials.getMapKa(matName);
+                    if (map == null) map = file.materials.getMapd(matName);
+                    matTex = map != null ? loadObjTexture(scope, file, map) : null;
+                    matIndex++;
+                    if (matIndex < nmat) {
+                        nextMatStart = Integer.parseInt(file.matTimings.get(matIndex)[1]);
+                    }
+                }
+
+                int[] fv = file.faces.get(i);
+                int[] ft = file.facesTexs.get(i);
+                int n = fv.length;
+                if (n < 3) continue;
+                float[] model = new float[n * 3];
+                float[] uv = new float[n * 2];
+                boolean hasUv = matTex != null;
+                for (int w = 0; w < n; w++) {
+                    double[] c = file.setOfVertex.get(fv[w] - 1);
+                    // Apply file's initRotation in OBJ coordinates (Y-up) before coordinate conversion
+                    if (fileInitRot != null && fileInitRot.angle != 0.0) {
+                        c = rotateVertexOBJ(c, fileInitRot);
+                    }
+                    // Convert to geometry coordinates (Y-down) and apply draw rotation
+                    double[] p = transformVertex(c[0], -c[1], c[2], center, k, rot);
+                    // Fix: OBJ model uses Z-up, model's r0 assumes Y-up. Flip 180° around X in geometry coords.
+                    p[1] = -p[1];
+                    p[2] = -p[2];
+                    model[w * 3] = (float) (p[0] + ox);
+                    model[w * 3 + 1] = (float) (p[1] + oy);
+                    model[w * 3 + 2] = (float) (p[2] + oz);
+                    if (ft[w] > 0 && ft[w] - 1 < file.setOfVertexTextures.size()) {
+                        double[] tc = file.setOfVertexTextures.get(ft[w] - 1);
+                        double v = tc[1];
+                        if (v >= 0 && v <= 1) v = 1 - v; else v = Math.abs(v);
+                        uv[w * 2] = (float) tc[0];
+                        uv[w * 2 + 1] = (float) v;
+                    } else {
+                        hasUv = false;
+                    }
+                }
+                if (matTex != null && hasUv) {
+                    scene3d.addTexturedPoly(model, n, uv, matTex, tint, 0, 0);
+                } else {
+                    scene3d.addPoly(model, n, matColor, 0, 0, false);
+                }
+            }
+            drawnShapesCount++;
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "drawObj3D: " + t);
+        }
+        rect.setRect(0, 0, 0, 0);
+        return rect;
+    }
+
+    @Override
+    public Rectangle2D drawField(IField fieldValues, MeshDrawingAttributes attributes) {
+        if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
+            drawField3D(fieldValues, attributes);
+            drawnShapesCount++;
+            return rect;
+        }
+        List<?> textures = attributes.getTextures();
+        if (textures != null) {
+            Object image = textures.get(0);
+            if (image instanceof IImageProvider im) return drawAsset(im, attributes);
+            if (image instanceof BufferedImage bi) return drawImage(bi, attributes);
+        }
+        if (!(fieldValues instanceof GamaField gf)) return null;
+        GamaField flatten = gf.flatten(getSurface().getScope(), attributes.getColorProvider());
+        attributes.setSize(null);
+        return drawImage(flatten.getImage(getSurface().getScope()), attributes);
+    }
+
+    /**
+     * Builds a triangulated 3D surface from the field values, mimicking the desktop
+     * OpenGL MeshDrawer: the field is smoothed first (when the model asks for it),
+     * the mesh spans the environment with each vertex lifted to z = value * scale,
+     * vertices whose value is below "above" are masked out, and each cell is split
+     * into two triangles on the same diagonal as the desktop renderer. The mesh is
+     * sampled down so the software renderer stays fast.
+     */
+    private void drawField3D(IField fieldValues, MeshDrawingAttributes attributes) {
+        if (!(fieldValues instanceof GamaField gf)) return;
+        int cols = gf.numCols, rows = gf.numRows;
+        if (cols < 2 || rows < 2) return;
+        double[] data = gf.getMatrix();
+        if (data == null || data.length < cols * rows) return;
+        IScope scope = getSurface().getScope();
+        double noData = gf.getNoData(scope);
+        double[] zz = smoothMesh(cols, rows, data, noData, attributes.getSmooth());
+        double[] minMax = meshMinMax(zz, noData);
+        double min = minMax[0], max = minMax[1];
+        if (!(max > min)) return;
+        IMeshColorProvider provider = attributes.getColorProvider();
+        if (provider == null) return;
+        double zScale = attributes.getScale() != null ? attributes.getScale() : 1.0;
+        double above = attributes.getAbove();
+        boolean checkAbove = above != MeshLayerData.ABOVE;
+
+        double envW = getSurface().getData().getEnvWidth();
+        double envH = getSurface().getData().getEnvHeight();
+        if (!(envW > 0) || !(envH > 0)) return;
+
+        elevationField = gf;
+        elevationEnvW = envW;
+        elevationEnvH = envH;
+        elevationScale = zScale;
+
+        int maxDim = 120;
+        int nx = Math.min(maxDim, cols);
+        int ny = Math.min(maxDim, rows);
+
+        double[] zc = new double[(nx + 1) * (ny + 1)];
+        int[] vc = new int[(nx + 1) * (ny + 1)];
+        double[] rgb = new double[4];
+        for (int j = 0; j <= ny; j++) {
+            double fj = j * (rows - 1) / (double) ny;
+            int j0 = (int) fj;
+            int j1 = Math.min(j0 + 1, rows - 1);
+            double tj = fj - j0;
+            for (int i = 0; i <= nx; i++) {
+                double fi = i * (cols - 1) / (double) nx;
+                int i0 = (int) fi;
+                int i1 = Math.min(i0 + 1, cols - 1);
+                double ti = fi - i0;
+                double v00 = zz[j0 * cols + i0];
+                double v10 = zz[j0 * cols + i1];
+                double v01 = zz[j1 * cols + i0];
+                double v11 = zz[j1 * cols + i1];
+                double v = (v00 * (1 - ti) + v10 * ti) * (1 - tj) + (v01 * (1 - ti) + v11 * ti) * tj;
+                if (v == noData || Double.isNaN(v)) v = 0;
+                int idx = j * (nx + 1) + i;
+                zc[idx] = v;
+                vc[idx] = vertexMeshColor(provider, Math.min(j, rows - 1) * cols + Math.min(i, cols - 1),
+                        v, min, max, rgb, checkAbove, above);
+            }
+        }
+
+        float[] tri = new float[9];
+        for (int j = 0; j < ny; j++) {
+            float y0 = (float) (j * envH / ny);
+            float y1 = (float) ((j + 1) * envH / ny);
+            for (int i = 0; i < nx; i++) {
+                int i00 = j * (nx + 1) + i, i10 = i00 + 1, i01 = i00 + (nx + 1), i11 = i01 + 1;
+                float x0 = (float) (i * envW / nx);
+                float x1 = (float) ((i + 1) * envW / nx);
+                // Two triangles per cell on the same diagonal as desktop GAMA:
+                // t0 = v00, v10, v01  ;  t1 = v10, v11, v01   (diagonal (i+1,j)-(i,j+1))
+                emitMeshTriangle(tri, x0, y0, zc[i00], vc[i00], x1, y0, zc[i10], vc[i10], x0, y1, zc[i01], vc[i01], zScale);
+                emitMeshTriangle(tri, x1, y0, zc[i10], vc[i10], x1, y1, zc[i11], vc[i11], x0, y1, zc[i01], vc[i01], zScale);
+            }
+        }
+    }
+
+    private void emitMeshTriangle(float[] tri, float x0, float y0, double z0, int c0,
+                                  float x1, float y1, double z1, int c1,
+                                  float x2, float y2, double z2, int c2, double zScale) {
+        int a0 = (c0 >>> 24) & 0xFF, a1 = (c1 >>> 24) & 0xFF, a2 = (c2 >>> 24) & 0xFF;
+        int aAvg = (a0 + a1 + a2) / 3;
+        if (aAvg < 4) return;
+        tri[0] = x0; tri[1] = y0; tri[2] = (float) (z0 * zScale);
+        tri[3] = x1; tri[4] = y1; tri[5] = (float) (z1 * zScale);
+        tri[6] = x2; tri[7] = y2; tri[8] = (float) (z2 * zScale);
+        int r = (((c0 >>> 16) & 0xFF) + ((c1 >>> 16) & 0xFF) + ((c2 >>> 16) & 0xFF)) / 3;
+        int g = (((c0 >>> 8) & 0xFF) + ((c1 >>> 8) & 0xFF) + ((c2 >>> 8) & 0xFF)) / 3;
+        int b = ((c0 & 0xFF) + (c1 & 0xFF) + (c2 & 0xFF)) / 3;
+        scene3d.addPoly(tri, 3, (aAvg << 24) | (r << 16) | (g << 8) | b, 0, 1f, false);
+    }
+
+    private int vertexMeshColor(IMeshColorProvider provider, int idx, double z, double min, double max,
+                                double[] rgb, boolean checkAbove, double above) {
+        if (checkAbove && z < above) return 0x00000000;
+        double[] c = provider.getColor(idx, z, min, max, rgb);
+        int a = (int) (Math.max(0, Math.min(1, c[3])) * currentAlpha * 255);
+        int r = (int) (Math.max(0, Math.min(1, c[0])) * 255);
+        int g = (int) (Math.max(0, Math.min(1, c[1])) * 255);
+        int b = (int) (Math.max(0, Math.min(1, c[2])) * 255);
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    private double[] meshMinMax(double[] data, double noData) {
+        double mn = Double.MAX_VALUE, mx = -Double.MAX_VALUE;
+        for (double v : data) {
+            if (v != noData) {
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+        }
+        return new double[]{mn, mx};
+    }
+
+    /** Smooths the field data like the desktop MeshDrawer (Gaussian box blurs or 3x3 convolution). */
+    private double[] smoothMesh(int cols, int rows, double[] data, double noData, int smooth) {
+        if (smooth <= 0) return data;
+        if (noData == IField.NO_NO_DATA) return gaussianSmooth(cols, rows, data, smooth);
+        return convolutionSmooth(cols, rows, data, noData, smooth);
+    }
+
+    private static double[] gaussianSmooth(int cols, int rows, double[] data, int passes) {
+        double[] result = data.clone();
+        int nbBoxes = 3;
+        double wIdeal = Math.sqrt(12.0 * passes * passes / nbBoxes + 1);
+        double wl = Math.floor(wIdeal);
+        if (wl % 2 == 0) wl--;
+        double wu = wl + 2;
+        double mIdeal = (12.0 * passes * passes - nbBoxes * wl * wl - 4 * nbBoxes * wl - 3 * nbBoxes) / (-4 * wl - 4);
+        long m = Math.round(mIdeal);
+        double[] sizes = new double[nbBoxes];
+        for (int k = 0; k < nbBoxes; k++) sizes[k] = k < m ? wl : wu;
+        for (int k = 0; k < nbBoxes; k++) {
+            int r = (int) Math.round((sizes[k] - 1) / 2);
+            if (r <= cols / 2 && r <= rows / 2) {
+                boxBlurAcrossColumns(result, cols, rows, r);
+                boxBlurAcrossRows(result, cols, rows, r);
+            }
+        }
+        return result;
+    }
+
+    private static void boxBlurAcrossColumns(double[] scl, int cols, int rows, int r) {
+        double iarr = 1d / (r + r + 1);
+        for (int i = 0; i < rows; i++) {
+            int ti = i * cols, li = ti, ri = ti + r;
+            double fv = scl[ti], lv = scl[ti + cols - 1];
+            double val = (r + 1) * fv;
+            for (int j = 0; j < r; j++) val += scl[ti + j];
+            for (int j = 0; j <= r; j++) { val += scl[ri++] - fv; scl[ti++] = val * iarr; }
+            for (int j = r + 1; j < cols - r; j++) { val += scl[ri++] - scl[li++]; scl[ti++] = val * iarr; }
+            for (int j = cols - r; j < cols; j++) { val += lv - scl[li++]; scl[ti++] = val * iarr; }
+        }
+    }
+
+    private static void boxBlurAcrossRows(double[] scl, int cols, int rows, int r) {
+        double iarr = 1d / (r + r + 1);
+        for (int i = 0; i < cols; i++) {
+            int ti = i, li = ti, ri = ti + r * cols;
+            double fv = scl[ti], lv = scl[ti + cols * (rows - 1)];
+            double val = (r + 1) * fv;
+            for (int j = 0; j < r; j++) val += scl[ti + j * rows];
+            for (int j = 0; j <= r; j++) { val += scl[ri] - fv; scl[ti] = val * iarr; ri += cols; ti += cols; }
+            for (int j = r + 1; j < rows - r; j++) { val += scl[ri] - scl[li]; scl[ti] = val * iarr; li += cols; ri += cols; ti += cols; }
+            for (int j = rows - r; j < rows; j++) { val += lv - scl[li]; scl[ti] = val * iarr; li += cols; ti += cols; }
+        }
+    }
+
+    private static double[] convolutionSmooth(int cols, int rows, double[] data, double noData, int passes) {
+        double[] input = data;
+        double[] output = new double[data.length];
+        for (int p = 0; p < passes; p++) {
+            for (int y = 0; y < rows; y++) {
+                for (int x = 0; x < cols; x++) {
+                    double z00 = cell(cols, rows, input, x - 1, y - 1);
+                    double z02 = cell(cols, rows, input, x + 1, y - 1);
+                    double z03 = cell(cols, rows, input, x - 1, y);
+                    double z = cell(cols, rows, input, x, y);
+                    double z05 = cell(cols, rows, input, x + 1, y);
+                    double z06 = cell(cols, rows, input, x - 1, y + 1);
+                    double z07 = cell(cols, rows, input, x, y + 1);
+                    double z08 = cell(cols, rows, input, x + 1, y + 1);
+                    if (z00 == noData || z02 == noData || z03 == noData || z == noData || z05 == noData
+                            || z06 == noData || z07 == noData || z08 == noData) continue;
+                    output[x + y * cols] = (z00 + z00 + z02 + z03 + z + z05 + z06 + z07 + z08) / 9d;
+                }
+            }
+            input = output;
+        }
+        return output;
+    }
+
+    private static double cell(int cols, int rows, double[] data, int x0, int y0) {
+        int x = x0 < 0 ? 0 : x0 > cols - 1 ? cols - 1 : x0;
+        int y = y0 < 0 ? 0 : y0 > rows - 1 ? rows - 1 : y0;
+        return data[y * cols + x];
+    }
+
+    @Override
+    public void fillBackground(java.awt.Color bgColor) {
+        if (canvas == null) return;
+        setAlpha(1);
+        bgPaint.setColor(awtColorToArgb(bgColor));
+        bgPaint.setStyle(Paint.Style.FILL);
+        canvas.drawRect(0, 0, (float) getSurface().getDisplayWidth(),
+                (float) getSurface().getDisplayHeight(), bgPaint);
+    }
+
+    @Override
+    public void setAlpha(double alpha) {
+        super.setAlpha(alpha);
+        this.currentAlpha = (float) alpha;
+        int a = (int) (alpha * 255);
+        fillPaint.setAlpha(a);
+        strokePaint.setAlpha(a);
+        textPaint.setAlpha(a);
+        bitmapPaint.setAlpha(a);
+    }
+
+    @Override
+    public boolean beginDrawingLayers() {
+        drawnShapesCount = 0;
+        layerCount = 0;
+        shapeDrawCount = 0;
+        if (is3dMode()) scene3d.beginFrame();
+        return true;
+    }
+
+    @Override
+    public void endDrawingLayers() {
+        if (is3dMode()) {
+            renderScene3D();
+            blitOverlay();
+        }
+    }
+
+    private void blitOverlay() {
+        if (overlayBitmap == null || mainCanvas == null) return;
+        if (getSurface() instanceof AndroidDisplaySurface) {
+            AndroidDisplaySurface s = (AndroidDisplaySurface) getSurface();
+            mainCanvas.drawBitmap(overlayBitmap, s.getViewPortLeft(), s.getViewPortTop(), null);
+        } else {
+            mainCanvas.drawBitmap(overlayBitmap, 0, 0, null);
+        }
+    }
+
+    private void renderScene3D() {
+        Canvas c = canvas;
+        if (c == null || scene3d.size() == 0) return;
+        try {
+            // Apply ambient + default directional light from display data
+            int ambientARGB = 0xFFFFFFFF;
+            double ldx = 0.5, ldy = 0.5, ldz = -1;
+            int lightRGB = 0xFFFFFF;
+            try {
+                java.util.Map<String, Object> lights = (java.util.Map<String, Object>) data.getClass().getMethod("getLights").invoke(data);
+                if (lights != null) {
+                    Object ambientDef = lights.get("Ambient light");
+                    if (ambientDef != null) {
+                        Object intensity = ambientDef.getClass().getMethod("getIntensity").invoke(ambientDef);
+                        if (intensity != null) {
+                            int r = (int) intensity.getClass().getMethod("getRed").invoke(intensity);
+                            int g = (int) intensity.getClass().getMethod("getGreen").invoke(intensity);
+                            int b = (int) intensity.getClass().getMethod("getBlue").invoke(intensity);
+                            int a = (int) intensity.getClass().getMethod("getAlpha").invoke(intensity);
+                            ambientARGB = (a << 24) | (r << 16) | (g << 8) | b;
+                        }
+                    }
+                    Object defaultDef = lights.get("default");
+                    if (defaultDef != null) {
+                        Object intensity = defaultDef.getClass().getMethod("getIntensity").invoke(defaultDef);
+                        if (intensity != null) {
+                            int r = (int) intensity.getClass().getMethod("getRed").invoke(intensity);
+                            int g = (int) intensity.getClass().getMethod("getGreen").invoke(intensity);
+                            int b = (int) intensity.getClass().getMethod("getBlue").invoke(intensity);
+                            lightRGB = (r << 16) | (g << 8) | b;
+                        }
+                        Object dir = defaultDef.getClass().getMethod("getDirection").invoke(defaultDef);
+                        if (dir != null) {
+                            ldx = -((Number) dir.getClass().getMethod("getX").invoke(dir)).doubleValue();
+                            ldy = -((Number) dir.getClass().getMethod("getY").invoke(dir)).doubleValue();
+                            ldz = -((Number) dir.getClass().getMethod("getZ").invoke(dir)).doubleValue();
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                android.util.Log.w("ANDROID_3D", "Failed to get lights: " + t);
+            }
+            scene3d.setAmbientLight(ambientARGB);
+            scene3d.setDirectionalLight(ldx, ldy, ldz, lightRGB);
+
+            GamaPoint camPos = null, camTarget = null;
+            Double camLens = null;
+            try {
+                camPos = data.getCameraPos();
+                camTarget = data.getCameraTarget();
+                camLens = data.getCameraLens();
+            } catch (Throwable camErr) {
+                camPos = null;
+            }
+            if (camPos == null || camTarget == null) {
+                scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
+                return;
+            }
+            scene3d.render(c,
+                    camPos.getX(), camPos.getY(), camPos.getZ(),
+                    camTarget.getX(), camTarget.getY(), camTarget.getZ(),
+                    camLens != null ? camLens : 45.0,
+                    getDisplayWidth(), getDisplayHeight());
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "renderScene3D failed: " + t);
+        }
+    }
+
+    private int layerCount = 0;
+    private int layerPrimStart = -1;
+
+    @Override
+    public void beginDrawingLayer(final ILayer layer) {
+        currentLayer = layer;
+        layerCount++;
+        if (is3dMode()) layerPrimStart = scene3d.size();
+    }
+
+    @Override
+    public void endDrawingLayer(ILayer layer) {
+        super.endDrawingLayer(layer);
+        if (is3dMode() && layerPrimStart >= 0) {
+            if (!layer.getData().isDynamic()) {
+                scene3d.captureStaticPrims(layer, layerPrimStart);
+            }
+        }
+        layerPrimStart = -1;
+    }
+
+    public void manuallyDrawAgents(IAgent[] agents) {
+        if (canvas == null || agents == null) return;
+        fillPaint.setColor(0xFF0000FF);
+        fillPaint.setStyle(Paint.Style.FILL);
+        for (IAgent a : agents) {
+            if (a == null || a.dead()) continue;
+            float x = toPixelX(a.getLocation().getX());
+            float y = toPixelY(a.getLocation().getY());
+            float r = (float) toPixelW(3.0);
+            canvas.drawCircle(x, y, r, fillPaint);
+        }
+    }
+
+    @Override
+    public void beginOverlay(OverlayLayer layer) {
+        if (canvas == null) return;
+        if (is3dMode()) {
+            int ow = getDisplayWidth();
+            int oh = getDisplayHeight();
+            if (overlayBitmap == null || overlayBitmap.getWidth() != Math.max(1, ow)
+                    || overlayBitmap.getHeight() != Math.max(1, oh)) {
+                overlayBitmap = Bitmap.createBitmap(Math.max(1, ow), Math.max(1, oh), Bitmap.Config.ARGB_8888);
+                overlayCanvas = new Canvas(overlayBitmap);
+            }
+            overlayCanvas.drawColor(0, android.graphics.PorterDuff.Mode.CLEAR);
+            canvas = overlayCanvas;
+            overlayActive = true;
+        }
+        int x = (int) getXOffsetInPixels();
+        int y = (int) getYOffsetInPixels();
+        int w = getLayerWidth();
+        int h = getLayerHeight();
+        bgPaint.setColor(awtColorToArgb(layer.getData().getBackgroundColor(getSurface().getScope())));
+        bgPaint.setStyle(Paint.Style.FILL);
+        if (layer.getData().isRounded()) {
+            canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 10, 10, bgPaint);
+        } else {
+            canvas.drawRect(x, y, x + w, y + h, bgPaint);
+        }
+        if (layer.getData().getBorderColor() != null) {
+            bgPaint.setColor(awtColorToArgb(layer.getData().getBorderColor()));
+            bgPaint.setStyle(Paint.Style.STROKE);
+            if (layer.getData().isRounded()) {
+                canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 10, 10, bgPaint);
+            } else {
+                canvas.drawRect(x, y, x + w, y + h, bgPaint);
+            }
+        }
+    }
+
+    @Override
+    public void endOverlay() {
+        if (overlayActive) {
+            canvas = mainCanvas;
+            overlayActive = false;
+        }
+    }
+
+    @Override
+    public boolean is2D() { return !is3dMode(); }
+
+    @Override
+    public void dispose() {
+        super.dispose();
+        canvas = null;
+        mainCanvas = null;
+        overlayCanvas = null;
+        if (overlayBitmap != null) {
+            overlayBitmap.recycle();
+            overlayBitmap = null;
+        }
+        overlayActive = false;
+    }
+}

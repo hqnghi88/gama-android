@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GAMA Native</string>
+    <string name="nav_models">Models</string>
+    <string name="nav_display">Display</string>
+    <string name="nav_console">Console</string>
+    <string name="nav_layers">Layers</string>
+    <string name="nav_parameters">Parameters</string>
+    <string name="action_search">Search</string>
+    <string name="action_run">Run</string>
+    <string name="action_save">Save</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_play">Play</string>
+    <string name="action_step">Step</string>
+    <string name="action_zoom_in">Zoom In</string>
+    <string name="action_zoom_out">Zoom Out</string>
+    <string name="action_zoom_fit">Fit to Screen</string>
+</resources>
