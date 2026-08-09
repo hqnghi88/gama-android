@@ -116,7 +116,7 @@ public class AndroidScene3D {
     }
 
     private final List<Prim> prims = new ArrayList<>();
-    private final java.util.LinkedHashMap<gama.core.common.interfaces.ILayer, List<Prim>> staticCache =
+    private final java.util.LinkedHashMap<gama.api.ui.layers.ILayer, List<Prim>> staticCache =
             new java.util.LinkedHashMap<>();
     private final Paint fillPaint = new Paint();
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -164,7 +164,7 @@ public class AndroidScene3D {
      * layer) so they survive the per-frame flush. Replaces any previous capture
      * for the same layer so a re-draw cannot duplicate prims.
      */
-    public void captureStaticPrims(gama.core.common.interfaces.ILayer layer, int fromIndex) {
+    public void captureStaticPrims(gama.api.ui.layers.ILayer layer, int fromIndex) {
         if (fromIndex < 0 || fromIndex > prims.size()) return;
         staticCache.put(layer, new ArrayList<>(prims.subList(fromIndex, prims.size())));
     }

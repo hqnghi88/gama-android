@@ -38,9 +38,9 @@ public class ParallelRunnerPatcher {
             }
         }
 
-        String runnerClass = "gama/core/runtime/concurrent/ParallelAgentRunner.class";
-        String executorClass = "gama/core/runtime/concurrent/GamaExecutorService.class";
-        String wrapperEntry = "gama/core/runtime/concurrent/AndroidTaskWrapper.class";
+        String runnerClass = "gama/api/runtime/ParallelAgentRunner.class";
+        String executorClass = "gama/api/runtime/GamaExecutorService.class";
+        String wrapperEntry = "gama/api/runtime/AndroidTaskWrapper.class";
 
         ZipFile zipIn = new ZipFile(jarFile);
         File tmpJar = new File(jarFile.getAbsolutePath() + ".tmp");
@@ -109,7 +109,7 @@ public class ParallelRunnerPatcher {
                         // Spliterator<IAgent> sub = agents.trySplit();
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
                         insns.add(new FieldInsnNode(Opcodes.GETFIELD,
-                                "gama/core/runtime/concurrent/ParallelAgentRunner",
+                                "gama/api/runtime/ParallelAgentRunner",
                                 "agents", "Ljava/util/Spliterator;"));
                         insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
                                 "java/util/Spliterator", "trySplit",
@@ -124,12 +124,12 @@ public class ParallelRunnerPatcher {
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
                         insns.add(new FieldInsnNode(Opcodes.GETFIELD,
-                                "gama/core/runtime/concurrent/ParallelAgentRunner",
-                                "originalScope", "Lgama/core/runtime/IScope;"));
+                                "gama/api/runtime/ParallelAgentRunner",
+                                "originalScope", "Lgama/api/runtime/scope/IScope;"));
                         insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
-                                "gama/core/runtime/concurrent/ParallelAgentRunner",
+                                "gama/api/runtime/ParallelAgentRunner",
                                 "executeOn",
-                                "(Lgama/core/runtime/IScope;)Ljava/lang/Object;", false));
+                                "(Lgama/api/runtime/scope/IScope;)Ljava/lang/Object;", false));
                         insns.add(new InsnNode(Opcodes.ARETURN));
 
                         // L_recursive:
@@ -139,25 +139,25 @@ public class ParallelRunnerPatcher {
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 1));
                         insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
-                                "gama/core/runtime/concurrent/ParallelAgentRunner",
+                                "gama/api/runtime/ParallelAgentRunner",
                                 "subTask",
-                                "(Ljava/util/Spliterator;)Lgama/core/runtime/concurrent/ParallelAgentRunner;",
+                                "(Ljava/util/Spliterator;)Lgama/api/runtime/ParallelAgentRunner;",
                                 false));
                         insns.add(new VarInsnNode(Opcodes.ASTORE, 2));
 
                         // Future<T> leftFuture = GamaExecutorService.ANDROID_PARALLEL_EXECUTOR.submit(new AndroidTaskWrapper<>(left));
                         insns.add(new FieldInsnNode(Opcodes.GETSTATIC,
-                                "gama/core/runtime/concurrent/GamaExecutorService",
+                                "gama/api/runtime/GamaExecutorService",
                                 "ANDROID_PARALLEL_EXECUTOR",
                                 "Ljava/util/concurrent/ExecutorService;"));
                         insns.add(new TypeInsnNode(Opcodes.NEW,
-                                "gama/core/runtime/concurrent/AndroidTaskWrapper"));
+                                "gama/api/runtime/AndroidTaskWrapper"));
                         insns.add(new InsnNode(Opcodes.DUP));
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 2));
                         insns.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
-                                "gama/core/runtime/concurrent/AndroidTaskWrapper",
+                                "gama/api/runtime/AndroidTaskWrapper",
                                 "<init>",
-                                "(Lgama/core/runtime/concurrent/ParallelAgentRunner;)V",
+                                "(Lgama/api/runtime/ParallelAgentRunner;)V",
                                 false));
                         insns.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
                                 "java/util/concurrent/ExecutorService",
@@ -169,7 +169,7 @@ public class ParallelRunnerPatcher {
                         // T result = compute();
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 0));
                         insns.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
-                                "gama/core/runtime/concurrent/ParallelAgentRunner",
+                                "gama/api/runtime/ParallelAgentRunner",
                                 "compute",
                                 "()Ljava/lang/Object;", false));
                         insns.add(new VarInsnNode(Opcodes.ASTORE, 4));
@@ -177,7 +177,7 @@ public class ParallelRunnerPatcher {
                         // AndroidTaskWrapper.await(leftFuture);
                         insns.add(new VarInsnNode(Opcodes.ALOAD, 3));
                         insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                                "gama/core/runtime/concurrent/AndroidTaskWrapper",
+                                "gama/api/runtime/AndroidTaskWrapper",
                                 "await",
                                 "(Ljava/util/concurrent/Future;)V", false));
 
@@ -239,14 +239,14 @@ public class ParallelRunnerPatcher {
 
                                 // if (ANDROID_PARALLEL_EXECUTOR != null) goto skip_shutdown
                                 initCode.add(new FieldInsnNode(Opcodes.GETSTATIC,
-                                        "gama/core/runtime/concurrent/GamaExecutorService",
+                                        "gama/api/runtime/GamaExecutorService",
                                         "ANDROID_PARALLEL_EXECUTOR",
                                         "Ljava/util/concurrent/ExecutorService;"));
                                 initCode.add(new JumpInsnNode(Opcodes.IFNULL, skipShutdown));
 
                                 // ANDROID_PARALLEL_EXECUTOR.shutdown()
                                 initCode.add(new FieldInsnNode(Opcodes.GETSTATIC,
-                                        "gama/core/runtime/concurrent/GamaExecutorService",
+                                        "gama/api/runtime/GamaExecutorService",
                                         "ANDROID_PARALLEL_EXECUTOR",
                                         "Ljava/util/concurrent/ExecutorService;"));
                                 initCode.add(new MethodInsnNode(Opcodes.INVOKEINTERFACE,
@@ -262,7 +262,7 @@ public class ParallelRunnerPatcher {
                                         "newCachedThreadPool",
                                         "()Ljava/util/concurrent/ExecutorService;", false));
                                 initCode.add(new FieldInsnNode(Opcodes.PUTSTATIC,
-                                        "gama/core/runtime/concurrent/GamaExecutorService",
+                                        "gama/api/runtime/GamaExecutorService",
                                         "ANDROID_PARALLEL_EXECUTOR",
                                         "Ljava/util/concurrent/ExecutorService;"));
 
@@ -287,7 +287,6 @@ public class ParallelRunnerPatcher {
                         insns.add(new InsnNode(Opcodes.IRETURN));
                         mn.instructions.insert(insns);
                         mn.maxStack = 1;
-                        mn.maxLocals = 4;
                         patchedExecutor = true;
                         System.out.println("Patched: " + executorClass + " -> getParallelism() returns 0 (sequential stepping)");
                     }
@@ -301,7 +300,7 @@ public class ParallelRunnerPatcher {
                         InsnList insns = new InsnList();
                         // getstatic ANDROID_PARALLEL_EXECUTOR
                         insns.add(new FieldInsnNode(Opcodes.GETSTATIC,
-                                "gama/core/runtime/concurrent/GamaExecutorService",
+                                "gama/api/runtime/GamaExecutorService",
                                 "ANDROID_PARALLEL_EXECUTOR",
                                 "Ljava/util/concurrent/ExecutorService;"));
                         // aload_0 (the Runnable parameter)
@@ -314,7 +313,7 @@ public class ParallelRunnerPatcher {
                                 true));
                         // invokestatic AndroidTaskWrapper.await(Future)
                         insns.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-                                "gama/core/runtime/concurrent/AndroidTaskWrapper",
+                                "gama/api/runtime/AndroidTaskWrapper",
                                 "await",
                                 "(Ljava/util/concurrent/Future;)V", false));
                         // return

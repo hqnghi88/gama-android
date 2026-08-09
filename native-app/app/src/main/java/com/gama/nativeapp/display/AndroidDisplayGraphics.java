@@ -26,27 +26,31 @@ import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.Puntal;
 
-import gama.core.common.interfaces.IAsset;
-import gama.core.common.interfaces.ILayer;
-import gama.core.common.interfaces.IImageProvider;
-import gama.core.metamodel.agent.IAgent;
-import gama.core.metamodel.shape.GamaPoint;
-import gama.core.metamodel.shape.IShape;
+import gama.api.ui.displays.IAsset;
+import gama.api.ui.layers.IDrawingAttributes;
+import gama.api.ui.layers.ILayer;
+import gama.api.utils.interfaces.IImageProvider;
+import gama.api.kernel.agent.IAgent;
+import gama.api.types.geometry.GamaPointFactory;
+import gama.api.types.geometry.IPoint;
+import gama.api.types.geometry.IShape;
 import gama.core.outputs.display.AbstractDisplayGraphics;
 import gama.core.outputs.layers.MeshLayerData;
 import gama.core.outputs.layers.OverlayLayer;
-import gama.core.outputs.layers.charts.ChartOutput;
-import gama.core.runtime.IScope;
-import gama.core.util.GamaColor;
+import gama.api.runtime.scope.IScope;
+import gama.api.types.color.IColor;
+import gama.api.utils.geometry.AxisAngle;
+import gama.api.utils.geometry.IEnvelope;
+import gama.api.utils.geometry.Scaling3D;
+import gama.api.types.file.IGamaFile;
 import gama.core.util.file.GamaGeometryFile;
 import gama.core.util.file.GamaObjFile;
 import gama.core.util.matrix.GamaField;
 import gama.extension.image.GamaImageFile;
-import gama.core.util.matrix.IField;
-import gama.gaml.operators.Cast;
+import gama.api.types.matrix.IField;
 import gama.gaml.operators.Maths;
 import gama.gaml.statements.draw.DrawingAttributes;
-import gama.gaml.statements.draw.IMeshColorProvider;
+import gama.api.ui.layers.IMeshColorProvider;
 import gama.gaml.statements.draw.MeshDrawingAttributes;
 import gama.gaml.statements.draw.ShapeDrawingAttributes;
 import gama.gaml.statements.draw.TextDrawingAttributes;
@@ -170,9 +174,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public void setCanvas(Canvas c) { mainCanvas = c; this.canvas = c; }
     public Canvas getCanvas() { return canvas; }
 
-    private int gamaColorToArgb(GamaColor c) {
+    private int gamaColorToArgb(IColor c) {
         if (c == null) return 0xFF000000;
-        int argb = c.getRGB();
+        int argb = IColor.toAWTColor(c).getRGB();
         if ((argb >>> 24) == 0) return 0xFF000000 | (argb & 0xFFFFFF);
         return argb;
     }
@@ -182,7 +186,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return c.getRGB();
     }
 
-    private int colorWithAlpha(GamaColor c, double alpha) {
+    private int colorWithAlpha(IColor c, double alpha) {
         int argb = gamaColorToArgb(c);
         int colorA = (argb >>> 24) & 0xFF;
         int a = (int) (alpha * colorA);
@@ -196,7 +200,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     private int shapeDrawCount = 0;
     @Override
-    public Rectangle2D drawShape(Geometry gg, DrawingAttributes attributes) {
+    public Rectangle2D drawShape(Geometry gg, IDrawingAttributes attributes) {
         if (gg == null || canvas == null) return null;
         if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
             drawnShapesCount++;
@@ -219,13 +223,13 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
         boolean isLine = geometry instanceof Lineal || geometry instanceof Puntal;
 
-        GamaColor border = isLine ? attributes.getColor() : attributes.getBorder();
+        IColor border = isLine ? attributes.getColor() : attributes.getBorder();
         if (border == null && attributes.isEmpty()) border = attributes.getColor();
         if (highlight) {
             if (border != null) border = attributes.getColor();
         }
 
-        GamaPoint loc = attributes.getLocation();
+        IPoint loc = attributes.getLocation();
         double locDx = 0, locDy = 0;
         if (loc != null) {
             locDx = toPixelX(loc.getX()) - getXOffsetInPixels();
@@ -310,7 +314,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     // OpenGL GeometryDrawer.
     // ------------------------------------------------------------------
 
-    private void drawShape3D(Geometry geometry, DrawingAttributes attributes) {
+    private void drawShape3D(Geometry geometry, IDrawingAttributes attributes) {
         if (geometry == null) return;
         double[] center = bboxCenter3D(geometry);
         double k = modelScale(geometry, attributes.getSize());
@@ -335,7 +339,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     /** Uniform model scale factor so the model's max bounding dimension matches the target size. */
-    private double modelScale(Geometry geometry, gama.core.common.geometry.Scaling3D size) {
+    private double modelScale(Geometry geometry, Scaling3D size) {
         double k = 1;
         if (size == null) return k;
         double target = size.getX();
@@ -359,7 +363,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return k;
     }
 
-    private void drawShape3DRec(Geometry geometry, DrawingAttributes attributes, double[] center, double k) {
+    private void drawShape3DRec(Geometry geometry, IDrawingAttributes attributes, double[] center, double k) {
         if (geometry instanceof GeometryCollection gc && !(gc instanceof MultiLineString)) {
             for (int i = 0; i < gc.getNumGeometries(); i++) {
                 drawShape3DRec(gc.getGeometryN(i), attributes, center, k);
@@ -367,13 +371,13 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             return;
         }
         try {
-            GamaColor color = attributes.getColor();
-            GamaColor borderColor = attributes.getBorder();
+            IColor color = attributes.getColor();
+            IColor borderColor = attributes.getBorder();
             if (borderColor == null && attributes.isEmpty()) borderColor = color;
             if (highlight && borderColor != null) borderColor = color;
             int fill = colorWithAlpha(color, currentAlpha);
             int border = borderColor != null ? colorWithAlpha(borderColor, currentAlpha) : 0;
-            GamaPoint loc = attributes.getLocation();
+            IPoint loc = attributes.getLocation();
             Double depthD = attributes.getDepth();
             double depth = depthD != null ? depthD : 0.0;
             IShape.Type type = attributes.getType();
@@ -414,7 +418,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                             new Coordinate(cx + w / 2, cy + h / 2), new Coordinate(cx - w / 2, cy + h / 2) };
                         addPrism3D(boxShell, bz0, bz1, 0, 0, fill, border, tex, tint);
                     } else {
-                        gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+                        AxisAngle rot = attributes.getRotation();
                         if (rot != null) {
                             addRotatedBox(cx, cy, cz, w, h, d, rot, fill, border, 1f);
                         } else {
@@ -429,7 +433,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         oy = loc.getY() - center[1];
                         oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
                     }
-                    gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+                    AxisAngle rot = attributes.getRotation();
                     if (depth > 0) {
                         double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
                         z0 += terrainLift(cx, cy);
@@ -474,7 +478,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /** Scale a vertex about the geometry center, then rotate it about the center. */
     private double[] transformVertex(double x, double y, double z, double[] center, double k,
-            gama.core.common.geometry.AxisAngle rot) {
+            AxisAngle rot) {
         double rx = (x - center[0]) * k;
         double ry = (y - center[1]) * k;
         double rz = (z - center[2]) * k;
@@ -493,9 +497,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
      * is -angle around the (normalized) axis. Matches desktop rendering exactly.
      */
     private static double[] rotatePoint(double px, double py, double pz,
-            double cx, double cy, double cz, gama.core.common.geometry.AxisAngle rot) {
+            double cx, double cy, double cz, AxisAngle rot) {
         double rx = px - cx, ry = py - cy, rz = pz - cz;
-        gama.core.metamodel.shape.GamaPoint axis = rot.getAxis();
+        IPoint axis = rot.getAxis();
         double ax = axis.getX(), ay = axis.getY(), az = axis.getZ();
         double norm = Math.sqrt(ax * ax + ay * ay + az * az);
         if (norm == 0) {
@@ -517,7 +521,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /** Axis-aligned box rotated about its center by the given AxisAngle (degrees). */
     private void addRotatedBox(double cx, double cy, double cz, double w, double h, double d,
-                               gama.core.common.geometry.AxisAngle rot, int fill, int border, float stroke) {
+                               AxisAngle rot, int fill, int border, float stroke) {
         double hw = w / 2, hh = h / 2, hd = d / 2;
         double[] corners = new double[8 * 3];
         int idx = 0;
@@ -552,7 +556,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     private Coordinate[] transformShell(Coordinate[] shell, double[] center, double k,
-            gama.core.common.geometry.AxisAngle rot) {
+            AxisAngle rot) {
         Coordinate[] out = new Coordinate[shell.length];
         for (int i = 0; i < shell.length; i++) {
             double vz = Double.isNaN(shell[i].z) ? 0 : shell[i].z;
@@ -639,7 +643,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public Rectangle2D drawImage(BufferedImage img, DrawingAttributes attributes) {
+    public Rectangle2D drawImage(BufferedImage img, IDrawingAttributes attributes) {
         if (img == null || canvas == null) return null;
         if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
             return drawImage3D(img, attributes);
@@ -688,20 +692,20 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     /** Renders a 2D image as a billboard in the 3D scene. */
-    private Rectangle2D drawImage3D(BufferedImage img, DrawingAttributes attributes) {
+    private Rectangle2D drawImage3D(BufferedImage img, IDrawingAttributes attributes) {
         if (img == null) return null;
         boolean dynamicImage = attributes.getSize() == null && attributes.getLocation() == null;
         Bitmap bitmap = bufferedImageToBitmap(img, !dynamicImage);
         if (bitmap == null) return null;
 
         IScope scope = getSurface().getScope();
-        GamaPoint loc = attributes.getLocation();
+        IPoint loc = attributes.getLocation();
         double x = loc != null ? loc.getX() : 0;
         double y = loc != null ? loc.getY() : 0;
         double z = (loc != null && !Double.isNaN(loc.getZ())) ? loc.getZ() : 0.5;
         z += terrainLift(x, y);
 
-        gama.core.common.geometry.Scaling3D size = attributes.getSize();
+        Scaling3D size = attributes.getSize();
         double w = size != null ? size.getX() : 1.0;
         double h = size != null ? size.getY() : 1.0;
         if (w <= 0) w = 1.0;
@@ -712,15 +716,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         if (size == null && loc == null) {
             try {
                 if (scope != null) {
-                    gama.core.metamodel.agent.IMacroAgent sim = scope.getSimulation();
+                    gama.api.kernel.agent.IMacroAgent sim = scope.getSimulation();
                     if (sim != null) {
-                        gama.core.common.geometry.Envelope3D env = sim.getEnvelope();
+                        IEnvelope env = sim.getEnvelope();
                         if (env != null) {
                             x = env.getMinX() + env.getWidth() / 2;
                             y = env.getMinY() + env.getHeight() / 2;
                             w = env.getWidth();
                             h = env.getHeight();
-                            env.dispose();
                         }
                     }
                 }
@@ -734,12 +737,11 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         // Such images must lie flat on the ground plane so they rotate with the world.
         boolean fullWorld = false;
         try {
-            gama.core.metamodel.agent.IMacroAgent sim = scope != null ? scope.getSimulation() : null;
+            gama.api.kernel.agent.IMacroAgent sim = scope != null ? scope.getSimulation() : null;
             if (sim != null) {
-                gama.core.common.geometry.Envelope3D env = sim.getEnvelope();
+                IEnvelope env = sim.getEnvelope();
                 if (env != null) {
                     fullWorld = w >= env.getWidth() * 0.9 && h >= env.getHeight() * 0.9;
-                    env.dispose();
                 }
             }
         } catch (Throwable t) {}
@@ -757,7 +759,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             // its Z axis. GAMA's default 3D camera looks straight down, so sprites must
             // lie in the ground plane to be visible and to match desktop GAMA's
             // orientation (rotate: heading turns them in the XY plane).
-            gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
+            AxisAngle rot = attributes.getRotation();
             double hw = w / 2, hh = h / 2;
             double[] center = {x, y, z};
             double[][] corners = {
@@ -1027,7 +1029,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public Rectangle2D drawString(String string, TextDrawingAttributes attributes) {
+    public Rectangle2D drawString(String string, IDrawingAttributes attributes) {
         if (string == null || canvas == null) return null;
         if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
             return drawString3D(string, attributes);
@@ -1064,8 +1066,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         float textWidth = textPaint.measureText(string);
         float textHeight = fm.descent - fm.ascent;
 
-        curX -= textWidth * attributes.anchor.x;
-        curY += (textHeight - fm.descent) * attributes.anchor.y;
+        curX -= textWidth * attributes.getAnchor().getX();
+        curY += (textHeight - fm.descent) * attributes.getAnchor().getY();
 
         canvas.save();
         if (attributes.getAngle() != null) {
@@ -1079,31 +1081,25 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return rect;
     }
 
-    private Rectangle2D drawString3D(String string, TextDrawingAttributes attributes) {
-        GamaPoint loc = attributes.getLocation();
+    private Rectangle2D drawString3D(String string, IDrawingAttributes attributes) {
+        IPoint loc = attributes.getLocation();
         double x = loc != null ? loc.getX() : 0;
         double y = loc != null ? loc.getY() : 0;
         double z = loc != null && !Double.isNaN(loc.getZ()) ? loc.getZ() : 0;
         float size = attributes.getFont() != null ? attributes.getFont().getSize() : 24f;
         int color = highlight ? gamaColorToArgb(data.getHighlightColor()) : gamaColorToArgb(attributes.getColor());
         scene3d.addText(x, y, z, string, color, size,
-                attributes.anchor != null ? (float) attributes.anchor.x : 0.5f,
-                attributes.anchor != null ? (float) attributes.anchor.y : 0.5f);
+                attributes.getAnchor() != null ? (float) attributes.getAnchor().getX() : 0.5f,
+                attributes.getAnchor() != null ? (float) attributes.getAnchor().getY() : 0.5f);
         rect.setRect(x, y, 0, 0);
         return rect;
     }
 
     @Override
-    public Rectangle2D drawChart(ChartOutput chart) {
+    public Rectangle2D drawChart(BufferedImage chart) {
         if (chart == null || canvas == null) return null;
         try {
-            BufferedImage im = chart.getImage(getLayerWidth(), getLayerHeight(), data.isAntialias());
-            if (im != null) {
-                im.syncBitmapToData();
-            }
-            if (im != null) {
-                drawImage(im, new DrawingAttributes(null, null, null, null, null, null));
-            }
+            drawImage(chart, new DrawingAttributes(null, null, null, null, null, null));
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DRAW", "drawChart error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
             StackTraceElement[] stack = t.getStackTrace();
@@ -1117,7 +1113,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public Rectangle2D drawAsset(IAsset file, DrawingAttributes attributes) {
+    public Rectangle2D drawAsset(IAsset file, IDrawingAttributes attributes) {
         IScope scope = getSurface().getScope();
         if (file instanceof IImageProvider im) {
             java.awt.image.BufferedImage bi = im.getImage(scope, attributes.useCache());
@@ -1128,9 +1124,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             return drawObj3D(scope, obj, attributes);
         }
         if (!(file instanceof GamaGeometryFile)) return null;
-        gama.core.metamodel.shape.IShape shape = Cast.asGeometry(scope, file);
+        gama.api.types.geometry.IShape shape = ((GamaGeometryFile) file).getGeometry(scope);
         if (shape == null) return null;
-        GamaPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
+        IPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
         return drawShape(shape.getInnerGeometry(), new ShapeDrawingAttributes(
                 attributes.getSize(), attributes.getDepth(), attributes.getRotation(),
                 loc, attributes.isEmpty(), attributes.getColor(), attributes.getBorder(),
@@ -1144,10 +1140,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
      * the generic geometry path so the object stays put.
      */
     /** Rotate a vertex in OBJ coordinates (Y-up) by initRotation. */
-    private double[] rotateVertexOBJ(double[] v, gama.core.common.geometry.AxisAngle rot) {
-        if (rot == null || rot.angle == 0.0) return v;
-        double a = Math.toRadians(rot.angle);
-        gama.core.metamodel.shape.GamaPoint axis = rot.getAxis();
+    private double[] rotateVertexOBJ(double[] v, AxisAngle rot) {
+        if (rot == null || rot.getAngle() == 0.0) return v;
+        double a = Math.toRadians(rot.getAngle());
+        IPoint axis = rot.getAxis();
         double ux = axis.getX(), uy = axis.getY(), uz = axis.getZ();
         double x = v[0], y = v[1], z = v[2];
         double c = Math.cos(a), s = Math.sin(a), t = 1 - c;
@@ -1157,22 +1153,22 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return new double[] { rx, ry, rz };
     }
 
-    private static final java.util.HashMap<String, gama.core.metamodel.shape.IShape> OBJ_GEOM_CACHE =
+    private static final java.util.HashMap<String, gama.api.types.geometry.IShape> OBJ_GEOM_CACHE =
             new java.util.HashMap<>();
 
-    private Rectangle2D drawObj3D(IScope scope, GamaObjFile file, DrawingAttributes attributes) {
+    private Rectangle2D drawObj3D(IScope scope, GamaObjFile file, IDrawingAttributes attributes) {
         try {
             try {
                 file.loadObject(scope, true);
             } catch (Throwable lte) {
                 android.util.Log.w("ANDROID_3D", "OBJ3D loadObject threw: " + lte);
             }
-            gama.core.metamodel.shape.IShape shape;
+            gama.api.types.geometry.IShape shape;
             try {
                 String key = file.getFile(scope).getAbsolutePath();
                 shape = OBJ_GEOM_CACHE.get(key);
                 if (shape == null) {
-                    shape = Cast.asGeometry(scope, file);
+                    shape = file.getGeometry(scope);
                     if (shape != null) OBJ_GEOM_CACHE.put(key, shape);
                 }
             } catch (Throwable ct) {
@@ -1183,7 +1179,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             Geometry geom = shape.getInnerGeometry();
             double[] center = bboxCenter3D(geom);
             double k = modelScale(geom, attributes.getSize());
-            GamaPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
+            IPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
             double ox = 0, oy = 0, oz = 0;
             if (loc != null) {
                 double lift = terrainLift(loc.getX(), loc.getY());
@@ -1191,8 +1187,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 oy = loc.getY() - center[1];
                 oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
             }
-            gama.core.common.geometry.AxisAngle rot = attributes.getRotation();
-            gama.core.common.geometry.AxisAngle fileInitRot = file.getInitRotation();
+            AxisAngle rot = attributes.getRotation();
+            AxisAngle fileInitRot = file.getInitRotation();
             int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
 
             int nmat = file.matTimings.size();
@@ -1245,7 +1241,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 for (int w = 0; w < n; w++) {
                     double[] c = file.setOfVertex.get(fv[w] - 1);
                     // Apply file's initRotation in OBJ coordinates (Y-up) before coordinate conversion
-                    if (fileInitRot != null && fileInitRot.angle != 0.0) {
+                    if (fileInitRot != null && fileInitRot.getAngle() != 0.0) {
                         c = rotateVertexOBJ(c, fileInitRot);
                     }
                     // Convert to geometry coordinates (Y-down) and apply draw rotation
@@ -1281,7 +1277,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public Rectangle2D drawField(IField fieldValues, MeshDrawingAttributes attributes) {
+    public Rectangle2D drawField(IField fieldValues, IDrawingAttributes attributes) {
         if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
             drawField3D(fieldValues, attributes);
             drawnShapesCount++;
@@ -1294,9 +1290,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             if (image instanceof BufferedImage bi) return drawImage(bi, attributes);
         }
         if (!(fieldValues instanceof GamaField gf)) return null;
-        GamaField flatten = gf.flatten(getSurface().getScope(), attributes.getColorProvider());
+        GamaField flatten = (GamaField) gf.flatten(getSurface().getScope(), attributes.getColorProvider());
         attributes.setSize(null);
-        return drawImage(flatten.getImage(getSurface().getScope()), attributes);
+        return drawImage(flatten.getImage(getSurface().getScope(), false), attributes);
     }
 
     /**
@@ -1307,7 +1303,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
      * into two triangles on the same diagonal as the desktop renderer. The mesh is
      * sampled down so the software renderer stays fast.
      */
-    private void drawField3D(IField fieldValues, MeshDrawingAttributes attributes) {
+    private void drawField3D(IField fieldValues, IDrawingAttributes attributes) {
         if (!(fieldValues instanceof GamaField gf)) return;
         int cols = gf.numCols, rows = gf.numRows;
         if (cols < 2 || rows < 2) return;
@@ -1502,10 +1498,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public void fillBackground(java.awt.Color bgColor) {
+    public void fillBackground(IColor bgColor) {
         if (canvas == null) return;
         setAlpha(1);
-        bgPaint.setColor(awtColorToArgb(bgColor));
+        bgPaint.setColor(gamaColorToArgb(bgColor));
         bgPaint.setStyle(Paint.Style.FILL);
         canvas.drawRect(0, 0, (float) getSurface().getDisplayWidth(),
                 (float) getSurface().getDisplayHeight(), bgPaint);
@@ -1594,7 +1590,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             scene3d.setAmbientLight(ambientARGB);
             scene3d.setDirectionalLight(ldx, ldy, ldz, lightRGB);
 
-            GamaPoint camPos = null, camTarget = null;
+            IPoint camPos = null, camTarget = null;
             Double camLens = null;
             try {
                 camPos = data.getCameraPos();
@@ -1652,7 +1648,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     @Override
-    public void beginOverlay(OverlayLayer layer) {
+    public void beginOverlay(ILayer layer) {
         if (canvas == null) return;
         if (is3dMode()) {
             int ow = getDisplayWidth();
@@ -1670,17 +1666,19 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         int y = (int) getYOffsetInPixels();
         int w = getLayerWidth();
         int h = getLayerHeight();
-        bgPaint.setColor(awtColorToArgb(layer.getData().getBackgroundColor(getSurface().getScope())));
+        if (!(layer instanceof OverlayLayer overlay)) return;
+        gama.core.outputs.layers.OverlayLayerData od = overlay.getData();
+        bgPaint.setColor(gamaColorToArgb(od.getBackgroundColor(getSurface().getScope())));
         bgPaint.setStyle(Paint.Style.FILL);
-        if (layer.getData().isRounded()) {
+        if (od.isRounded()) {
             canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 10, 10, bgPaint);
         } else {
             canvas.drawRect(x, y, x + w, y + h, bgPaint);
         }
-        if (layer.getData().getBorderColor() != null) {
-            bgPaint.setColor(awtColorToArgb(layer.getData().getBorderColor()));
+        if (od.getBorderColor() != null) {
+            bgPaint.setColor(gamaColorToArgb(od.getBorderColor()));
             bgPaint.setStyle(Paint.Style.STROKE);
-            if (layer.getData().isRounded()) {
+            if (od.isRounded()) {
                 canvas.drawRoundRect(new RectF(x, y, x + w, y + h), 10, 10, bgPaint);
             } else {
                 canvas.drawRect(x, y, x + w, y + h, bgPaint);

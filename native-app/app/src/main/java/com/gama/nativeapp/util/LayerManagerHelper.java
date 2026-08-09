@@ -1,9 +1,9 @@
 package com.gama.nativeapp.util;
 
-import gama.core.common.interfaces.ILayer;
+import gama.api.ui.layers.ILayer;
 import gama.core.outputs.LayeredDisplayOutput;
 import gama.core.outputs.display.LayerManager;
-import gama.core.outputs.layers.ILayerStatement;
+import gama.api.ui.layers.ILayerStatement;
 
 /**
  * Wraps LayerManager.createLayer to catch exceptions per-layer,

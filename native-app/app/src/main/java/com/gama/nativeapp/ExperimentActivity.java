@@ -871,7 +871,7 @@ public class ExperimentActivity extends Activity {
                 // list (see GAMA.closeController). Calling close() directly leaks the whole
                 // experiment graph (plan -> model -> types -> sim -> displays -> activity)
                 // because the controller stays reachable from that static list forever.
-                Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                Class<?> gamaClass = Class.forName("gama.api.GAMA");
                 java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
                 controllersField.setAccessible(true);
                 java.util.List controllers = (java.util.List) controllersField.get(null);
@@ -1014,7 +1014,7 @@ public class ExperimentActivity extends Activity {
         Class<?> uriClass = Class.forName("org.eclipse.emf.common.util.URI");
         Object uri = uriClass.getMethod("createFileURI", String.class).invoke(null, modelFile.getAbsolutePath());
         List<Object> errors = new ArrayList<>();
-        Class<?> modelClass = Class.forName("gama.core.kernel.model.IModel");
+        Class<?> modelClass = Class.forName("gama.api.kernel.species.IModelSpecies");
         Object model = builderClass.getMethod("compile", uriClass, List.class).invoke(builder, uri, errors);
 
         if (model == null) {
@@ -1057,7 +1057,7 @@ public class ExperimentActivity extends Activity {
 
     private void showExperiments(Object model) {
         try {
-            Class<?> modelClass = Class.forName("gama.core.kernel.model.IModel");
+            Class<?> modelClass = Class.forName("gama.api.kernel.species.IModelSpecies");
             java.lang.reflect.Method getExps = modelClass.getMethod("getExperiments");
             Iterable<?> experiments = (Iterable<?>) getExps.invoke(model);
             List<Object> expList = new ArrayList<>();
@@ -1147,13 +1147,13 @@ public class ExperimentActivity extends Activity {
                 Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
                 Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
 
-                Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
-                gamaClass.getMethod("setHeadlessGui", Class.forName("gama.core.common.interfaces.IGui"))
+                Class<?> gamaClass = Class.forName("gama.api.GAMA");
+                gamaClass.getMethod("setHeadlessGui", Class.forName("gama.api.ui.IGui"))
                         .invoke(null, guiHandler);
-                gamaClass.getMethod("setRegularGui", Class.forName("gama.core.common.interfaces.IGui"))
+                gamaClass.getMethod("setRegularGui", Class.forName("gama.api.ui.IGui"))
                         .invoke(null, guiHandler);
 
-                Class<?> expClass = Class.forName("gama.core.kernel.experiment.IExperimentPlan");
+                Class<?> expClass = Class.forName("gama.api.kernel.species.IExperimentSpecies");
                 expClass.getMethod("setHeadless", boolean.class).invoke(expPlan, false);
                 expClass.getMethod("open").invoke(expPlan);
 
@@ -1290,7 +1290,7 @@ public class ExperimentActivity extends Activity {
             try { aliveField = absClass.getDeclaredField("experimentAlive"); aliveField.setAccessible(true); } catch (Exception e) {}
             try { scopeField = absClass.getDeclaredField("scope"); scopeField.setAccessible(true); } catch (Exception e) {}
             try { lockField = absClass.getDeclaredField("lock"); lockField.setAccessible(true); } catch (Exception e) {}
-            try { getClockMethod = Class.forName("gama.core.runtime.IScope").getMethod("getClock"); } catch (Exception e) {}
+            try { getClockMethod = Class.forName("gama.api.runtime.scope.IScope").getMethod("getClock"); } catch (Exception e) {}
             try { getCycleMethod = Class.forName("gama.core.kernel.simulation.SimulationClock").getMethod("getCycle"); } catch (Exception e) {}
             try { Object lockObj = lockField != null ? lockField.get(controller) : null;
                 if (lockObj != null) releaseLockMethod = lockObj.getClass().getMethod("release"); } catch (Exception e) {}

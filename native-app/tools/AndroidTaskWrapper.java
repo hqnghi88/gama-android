@@ -1,4 +1,4 @@
-package gama.core.runtime.concurrent;
+package gama.api.runtime;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;

@@ -122,7 +122,13 @@ public class CacheBuilderPatcher {
                     }
                 }
 
-                ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+                ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS) {
+                    @Override
+                    protected String getCommonSuperClass(String type1, String type2) {
+                        try { return super.getCommonSuperClass(type1, type2); }
+                        catch (Throwable t) { return "java/lang/Object"; }
+                    }
+                };
                 cn.accept(cw);
                 data = cw.toByteArray();
             }

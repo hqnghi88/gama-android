@@ -16,26 +16,29 @@ import java.util.function.Supplier;
 import com.gama.nativeapp.ExperimentActivity;
 import com.gama.nativeapp.display.AndroidDisplaySurface;
 
-import gama.core.common.interfaces.IDisplayCreator.DisplayDescription;
-import gama.core.common.interfaces.IDisplaySurface;
-import gama.core.common.interfaces.IConsoleListener;
-import gama.core.common.interfaces.IGamaView;
-import gama.core.common.interfaces.IGui;
-import gama.core.kernel.experiment.IExperimentPlan;
-import gama.core.kernel.experiment.IParameter;
-import gama.core.kernel.model.IModel;
-import gama.core.kernel.simulation.SimulationAgent;
-import gama.core.outputs.IOutput;
+import gama.api.ui.displays.IDisplaySurface;
+import gama.api.ui.IConsoleListener;
+import gama.api.ui.IGamaView;
+import gama.api.ui.IGui;
+import gama.api.kernel.species.IExperimentSpecies;
+import gama.api.gaml.symbols.IParameter;
+import gama.api.kernel.species.IModelSpecies;
+import gama.api.ui.IOutput;
 import gama.core.outputs.LayeredDisplayOutput;
-import gama.core.runtime.GAMA;
-import gama.core.runtime.IScope;
-import gama.core.runtime.exceptions.GamaRuntimeException;
-import gama.core.util.GamaColor;
-import gama.core.util.GamaFont;
-import gama.core.util.IList;
-import gama.core.util.IMap;
-import gama.gaml.descriptions.ActionDescription;
-import gama.gaml.statements.test.CompoundSummary;
+import gama.api.GAMA;
+import gama.api.runtime.scope.IScope;
+import gama.api.exceptions.GamaRuntimeException;
+import gama.api.types.color.IColor;
+import gama.api.types.font.IFont;
+import gama.api.types.list.IList;
+import gama.api.types.map.IMap;
+import gama.api.compilation.descriptions.IActionDescription;
+import gama.api.utils.tests.CompoundSummary;
+import gama.api.types.geometry.IPoint;
+import gama.api.utils.server.ISocketCommand;
+import gama.api.kernel.simulation.ISimulationAgent;
+import gama.api.kernel.simulation.ITopLevelAgent;
+import gama.api.ui.displays.IDisplayCreator;
 
 public class AndroidGuiHandler implements IGui {
 
@@ -43,7 +46,7 @@ public class AndroidGuiHandler implements IGui {
     private static Activity currentActivity;
     private static AndroidGuiHandler instance;
     private ConsoleListener consoleListener;
-    private static IExperimentPlan cachedExperimentPlan;
+    private static IExperimentSpecies cachedExperimentPlan;
 
     /** Push a console/error line to the visible console view (when available) and optionally toast it. */
     private void deliver(String msg, boolean showConsole, boolean toast) {
@@ -102,18 +105,19 @@ public class AndroidGuiHandler implements IGui {
     }
 
     @Override
-    public IDisplaySurface createDisplaySurfaceFor(LayeredDisplayOutput output, Object... args) {
-        String displayName = output.getName();
+    public IDisplaySurface createDisplaySurfaceFor(IOutput.Display output, Object arg) {
+        LayeredDisplayOutput ldo = (LayeredDisplayOutput) output;
+        String displayName = ldo.getName();
         if (displaySurfaces.containsKey(displayName)) {
             Log.i(TAG, "Surface already exists for display: " + displayName + ", skipping");
             return displaySurfaces.get(displayName);
         }
 
         // Don't create surface until output has a valid scope (sim must init it first)
-        if (output.getScope() == null) {
+        if (ldo.getScope() == null) {
             // Try setting scope from controller via buildScopeFrom and init layers
             try {
-                Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                Class<?> gamaClass = Class.forName("gama.api.GAMA");
                 java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
                 controllersField.setAccessible(true);
                 java.util.List controllers = (java.util.List) controllersField.get(null);
@@ -128,18 +132,18 @@ public class AndroidGuiHandler implements IGui {
                         Class<?> absOut = Class.forName("gama.core.outputs.AbstractOutput");
                         java.lang.reflect.Method buildScope = absOut.getDeclaredMethod("buildScopeFrom", IScope.class);
                         buildScope.setAccessible(true);
-                        IScope gfxScope = (IScope) buildScope.invoke(output, ctrlScope);
-                        output.setScope(gfxScope);
+                        IScope gfxScope = (IScope) buildScope.invoke(ldo, ctrlScope);
+                        ldo.setScope(gfxScope);
                         Log.i(TAG, "Set scope on " + displayName + " from controller (via buildScopeFrom)");
                         // Init layers directly to resolve species (skip full init which fails on
                         // initWith when simulation envelope is null)
-                        java.lang.reflect.Method getLayers = output.getClass().getMethod("getLayers");
+                        java.lang.reflect.Method getLayers = ldo.getClass().getMethod("getLayers");
                         java.util.List layers = (java.util.List) getLayers.invoke(output);
                         if (layers != null) {
                             for (Object layer : layers) {
                                 try {
                                     java.lang.reflect.Method setDisp = layer.getClass().getMethod("setDisplayOutput", IOutput.class);
-                                    setDisp.invoke(layer, output);
+                                    setDisp.invoke(layer, ldo);
                                 } catch (Throwable t) {
                                     Log.w(TAG, "setDisplayOutput failed: " + t.getMessage());
                                 }
@@ -154,16 +158,16 @@ public class AndroidGuiHandler implements IGui {
                         }
                         // Set env dimensions from simulation envelope since initWith was skipped
                         try {
-                            SimulationAgent sim = ctrlScope.getSimulation();
-                            gama.core.common.geometry.Envelope3D env = null;
+                            ISimulationAgent sim = ctrlScope.getSimulation();
+                            gama.api.utils.geometry.IEnvelope env = null;
                             if (sim != null) env = sim.getEnvelope();
                             if (env == null) {
                                 // Fallback to a default envelope when sim envelope unavailable
-                                env = gama.core.common.geometry.Envelope3D.of(0, 100, 0, 100, 0, 0);
+                                env = gama.api.utils.geometry.GamaEnvelopeFactory.of(0, 100, 0, 100, 0, 0);
                                 Log.w(TAG, "Using default env for " + displayName + " (sim=" + (sim != null ? "ok" : "null") + " env=" + (sim != null && sim.getEnvelope() != null ? "ok" : "null") + ")");
                             }
-                            output.getData().setEnvWidth(env.getWidth());
-                            output.getData().setEnvHeight(env.getHeight());
+                            ldo.getData().setEnvWidth(env.getWidth());
+                            ldo.getData().setEnvHeight(env.getHeight());
                             Log.i(TAG, "Set env dimensions for " + displayName + ": " + env.getWidth() + "x" + env.getHeight());
                         } catch (Throwable t) {
                             Log.w(TAG, "Env set failed: " + t.getMessage());
@@ -173,7 +177,7 @@ public class AndroidGuiHandler implements IGui {
             } catch (Throwable t) {
                 Log.w(TAG, "Scope set+init failed for " + displayName + ": " + t.getMessage());
             }
-            if (output.getScope() == null) {
+            if (ldo.getScope() == null) {
                 Log.i(TAG, "Deferring surface creation for " + displayName + " (scope not ready)");
                 return null;
             }
@@ -185,7 +189,7 @@ public class AndroidGuiHandler implements IGui {
             return null;
         }
 
-        if (output.getData().is3D()) {
+        if (ldo.getData().is3D()) {
             Log.i(TAG, "3D display type preserved for: " + displayName);
         }
 
@@ -194,10 +198,10 @@ public class AndroidGuiHandler implements IGui {
             java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
             activity.runOnUiThread(() -> {
                 try {
-                    surfaceHolder[0] = new AndroidDisplaySurface(activity, output);
+                    surfaceHolder[0] = new AndroidDisplaySurface(activity, ldo);
                     Log.i(TAG, "Created surface for display: " + displayName);
 
-                    displayOutputs.put(displayName, output);
+                    displayOutputs.put(displayName, ldo);
                     displaySurfaces.put(displayName, surfaceHolder[0]);
 
                     if (activity instanceof ExperimentActivity) {
@@ -230,19 +234,34 @@ public class AndroidGuiHandler implements IGui {
         }
 
         if (surfaceHolder[0] != null) {
-            setSurfaceField(output, surfaceHolder[0]);
+            setSurfaceField(ldo, surfaceHolder[0]);
         }
 
         return surfaceHolder[0];
     }
 
     @Override
-    public DisplayDescription getDisplayDescriptionFor(String name) {
+    public IDisplayCreator getDisplayDescriptionFor(String name) {
         return null;
     }
 
     @Override
-    public boolean openSimulationPerspective(IModel model, String experimentId) {
+    public Map<String, ISocketCommand> getServerCommands() {
+        return java.util.Collections.emptyMap();
+    }
+
+    @Override
+    public IPoint getMouseLocationInModel() {
+        return null;
+    }
+
+    @Override
+    public IPoint getMouseLocationInDisplay() {
+        return null;
+    }
+
+    @Override
+    public boolean openSimulationPerspective(IModelSpecies model, String experimentId) {
         Activity activity = currentActivity;
         if (activity == null) return false;
         Intent intent = new Intent(activity, ExperimentActivity.class);
@@ -252,12 +271,10 @@ public class AndroidGuiHandler implements IGui {
         return true;
     }
 
-    @Override
     public void openMessageDialog(IScope scope, String error) {
         deliver("Message: " + error, false, false);
     }
 
-    @Override
     public void openErrorDialog(IScope scope, String error) {
         String msg = "Error: " + error;
         Log.e(TAG, msg);
@@ -311,13 +328,13 @@ public class AndroidGuiHandler implements IGui {
 
     @Override
     public Map<String, Object> openUserInputDialog(IScope scope, String title,
-            List<IParameter> parameters, GamaFont font, GamaColor color, Boolean showTitle) {
+            List<IParameter> parameters, IFont font, IColor color, Boolean showTitle) {
         return java.util.Collections.emptyMap();
     }
 
     @Override
     public IMap<String, IMap<String, Object>> openWizard(IScope scope, String title,
-            ActionDescription finish, IList<IMap<String, Object>> pages) {
+            IActionDescription finish, IList<IMap<String, Object>> pages) {
         return null;
     }
 
@@ -325,10 +342,10 @@ public class AndroidGuiHandler implements IGui {
     public void displayTestsResults(IScope scope, CompoundSummary<?, ?> summary) {}
 
     @Override
-    public void arrangeExperimentViews(IScope myScope, IExperimentPlan experimentPlan,
+    public void arrangeExperimentViews(IScope myScope, IExperimentSpecies experimentPlan,
             Boolean keepTabs, Boolean keepToolbars, Boolean showConsoles,
             Boolean showParameters, Boolean showNavigator, Boolean showControls,
-            Boolean keepTray, Supplier<GamaColor> color, boolean showEditors) {
+            Boolean keepTray, Supplier<IColor> color, boolean showEditors) {
         Log.i(TAG, "[ARRANGE] called");
         cachedExperimentPlan = experimentPlan;
         Activity activity = currentActivity;
@@ -343,7 +360,7 @@ public class AndroidGuiHandler implements IGui {
     }
 
     /** Record plan outputs by name (no surface creation - sim outputs will have proper scopes) */
-    private void recordPlanOutputs(IExperimentPlan experimentPlan) {
+    private void recordPlanOutputs(IExperimentSpecies experimentPlan) {
         try {
             java.lang.reflect.Method getSimOutputs = experimentPlan.getClass()
                 .getMethod("getOriginalSimulationOutputs");
@@ -372,7 +389,7 @@ public class AndroidGuiHandler implements IGui {
 
         // Try simulation agent's initialized outputs first (they have valid scopes)
         try {
-            Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+            Class<?> gamaClass = Class.forName("gama.api.GAMA");
             java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
             controllersField.setAccessible(true);
             java.util.List controllers = (java.util.List) controllersField.get(null);
@@ -399,7 +416,7 @@ public class AndroidGuiHandler implements IGui {
                                         if (val instanceof LayeredDisplayOutput ldo) {
                                             getInstance().displayOutputs.put(ldo.getName(), ldo);
                                             if (ldo.getSurface() == null) {
-                                                getInstance().createDisplaySurfaceFor(ldo);
+                                                getInstance().createDisplaySurfaceFor(ldo, null);
                                             }
                                         }
                                     }
@@ -442,7 +459,7 @@ public class AndroidGuiHandler implements IGui {
 
     private static class ConsoleListener implements IConsoleListener {
         @Override
-        public void informConsole(String s, gama.core.kernel.experiment.ITopLevelAgent root, GamaColor color) {
+        public void informConsole(String s, ITopLevelAgent root, IColor color) {
             Log.i(TAG, s);
             Activity a = currentActivity;
             if (a instanceof ExperimentActivity) {

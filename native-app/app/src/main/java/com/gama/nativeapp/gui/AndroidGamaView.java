@@ -2,12 +2,11 @@ package com.gama.nativeapp.gui;
 
 import android.util.Log;
 
-import gama.core.common.interfaces.IDisplaySurface;
-import gama.core.common.interfaces.IGamaView;
-import gama.core.kernel.simulation.SimulationAgent;
-import gama.core.outputs.IOutput;
+import gama.api.ui.displays.IDisplaySurface;
+import gama.api.ui.IGamaView;
+import gama.api.ui.IOutput;
 import gama.core.outputs.LayeredDisplayOutput;
-import gama.core.runtime.IScope;
+import gama.api.runtime.scope.IScope;
 
 public class AndroidGamaView implements IGamaView.Display {
 
@@ -49,7 +48,7 @@ public class AndroidGamaView implements IGamaView.Display {
     }
 
     @Override
-    public void changePartNameWithSimulation(SimulationAgent agent) {}
+    public void changePartNameWithSimulation(gama.api.kernel.simulation.ISimulationAgent agent) {}
 
     @Override
     public void reset() {}
@@ -93,7 +92,7 @@ public class AndroidGamaView implements IGamaView.Display {
     public void setIndex(int i) {}
 
     @Override
-    public void takeSnapshot(gama.core.metamodel.shape.GamaPoint customDimensions) {}
+    public void takeSnapshot(gama.api.types.geometry.IPoint customDimensions) {}
 
     @Override
     public boolean isHiDPI() { return false; }

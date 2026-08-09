@@ -24,24 +24,28 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import org.locationtech.jts.geom.Envelope;
-
-import gama.core.common.interfaces.GeneralSynchronizer;
-import gama.core.common.interfaces.IDisplaySurface;
-import gama.core.common.interfaces.IGraphics;
-import gama.core.common.interfaces.IKeyword;
-import gama.core.common.interfaces.ILayer;
-import gama.core.common.interfaces.ILayerManager;
-import gama.core.metamodel.agent.IAgent;
-import gama.core.metamodel.shape.GamaPoint;
-import gama.core.metamodel.shape.IShape;
+import gama.api.runtime.GeneralSynchronizer;
+import gama.api.ui.displays.IDisplayData;
+import gama.api.ui.displays.IDisplaySurface;
+import gama.api.ui.displays.IGraphics;
+import gama.annotations.constants.IKeyword;
+import gama.api.ui.layers.ILayer;
+import gama.api.ui.layers.ILayerManager;
+import gama.api.kernel.agent.IAgent;
+import gama.api.kernel.agent.IPopulation;
+import gama.api.types.geometry.GamaPointFactory;
+import gama.api.types.geometry.IPoint;
+import gama.api.types.geometry.IShape;
+import gama.api.types.color.IColor;
+import gama.api.utils.geometry.GamaEnvelopeFactory;
+import gama.api.utils.geometry.IEnvelope;
 import gama.core.outputs.LayeredDisplayData;
 import gama.core.outputs.LayeredDisplayOutput;
 import gama.core.outputs.display.LayerManager;
-import gama.core.outputs.layers.IEventLayerListener;
+import gama.api.ui.layers.IEventLayerListener;
 import gama.core.outputs.layers.OverlayLayer;
-import gama.core.runtime.GAMA;
-import gama.core.runtime.IScope.IGraphicsScope;
+import gama.api.GAMA;
+import gama.api.ui.displays.IGraphicsScope;
 
 public class AndroidDisplaySurface extends View implements IDisplaySurface {
 
@@ -88,7 +92,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
 
     private java.util.List<String> cachedSpeciesNames;
     private long lastSpeciesCacheTime = 0;
-    private gama.core.metamodel.agent.IMacroAgent capturedSim = null;
+    private gama.api.kernel.agent.IMacroAgent capturedSim = null;
     private int cachedAgentCount = 0;
     private boolean scopeUpdated = false;
 
@@ -97,7 +101,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         this.output = output;
         output.setSurface(this);
         try {
-            gama.core.runtime.IScope outScope = output.getScope();
+            gama.api.runtime.scope.IScope outScope = output.getScope();
             if (outScope != null) {
                 setDisplayScope(outScope.copyForGraphics("in android2d display"));
             }
@@ -106,7 +110,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         }
         // Capture simulation reference at construction time before scope becomes stale
         try {
-            gama.core.runtime.IScope outScope = output.getScope();
+            gama.api.runtime.scope.IScope outScope = output.getScope();
             if (outScope != null) {
                 this.capturedSim = outScope.getSimulation();
             }
@@ -117,7 +121,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         this.androidGraphics = new AndroidDisplayGraphics();
         this.androidGraphics.setDisplaySurface(this);
 
-        bgPaint.setColor(output.getData().getBackgroundColor().getRGB() | 0xFF000000);
+        bgPaint.setColor(IColor.toAWTColor(output.getData().getBackgroundColor()).getRGB() | 0xFF000000);
         bgPaint.setStyle(Paint.Style.FILL);
 
         agentPaint.setColor(0xFF00FF00);
@@ -220,7 +224,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         if (!scopeUpdated) {
             if (scope == null) {
                 try {
-                    gama.core.runtime.IScope outScope = output.getScope();
+                    gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null) {
                         setDisplayScope(outScope.copyForGraphics("in android2d display"));
                         android.util.Log.i("ANDROID_DISPLAY", "Initialized display scope from output");
@@ -231,7 +235,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             }
             if (capturedSim == null) {
                 try {
-                    gama.core.runtime.IScope outScope = output.getScope();
+                    gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null) {
                         capturedSim = outScope.getSimulation();
                     }
@@ -239,7 +243,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             }
             if (capturedSim != null) {
                 try {
-                    gama.core.runtime.IScope simScope = capturedSim.getScope();
+                    gama.api.runtime.scope.IScope simScope = capturedSim.getScope();
                     if (simScope != null) {
                         setDisplayScope(simScope.copyForGraphics("in android2d display"));
                         scopeUpdated = true;
@@ -255,7 +259,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         try {
             IGraphicsScope drawScope = scope;
             if (drawScope == null) {
-                gama.core.runtime.IScope outScope = output.getScope();
+                gama.api.runtime.scope.IScope outScope = output.getScope();
                 if (outScope != null) drawScope = outScope.copyForGraphics("draw");
             }
             if (drawScope != null && !drawScope.interrupted()) {
@@ -267,7 +271,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             android.util.Log.e("ANDROID_DISPLAY", "layerManager draw error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
         if (!drewShapes) {
-            gama.core.outputs.layers.charts.ChartLayer chartOnly = layerManager.getOnlyChart();
+            gama.api.ui.layers.ILayer.Chart chartOnly = layerManager.getOnlyChart();
             if (chartOnly == null) {
                 if (!androidGraphics.is3dMode()) {
                     drawAgentsManually(canvas);
@@ -293,7 +297,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
                 return;
             }
 
-            gama.core.metamodel.agent.IMacroAgent sim = null;
+            gama.api.kernel.agent.IMacroAgent sim = null;
             // Priority 1: use cached simulation
             sim = capturedSim;
             // Priority 2-5: scope chain (usually fails for display copies)
@@ -302,36 +306,36 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             }
             if (sim == null) {
                 try {
-                    gama.core.runtime.IScope outScope = output.getScope();
+                    gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null) sim = outScope.getSimulation();
                 } catch (Throwable t) {}
             }
             if (sim == null) {
                 try {
-                    gama.core.runtime.IScope outScope = output.getScope();
+                    gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null && outScope.getRoot() != null) sim = outScope.getRoot().getSimulation();
                 } catch (Throwable t) {}
             }
             if (sim == null) {
                 try {
-                    gama.core.runtime.IScope outScope = output.getScope();
+                    gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null) {
                         Object exp = outScope.getExperiment();
-                        if (exp instanceof gama.core.metamodel.agent.IMacroAgent macro) sim = macro.getSimulation();
+                        if (exp instanceof gama.api.kernel.agent.IMacroAgent macro) sim = macro.getSimulation();
                     }
                 } catch (Throwable t) {}
             }
             // Priority 6: try GAMA.getSimulation() or iterate controllers
             if (sim == null) {
                 try {
-                    Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                    Class<?> gamaClass = Class.forName("gama.api.GAMA");
                     Object simObj = gamaClass.getMethod("getSimulation").invoke(null);
-                    if (simObj instanceof gama.core.metamodel.agent.IMacroAgent m) sim = m;
+                    if (simObj instanceof gama.api.kernel.agent.IMacroAgent m) sim = m;
                 } catch (Throwable t) {}
             }
             if (sim == null) {
                 try {
-                    Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+                    Class<?> gamaClass = Class.forName("gama.api.GAMA");
                     java.lang.reflect.Field ctrlField = gamaClass.getDeclaredField("controllers");
                     ctrlField.setAccessible(true);
                     java.util.List controllers = (java.util.List) ctrlField.get(null);
@@ -340,7 +344,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
                         java.lang.reflect.Field agentField = ctrl.getClass().getSuperclass().getDeclaredField("agent");
                         agentField.setAccessible(true);
                         Object agent = agentField.get(ctrl);
-                        if (agent instanceof gama.core.metamodel.agent.IMacroAgent macro) sim = macro.getSimulation();
+                        if (agent instanceof gama.api.kernel.agent.IMacroAgent macro) sim = macro.getSimulation();
                     }
                 } catch (Throwable t) {}
             }
@@ -361,15 +365,14 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             }
 
             try {
-                gama.core.common.geometry.Envelope3D env = sim.getEnvelope();
+                IEnvelope env = sim.getEnvelope();
                 if (env != null) {
                     double realW = env.getWidth();
                     double realH = env.getHeight();
-                    env.dispose();
                     if (realW > 0 && realH > 0) {
                         envW = realW;
                         envH = realH;
-                        gama.core.outputs.LayeredDisplayData data = output.getData();
+                        IDisplayData data = output.getData();
                         if (data != null) {
                             data.setEnvWidth(envW);
                             data.setEnvHeight(envH);
@@ -385,15 +388,15 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
             double offsetY = (dispH - envH * scale) / 2.0;
             float radius = (float) Math.max(4, 3 * scale);
 
-            gama.core.metamodel.agent.IAgent agent = (sim instanceof gama.core.metamodel.agent.IAgent) ? (sim) : null;
+            gama.api.kernel.agent.IAgent agent = (sim instanceof gama.api.kernel.agent.IAgent) ? (sim) : null;
             if (agent == null) return;
 
             long now = System.currentTimeMillis();
             if (cachedSpeciesNames == null || (now - lastSpeciesCacheTime) > 2000) {
                 try {
                     Object specObj = sim.getSpecies();
-                    if (specObj instanceof gama.core.kernel.model.IModel model) {
-                        java.util.Map<String, gama.gaml.species.ISpecies> allSpecies = model.getAllSpecies();
+                    if (specObj instanceof gama.api.kernel.species.IModelSpecies model) {
+                        java.util.Map<String, gama.api.kernel.species.ISpecies> allSpecies = model.getAllSpecies();
                         cachedSpeciesNames = allSpecies != null ? new java.util.ArrayList<>(allSpecies.keySet()) : null;
                     }
                 } catch (Throwable t) { /* skip */ }
@@ -415,22 +418,22 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
 
             for (String speciesName : cachedSpeciesNames) {
                 try {
-                    gama.core.metamodel.population.IPopulation<? extends gama.core.metamodel.agent.IAgent> pop = agent.getPopulationFor(speciesName);
+                    IPopulation<? extends gama.api.kernel.agent.IAgent> pop = agent.getPopulationFor(speciesName);
                     // For micro-species (e.g. 'ant' inside 'ants_model'), getPopulationFor returns empty.
                     // Fall back to iterating macro-agent sub-populations.
                     if (pop == null || pop.size() == 0) {
-                        gama.core.metamodel.population.IPopulation microPop = tryGetMicroPopulation(sim, speciesName);
+                        IPopulation microPop = tryGetMicroPopulation(sim, speciesName);
                         if (microPop != null && microPop.size() > 0) pop = microPop;
                     }
                     if (pop == null || pop.size() == 0) {
                         continue;
                     }
 
-                    boolean isGridPop = pop instanceof gama.core.metamodel.topology.grid.GridPopulation;
+                    boolean isGridPop = pop instanceof gama.core.topology.grid.GridPopulation;
                     int gridCols = 0, gridRows = 0;
                     if (isGridPop) {
                         try {
-                            gama.core.metamodel.topology.grid.GridPopulation gp = (gama.core.metamodel.topology.grid.GridPopulation) pop;
+                            gama.core.topology.grid.GridPopulation gp = (gama.core.topology.grid.GridPopulation) pop;
                             gridCols = gp.getNbCols();
                             gridRows = gp.getNbRows();
                         } catch (Throwable t) { isGridPop = false; }
@@ -440,34 +443,29 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
                         int sz = pop.size();
                         double cellW = envW / gridCols;
                         double cellH = envH / gridRows;
-                        for (int i = 0; i < sz; i++) {
-                            Object obj = pop.get(i);
-                            if (!(obj instanceof gama.core.metamodel.topology.grid.IGridAgent ga)) continue;
-                            try {
-                                gama.core.util.GamaColor gc = ga.getColor();
-                                if (gc != null) {
-                                    cellPaint.setColor(0xFF000000 | (gc.getRGB() & 0x00FFFFFF));
-                                } else {
-                                    cellPaint.setColor(agentPaint.getColor());
+                        try {
+                            gama.api.kernel.topology.IGrid grid = ((gama.core.topology.grid.GridPopulation) pop).getGrid();
+                            int[] displayData = grid != null ? grid.getDisplayData() : null;
+                            for (int cy = 0; cy < gridRows; cy++) {
+                                for (int cx = 0; cx < gridCols; cx++) {
+                                    int color = displayData != null ? displayData[cy * gridCols + cx] : 0xFF000000;
+                                    if (color == 0) color = 0xFF000000;
+                                    cellPaint.setColor(0xFF000000 | (color & 0x00FFFFFF));
+                                    float left = (float) (cx * cellW * scale + offsetX);
+                                    float top = (float) ((envH - (cy + 1) * cellH) * scale + offsetY);
+                                    float right = (float) ((cx + 1) * cellW * scale + offsetX);
+                                    float bottom = (float) ((envH - cy * cellH) * scale + offsetY);
+                                    canvas.drawRect(left, top, right, bottom, cellPaint);
+                                    totalDrawn++;
                                 }
-                                int cx = ga.getX();
-                                int cy = ga.getY();
-                                float left = (float) (cx * cellW * scale + offsetX);
-                                float top = (float) ((envH - (cy + 1) * cellH) * scale + offsetY);
-                                float right = (float) ((cx + 1) * cellW * scale + offsetX);
-                                float bottom = (float) ((envH - cy * cellH) * scale + offsetY);
-                                canvas.drawRect(left, top, right, bottom, cellPaint);
-                                totalDrawn++;
-                            } catch (Throwable t) { /* skip cell */ }
-                        }
+                            }
+                        } catch (Throwable t) { /* skip grid */ }
                     } else {
                         int sz = pop.size();
                         for (int i = 0; i < sz; i++) {
                             Object obj = pop.get(i);
-                            if (!(obj instanceof gama.core.metamodel.agent.IAgent a) || a.dead()) continue;
-                            gama.core.metamodel.shape.IShape loc = a.getLocation();
-                            if (loc == null) continue;
-                            gama.core.metamodel.shape.GamaPoint pt = loc.getLocation();
+                            if (!(obj instanceof gama.api.kernel.agent.IAgent a) || a.dead()) continue;
+                            IPoint pt = a.getLocation();
                             if (pt == null) continue;
                             float sx = (float) (pt.getX() * scale + offsetX);
                             float sy = (float) ((envH - pt.getY()) * scale + offsetY);
@@ -487,11 +485,11 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private gama.core.metamodel.population.IPopulation tryGetMicroPopulation(
-            gama.core.metamodel.agent.IMacroAgent sim, String speciesName) {
+    private IPopulation tryGetMicroPopulation(
+            gama.api.kernel.agent.IMacroAgent sim, String speciesName) {
         // Approach: recursively find all micro-populations matching the species name
         try {
-            gama.core.metamodel.population.IPopulation simPop = sim.getPopulation();
+            IPopulation simPop = sim.getPopulation();
             if (simPop == null) return null;
             return findInPopulations(simPop, speciesName, 0);
         } catch (Throwable t) {}
@@ -499,38 +497,38 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private gama.core.metamodel.population.IPopulation findInPopulations(
-            gama.core.metamodel.population.IPopulation pop, String speciesName, int depth) {
+    private IPopulation findInPopulations(
+            IPopulation pop, String speciesName, int depth) {
         if (depth > 5 || pop == null) return null;
         try {
             for (int i = 0; i < pop.size(); i++) {
                 Object agent = pop.get(i);
-                if (agent instanceof gama.core.metamodel.agent.IAgent ag) {
-                    if (ag instanceof gama.core.metamodel.agent.IMacroAgent macro) {
+                if (agent instanceof gama.api.kernel.agent.IAgent ag) {
+                    if (ag instanceof gama.api.kernel.agent.IMacroAgent macro) {
                         try {
-                            gama.core.metamodel.population.IPopulation microPop = macro.getPopulationFor(speciesName);
+                            IPopulation microPop = macro.getPopulationFor(speciesName);
                             if (microPop != null && microPop.size() > 0) {
                                 if (frames % 120 == 0) android.util.Log.i("DispDraw", "findInPop: FOUND " + speciesName + " via getPopulationFor size=" + microPop.size() + " depth=" + depth + " agent=" + ag.getSpecies());
                                 return microPop;
                             }
                         } catch (Throwable t) {}
                         try {
-                            gama.core.metamodel.population.IPopulation agentPop = macro.getPopulation();
+                            IPopulation agentPop = macro.getPopulation();
                             if (agentPop != null && agentPop.size() > 0) {
-                                gama.core.metamodel.population.IPopulation found = findInPopulations(agentPop, speciesName, depth + 1);
+                                IPopulation found = findInPopulations(agentPop, speciesName, depth + 1);
                                 if (found != null) return found;
                             }
                         } catch (Throwable t) {}
                         try {
-                            gama.core.metamodel.population.IPopulation<? extends gama.core.metamodel.agent.IAgent>[] allMicro = macro.getMicroPopulations();
+                            IPopulation<? extends gama.api.kernel.agent.IAgent>[] allMicro = macro.getMicroPopulations();
                             if (allMicro != null) {
                                 if (frames % 120 == 0 && depth == 0) android.util.Log.i("DispDraw", "findInPop: agent " + i + " (" + ag.getSpecies() + ") has " + allMicro.length + " microPops");
                                 for (Object mp : allMicro) {
-                                    if (mp instanceof gama.core.metamodel.population.IPopulation subPop) {
+                                    if (mp instanceof IPopulation subPop) {
                                         String popName = subPop.getSpecies() != null ? subPop.getSpecies().getName() : "";
                                         if (frames % 120 == 0 && depth == 0) android.util.Log.i("DispDraw", "  microPop: " + popName + " size=" + subPop.size());
                                         if (popName.equals(speciesName) && subPop.size() > 0) return subPop;
-                                        gama.core.metamodel.population.IPopulation deeper = findInPopulations(subPop, speciesName, depth + 1);
+                                        IPopulation deeper = findInPopulations(subPop, speciesName, depth + 1);
                                         if (deeper != null) return deeper;
                                     }
                                 }
@@ -761,11 +759,11 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     @Override
     public double getEnvWidth() {
         try {
-            gama.core.runtime.IScope s = output.getScope();
+            gama.api.runtime.scope.IScope s = output.getScope();
             if (s != null) {
-                gama.core.metamodel.agent.IMacroAgent sim = s.getSimulation();
+                gama.api.kernel.agent.IMacroAgent sim = s.getSimulation();
                 if (sim != null) {
-                    org.locationtech.jts.geom.Envelope env = sim.getEnvelope();
+                    IEnvelope env = sim.getEnvelope();
                     if (env != null && env.getWidth() > 0) return env.getWidth();
                 }
             }
@@ -776,11 +774,11 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     @Override
     public double getEnvHeight() {
         try {
-            gama.core.runtime.IScope s = output.getScope();
+            gama.api.runtime.scope.IScope s = output.getScope();
             if (s != null) {
-                gama.core.metamodel.agent.IMacroAgent sim = s.getSimulation();
+                gama.api.kernel.agent.IMacroAgent sim = s.getSimulation();
                 if (sim != null) {
-                    org.locationtech.jts.geom.Envelope env = sim.getEnvelope();
+                    IEnvelope env = sim.getEnvelope();
                     if (env != null && env.getHeight() > 0) return env.getHeight();
                 }
             }
@@ -823,7 +821,7 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     public LayeredDisplayOutput getOutput() { return output; }
 
     @Override
-    public LayeredDisplayData getData() { return output != null ? output.getData() : null; }
+    public IDisplayData getData() { return output != null ? output.getData() : null; }
 
     @Override
     public void layersChanged() { invalidateSafe(); }
@@ -838,11 +836,11 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     public Collection<IEventLayerListener> getLayerListeners() { return listeners; }
 
     @Override
-    public Envelope getVisibleRegionForLayer(ILayer currentLayer) {
+    public IEnvelope getVisibleRegionForLayer(ILayer currentLayer) {
         if (currentLayer instanceof OverlayLayer && scope != null) {
             return scope.getSimulation().getEnvelope();
         }
-        Envelope e = new Envelope();
+        IEnvelope e = GamaEnvelopeFactory.create();
         e.expandToInclude(currentLayer.getModelCoordinatesFrom(0, 0, this));
         e.expandToInclude(currentLayer.getModelCoordinatesFrom((int) getWidth(), (int) getHeight(), this));
         return e;
@@ -913,14 +911,14 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
     public Rectangle getBoundsForRobotSnapshot() { return new Rectangle(getWidth(), getHeight()); }
 
     @Override
-    public GamaPoint getModelCoordinates() {
+    public IPoint getModelCoordinates() {
         List<ILayer> layers = layerManager.getLayersIntersecting((int) mousePosition.x, (int) mousePosition.y);
         for (ILayer layer : layers) {
             if (layer.isProvidingWorldCoordinates()) {
                 return layer.getModelCoordinatesFrom((int) mousePosition.x, (int) mousePosition.y, this);
             }
         }
-        return new GamaPoint();
+        return GamaPointFactory.create();
     }
 
     @Override

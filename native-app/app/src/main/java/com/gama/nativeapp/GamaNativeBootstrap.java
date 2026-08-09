@@ -187,10 +187,10 @@ public class GamaNativeBootstrap {
 
         // Register the Android GUI handler as the GAMA GUI
         try {
-            Class<?> gamaClass = Class.forName("gama.core.runtime.GAMA");
+            Class<?> gamaClass = Class.forName("gama.api.GAMA");
             Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
             Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
-            Method setHeadlessGui = gamaClass.getMethod("setHeadlessGui", Class.forName("gama.core.common.interfaces.IGui"));
+            Method setHeadlessGui = gamaClass.getMethod("setHeadlessGui", Class.forName("gama.api.ui.IGui"));
             setHeadlessGui.invoke(null, guiHandler);
             Log.i(TAG, "Android GUI handler registered");
             callback.onProgress("Android GUI handler registered");
@@ -230,7 +230,7 @@ public class GamaNativeBootstrap {
         // Register GAML constants (units, colors, etc.) BEFORE XText init
         // BuiltinGlobalScopeProvider reads GAML.UNITS in its constructor during XText init
         try {
-            Class<?> gamlConstClass = Class.forName("gama.gaml.compilation.GAML");
+            Class<?> gamlConstClass = Class.forName("gama.api.gaml.GAML");
             Class<?> acceptorClass = Class.forName("gama.gaml.constants.IConstantAcceptor");
             Method getAcceptor = gamlConstClass.getMethod("getConstantAcceptor");
             Object acceptor = getAcceptor.invoke(null);
@@ -348,7 +348,7 @@ public class GamaNativeBootstrap {
             Log.i(TAG, "GAML parser provider registered");
 
             // 2. Register info provider
-            Class<?> gamlClass = Class.forName("gama.gaml.compilation.GAML");
+            Class<?> gamlClass = Class.forName("gama.api.gaml.GAML");
             Class<?> infoProviderClass = Class.forName("gaml.compiler.gaml.resource.GamlResourceInfoProvider");
             Object infoProviderInstance = infoProviderClass.getField("INSTANCE").get(null);
             Class<?> infoProviderIface = Class.forName("gama.core.util.file.IGamlResourceInfoProvider");
