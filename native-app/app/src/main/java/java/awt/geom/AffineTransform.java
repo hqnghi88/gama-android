@@ -3,9 +3,11 @@ package java.awt.geom;
 public class AffineTransform {
     public AffineTransform() {}
     public AffineTransform(double m00, double m10, double m01, double m11, double m02, double m12) {}
+    public AffineTransform(float m00, float m10, float m01, float m11, float m02, float m12) {}
     public AffineTransform(AffineTransform Tx) {}
     public void setToIdentity() {}
     public void setToTranslation(double tx, double ty) {}
+    public void setTransform(AffineTransform Tx) {}
     public void setToRotation(double theta) {}
     public void setToRotation(double theta, double x, double y) {}
     public void setToScale(double sx, double sy) {}

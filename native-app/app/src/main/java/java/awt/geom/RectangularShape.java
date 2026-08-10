@@ -20,6 +20,16 @@ public abstract class RectangularShape implements java.awt.Shape {
     public boolean contains(java.awt.geom.Rectangle2D r) { return contains(r.getX(), r.getY(), r.getWidth(), r.getHeight()); }
     public boolean intersects(double x, double y, double w, double h) { return false; }
     public boolean intersects(java.awt.geom.Rectangle2D r) { return intersects(r.getX(), r.getY(), r.getWidth(), r.getHeight()); }
-    public java.awt.geom.PathIterator getPathIterator(java.awt.geom.AffineTransform at) { return null; }
-    public java.awt.geom.PathIterator getPathIterator(java.awt.geom.AffineTransform at, double flatness) { return null; }
+    public java.awt.geom.PathIterator getPathIterator(java.awt.geom.AffineTransform at) {
+        Path2D.Float p = new Path2D.Float();
+        p.moveTo((float) getX(), (float) getY());
+        p.lineTo((float) (getX() + getWidth()), (float) getY());
+        p.lineTo((float) (getX() + getWidth()), (float) (getY() + getHeight()));
+        p.lineTo((float) getX(), (float) (getY() + getHeight()));
+        p.closePath();
+        return p.getPathIterator(at);
+    }
+    public java.awt.geom.PathIterator getPathIterator(java.awt.geom.AffineTransform at, double flatness) {
+        return getPathIterator(at);
+    }
 }

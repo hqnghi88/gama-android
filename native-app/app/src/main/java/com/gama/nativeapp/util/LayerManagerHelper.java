@@ -1,7 +1,7 @@
 package com.gama.nativeapp.util;
 
+import gama.api.ui.IOutput;
 import gama.api.ui.layers.ILayer;
-import gama.core.outputs.LayeredDisplayOutput;
 import gama.core.outputs.display.LayerManager;
 import gama.api.ui.layers.ILayerStatement;
 
@@ -10,7 +10,7 @@ import gama.api.ui.layers.ILayerStatement;
  * preventing one failing layer (e.g. ImageLayer) from crashing the entire display.
  */
 public class LayerManagerHelper {
-    public static ILayer createLayerSafe(LayeredDisplayOutput output, ILayerStatement layer) {
+    public static ILayer createLayerSafe(IOutput.Display output, ILayerStatement layer) {
         try {
             return LayerManager.createLayer(output, layer);
         } catch (Throwable t) {

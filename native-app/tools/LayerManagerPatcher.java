@@ -76,14 +76,23 @@ public class LayerManagerPatcher {
         boolean patched = false;
         for (MethodNode mn : cn.methods) {
             for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-                if (insn instanceof MethodInsnNode min) {
-                    if ("createLayer".equals(min.name) &&
-                        "gama/core/outputs/display/LayerManager".equals(min.owner) &&
-                        min.getOpcode() == Opcodes.INVOKESTATIC) {
-                        // Redirect to LayerManagerHelper.createLayerSafe
+                if (insn instanceof MethodInsnNode min && min.getOpcode() == Opcodes.INVOKESTATIC) {
+                    boolean isOriginal = "createLayer".equals(min.name)
+                        && "gama/core/outputs/display/LayerManager".equals(min.owner);
+                    boolean isAlreadyPatched = "createLayerSafe".equals(min.name)
+                        && "com/gama/nativeapp/util/LayerManagerHelper".equals(min.owner);
+                    if (isOriginal || isAlreadyPatched) {
+                        // Redirect to LayerManagerHelper.createLayerSafe.
+                        // The descriptor must match the original call site: the first
+                        // argument is the IOutput.Display interface (NOT the concrete
+                        // LayeredDisplayOutput) and the return type is gama.api.ui.layers.ILayer.
+                        // Using the concrete type here produces a VerifyError ("register v8 has
+                        // type IOutput$Display but expected LayeredDisplayOutput").
+                        // This is idempotent: it also repairs the descriptor of a call that was
+                        // already redirected by an earlier (buggy) run of this patcher.
                         min.owner = "com/gama/nativeapp/util/LayerManagerHelper";
                         min.name = "createLayerSafe";
-                        min.desc = "(Lgama/core/outputs/LayeredDisplayOutput;Lgama/core/outputs/layers/ILayerStatement;)Lgama/core/common/interfaces/ILayer;";
+                        min.desc = "(Lgama/api/ui/IOutput$Display;Lgama/api/ui/layers/ILayerStatement;)Lgama/api/ui/layers/ILayer;";
                         patched = true;
                     }
                 }

@@ -1545,6 +1545,38 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         }
     }
 
+    private static int colorToARGB(Object color, int fallbackARGB) {
+        if (color == null) return fallbackARGB;
+        try {
+            Object awt = null;
+            try {
+                awt = color.getClass().getMethod("getAWTColor").invoke(color);
+            } catch (NoSuchMethodException e) {
+                try {
+                    awt = color.getClass().getMethod("internalColor").invoke(color);
+                } catch (NoSuchMethodException e2) {
+                    awt = null;
+                }
+            }
+            if (awt instanceof java.awt.Color) {
+                java.awt.Color c = (java.awt.Color) awt;
+                return (c.getAlpha() << 24) | (c.getRed() << 16) | (c.getGreen() << 8) | c.getBlue();
+            }
+        } catch (Throwable t) { /* fall back to direct accessors */ }
+        try {
+            int r = ((Number) color.getClass().getMethod("getRed").invoke(color)).intValue();
+            int g = ((Number) color.getClass().getMethod("getGreen").invoke(color)).intValue();
+            int b = ((Number) color.getClass().getMethod("getBlue").invoke(color)).intValue();
+            int a = 255;
+            try {
+                a = ((Number) color.getClass().getMethod("getAlpha").invoke(color)).intValue();
+            } catch (Throwable t) { /* keep 255 */ }
+            return (a << 24) | (r << 16) | (g << 8) | b;
+        } catch (Throwable t) {
+            return fallbackARGB;
+        }
+    }
+
     private void renderScene3D() {
         Canvas c = canvas;
         if (c == null || scene3d.size() == 0) return;
@@ -1559,23 +1591,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     Object ambientDef = lights.get("Ambient light");
                     if (ambientDef != null) {
                         Object intensity = ambientDef.getClass().getMethod("getIntensity").invoke(ambientDef);
-                        if (intensity != null) {
-                            int r = (int) intensity.getClass().getMethod("getRed").invoke(intensity);
-                            int g = (int) intensity.getClass().getMethod("getGreen").invoke(intensity);
-                            int b = (int) intensity.getClass().getMethod("getBlue").invoke(intensity);
-                            int a = (int) intensity.getClass().getMethod("getAlpha").invoke(intensity);
-                            ambientARGB = (a << 24) | (r << 16) | (g << 8) | b;
-                        }
+                        ambientARGB = colorToARGB(intensity, ambientARGB);
                     }
                     Object defaultDef = lights.get("default");
                     if (defaultDef != null) {
                         Object intensity = defaultDef.getClass().getMethod("getIntensity").invoke(defaultDef);
-                        if (intensity != null) {
-                            int r = (int) intensity.getClass().getMethod("getRed").invoke(intensity);
-                            int g = (int) intensity.getClass().getMethod("getGreen").invoke(intensity);
-                            int b = (int) intensity.getClass().getMethod("getBlue").invoke(intensity);
-                            lightRGB = (r << 16) | (g << 8) | b;
-                        }
+                        lightRGB = colorToARGB(intensity, 0xFFFFFF) & 0xFFFFFF;
                         Object dir = defaultDef.getClass().getMethod("getDirection").invoke(defaultDef);
                         if (dir != null) {
                             ldx = -((Number) dir.getClass().getMethod("getX").invoke(dir)).doubleValue();

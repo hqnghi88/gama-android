@@ -113,7 +113,13 @@ public class BufferedImage extends Image implements Transparency {
     }
 
     public int getRGB(int x, int y) {
-        return (x >= 0 && x < width && y >= 0 && y < height) ? data[y * width + x] : 0;
+        if (x >= 0 && x < width && y >= 0 && y < height) {
+            if (androidBitmap != null && !androidBitmap.isRecycled()) {
+                return androidBitmap.getPixel(x, y);
+            }
+            return data[y * width + x];
+        }
+        return 0;
     }
 
     public void setRGB(int x, int y, int rgb) {

@@ -505,8 +505,7 @@ public class ExperimentActivity extends Activity {
             speedValue.setText(ms + " ms");
             if (currentController != null) {
                 try {
-                    Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
-                    ctrlInterface.getMethod("setCycleDuration", long.class).invoke(currentController, (long) ms);
+                    setSimulationSpeedMs(currentController, ms);
                 } catch (Exception e) {
                     Log.w(TAG, "Set speed error", e);
                 }
@@ -865,7 +864,7 @@ public class ExperimentActivity extends Activity {
         if (clockUpdateRunnable != null) handler.removeCallbacks(clockUpdateRunnable);
         try {
             if (currentController != null) {
-                Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
+                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
                 ctrlInterface.getMethod("close").invoke(currentController);
                 // The desktop path removes the controller from the static GAMA.controllers
                 // list (see GAMA.closeController). Calling close() directly leaks the whole
@@ -1009,8 +1008,8 @@ public class ExperimentActivity extends Activity {
     }
 
     private Object compileFile(File modelFile) throws Exception {
-        Class<?> builderClass = Class.forName("gaml.compiler.gaml.validation.GamlModelBuilder");
-        Object builder = builderClass.getMethod("getDefaultInstance").invoke(null);
+        Class<?> builderClass = Class.forName("gaml.compiler.validation.GamlModelBuilder");
+        Object builder = builderClass.getMethod("getInstance").invoke(null);
         Class<?> uriClass = Class.forName("org.eclipse.emf.common.util.URI");
         Object uri = uriClass.getMethod("createFileURI", String.class).invoke(null, modelFile.getAbsolutePath());
         List<Object> errors = new ArrayList<>();
@@ -1160,8 +1159,10 @@ public class ExperimentActivity extends Activity {
                 Object controller = expClass.getMethod("getController").invoke(expPlan);
                 currentController = controller;
 
-                Class<?> ctrlInterface = Class.forName("gama.core.kernel.experiment.IExperimentController");
-                ctrlInterface.getMethod("setCycleDuration", long.class).invoke(controller, 0L);
+                logDiagnostics(expPlan);
+
+                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                setSimulationSpeedMs(controller, 0);
 
                 java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
                 controllersField.setAccessible(true);
@@ -1173,7 +1174,7 @@ public class ExperimentActivity extends Activity {
                 setupStdoutRedirect();
                 ctrlInterface.getMethod("processStart", boolean.class).invoke(controller, true);
 
-                Class<?> absControllerClass = Class.forName("gama.core.kernel.experiment.DefaultExperimentController").getSuperclass();
+                Class<?> absControllerClass = Class.forName("gama.api.kernel.simulation.DefaultExperimentController").getSuperclass();
                 java.lang.reflect.Field pField = absControllerClass.getDeclaredField("paused");
                 pField.setAccessible(true); pField.setBoolean(controller, false);
                 java.lang.reflect.Field lField = absControllerClass.getDeclaredField("lock");
@@ -1291,10 +1292,67 @@ public class ExperimentActivity extends Activity {
             try { scopeField = absClass.getDeclaredField("scope"); scopeField.setAccessible(true); } catch (Exception e) {}
             try { lockField = absClass.getDeclaredField("lock"); lockField.setAccessible(true); } catch (Exception e) {}
             try { getClockMethod = Class.forName("gama.api.runtime.scope.IScope").getMethod("getClock"); } catch (Exception e) {}
-            try { getCycleMethod = Class.forName("gama.core.kernel.simulation.SimulationClock").getMethod("getCycle"); } catch (Exception e) {}
+            try { getCycleMethod = Class.forName("gama.core.simulation.SimulationClock").getMethod("getCycle"); } catch (Exception e) {}
             try { Object lockObj = lockField != null ? lockField.get(controller) : null;
                 if (lockObj != null) releaseLockMethod = lockObj.getClass().getMethod("release"); } catch (Exception e) {}
         } catch (Exception e) { Log.e(TAG, "Cache fields error", e); }
+    }
+
+    private void logDiagnostics(Object expPlan) {
+        try {
+            Object model = expPlan.getClass().getMethod("getModel").invoke(expPlan);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, Object> speciesMap =
+                    (java.util.Map<String, Object>) model.getClass().getMethod("getAllSpecies").invoke(model);
+            java.lang.reflect.Method modelGetSpecies = model.getClass().getMethod("getSpecies", String.class);
+            for (java.util.Map.Entry<String, Object> e : speciesMap.entrySet()) {
+                Object spAll = e.getValue();
+                Object spNamed = modelGetSpecies.invoke(model, e.getKey());
+                java.lang.reflect.Method getVar = spAll.getClass().getMethod("getVar", String.class);
+                java.lang.reflect.Method visitAll = spAll.getClass().getMethod("getDescription").invoke(spAll)
+                        .getClass().getMethod("visitAllAttributes",
+                                Class.forName("gama.api.compilation.descriptions.IDescription$DescriptionVisitor"));
+                java.util.Set<String> names = new java.util.LinkedHashSet<>();
+                java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                        new Class<?>[] { Class.forName(
+                                "gama.api.compilation.descriptions.IDescription$DescriptionVisitor") },
+                        (proxy, m, args) -> {
+                            Object attr = args[0];
+                            names.add((String) attr.getClass().getMethod("getName").invoke(attr));
+                            try {
+                                for (Object dep : (java.util.Collection<?>) attr.getClass()
+                                        .getMethod("getDependencies", java.util.Set.class, boolean.class,
+                                                boolean.class)
+                                        .invoke(attr, Class.forName(
+                                                "gama.api.compilation.descriptions.IVariableDescription")
+                                                .getField("INIT_DEPENDENCIES_FACETS").get(null), false, true)) {
+                                    if (dep != null) { names.add((String) dep.getClass().getMethod("getName")
+                                            .invoke(dep)); }
+                                }
+                            } catch (Exception ignored) {}
+                            return true;
+                        });
+                java.util.List<String> missingAll = new java.util.ArrayList<>();
+                java.util.List<String> missingNamed = new java.util.ArrayList<>();
+                for (String n : names) {
+                    if (getVar.invoke(spAll, n) == null) { missingAll.add(n); }
+                    if (getVar.invoke(spNamed, n) == null) { missingNamed.add(n); }
+                }
+                Log.i(TAG, "DIAG species=" + e.getKey() + " sameInstance=" + (spAll == spNamed)
+                        + " missingAll=" + missingAll + " missingNamed=" + missingNamed
+                        + " spNamed=" + spNamed);
+            }
+        } catch (Exception ex) {
+            Log.w(TAG, "DIAG error", ex);
+        }
+    }
+
+    private void setSimulationSpeedMs(Object controller, long ms) throws Exception {
+        Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+        Object experiment = ctrlInterface.getMethod("getExperiment").invoke(controller);
+        Object agent = Class.forName("gama.api.kernel.species.IExperimentSpecies").getMethod("getAgent").invoke(experiment);
+        Class<?> agentClass = Class.forName("gama.api.kernel.simulation.IExperimentAgent");
+        agentClass.getMethod("setMinimumDuration", Double.class).invoke(agent, ms / 1000.0);
     }
 
     private volatile boolean displayOutputsCached = false;

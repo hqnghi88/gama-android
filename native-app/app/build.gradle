@@ -12,6 +12,23 @@ tasks.register('patchGamaJars') {
     doLast {
         def libsDir = file("$buildDir/../../app/libs")
 
+        // 0) Restore pristine jars from app/libs/pristine before any in-place patching.
+        //    The patchers modify jars in place, so a build MUST start from pristine copies
+        //    to stay reproducible (otherwise accumulated patch state corrupts the base).
+        def pristineDir = file("${libsDir}/pristine")
+        if (pristineDir.exists()) {
+            pristineDir.listFiles().each { pj ->
+                if (pj.name.endsWith('.jar')) {
+                    def target = file("${libsDir}/${pj.name}")
+                    java.nio.file.Files.copy(pj.toPath(), target.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+            logger.lifecycle("Restored ${pristineDir.listFiles().count { it.name.endsWith('.jar') }} pristine jar(s)")
+        } else {
+            logger.warn("No pristine/ dir found at ${pristineDir}; skipping restore (jars may already be patched)")
+        }
+
         // Run a command, logging a warning instead of failing the build when it errors.
         def safeExec = { String label, Closure spec ->
             try {
@@ -88,6 +105,22 @@ tasks.register('patchGamaJars') {
             tmpDir.deleteDir()
         }
 
+        // 2b) Produce the patched guava jar: copy the resolved android-variant guava into
+        //     libs/guava-patched.jar so GuavaJreCompatPatcher can patch it in place.
+        try {
+            def guavaProbeJar = configurations.guavaProbe.files.find { it.name.endsWith('.jar') }
+            if (guavaProbeJar != null) {
+                def target = file("${libsDir}/guava-patched.jar")
+                java.nio.file.Files.copy(guavaProbeJar.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                logger.lifecycle("Prepared guava-patched.jar from ${guavaProbeJar.name}")
+            } else {
+                logger.warn("Could not locate guava jar for patching")
+            }
+        } catch (Exception e) {
+            logger.warn("guavaProbe resolution failed (guava-patched.jar may be stale): ${e.message}")
+        }
+
         // 3) Compile AndroidTaskWrapper (in package gama.api.runtime).
         def wrapperOutDir = file("$buildDir/tmp/android_wrapper")
         wrapperOutDir.mkdirs()
@@ -107,17 +140,43 @@ tasks.register('patchGamaJars') {
         def gamaApiJar = "${libsDir}/gama.api_0.0.0.202608091252.jar"
         def gamaCoreJar = "${libsDir}/gama.core_0.0.0.202608091252.jar"
 
+        // Every GAMA/GAML toolchain jar (compiled with JDK 17+, so any of them can emit
+        // java.lang.runtime SwitchBootstraps invokedynamic sites that D8/ART cannot run).
+        def toolchainJars = [
+            "${libsDir}/gama.annotations_0.0.0.202608091252.jar",
+            gamaApiJar,
+            gamaCoreJar,
+            "${libsDir}/gama.extension.bdi_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.database_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.fipa_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.image_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.maths_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.network_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.pedestrian_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.serialize_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.stats_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.traffic_0.0.0.202608091252.jar",
+            "${libsDir}/gama.headless_0.0.0.202608091252.jar",
+            "${libsDir}/gama.library_0.0.0.202607310828.jar",
+            "${libsDir}/gama.processor_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.application_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.display.java2d_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.display.opengl_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.editor_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.experiment_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.navigator_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.shared_0.0.0.202608091252.jar",
+            "${libsDir}/gama.ui.viewers_0.0.0.202608091252.jar",
+            "${libsDir}/gama.workspace_0.0.0.202608091252.jar",
+            "${libsDir}/gaml.compiler_0.0.0.202608091252.jar"
+        ]
+
         def patchers = [
             ['ParallelRunnerPatcher', 'ParallelRunnerPatcher',
                 [gamaApiJar, "${wrapperOutDir.absolutePath}/gama/api/runtime/AndroidTaskWrapper.class"]],
             ['Display3DPatcher', 'Display3DPatcher', [gamaCoreJar]],
-            ['TypeSwitchPatcher', 'TypeSwitchPatcher',
-                [gamaCoreJar,
-                 "${libsDir}/gama.extension.image_0.0.0.202608091252.jar",
-                 "${libsDir}/gama.extension.network_0.0.0.202608091252.jar",
-                 "${libsDir}/gama.ui.experiment_0.0.0.202608091252.jar",
-                 "${libsDir}/gama.ui.shared_0.0.0.202608091252.jar",
-                 "${libsDir}/gama.ui.viewers_0.0.0.202608091252.jar"]],
+            ['TypeSwitchPatcher', 'TypeSwitchPatcher', toolchainJars],
+            ['EnumSwitchPatcher', 'EnumSwitchPatcher', toolchainJars],
             ['CrsPatcher', 'CrsPatcher', [gamaCoreJar]],
             ['ColorsPatcher', 'ColorsPatcher', [gamaCoreJar]],
             ['SimulationRunnerPatcher', 'SimulationRunnerPatcher', [gamaApiJar]],
@@ -125,11 +184,13 @@ tasks.register('patchGamaJars') {
             ['LayerManagerPatcher', 'LayerManagerPatcher', [gamaCoreJar]],
             ['ImageLayerPatcher', 'ImageLayerPatcher', [gamaCoreJar]],
             ['CacheBuilderPatcher', 'CacheBuilderPatcher', [gamaCoreJar]],
-            ['SpiPatcher', 'SpiPatcher', ["${libsDir}/gt-referencing-25.0.jar"]],
+            ['SpiPatcher', 'SpiPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
             ['ProjectionPatcher', 'ProjectionPatcher', [gamaCoreJar]],
-            ['MapProjectionPatcher', 'MapProjectionPatcher', ["${libsDir}/gt-referencing-25.0.jar"]],
+            ['MapProjectionPatcher', 'MapProjectionPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
             ['EclipseCorePatcher', 'EclipseCorePatcher',
-                ["${libsDir}/eclipse-core-stubs.jar", gamaCoreJar]]
+                ["${libsDir}/eclipse-core-stubs.jar", gamaCoreJar]],
+            ['GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
+            ['StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]]
         ]
         patchers.each { name, cls, args ->
             def outDir = file("$buildDir/tmp/patch_$name")
@@ -216,10 +277,24 @@ android {
     }
 }
 
+// Probe configuration that resolves the android guava variant (used only to produce the
+// patched guava-patched.jar). Kept out of the guava exclusion below.
+configurations {
+    guavaProbe {
+        attributes {
+            attribute(Attribute.of('org.gradle.jvm.environment', String), 'android')
+        }
+    }
+}
+
 configurations.all {
     resolutionStrategy {
         force 'com.google.inject:guice:5.1.0'
         force 'aopalliance:aopalliance:1.0'
+    }
+    if (name != 'guavaProbe') {
+        exclude group: 'com.google.guava', module: 'guava'
+        exclude group: 'com.google.guava', module: 'listenablefuture'
     }
 }
 
@@ -233,7 +308,8 @@ dependencies {
     implementation 'org.jfree:jfreechart:1.5.4'
     implementation 'org.java-websocket:Java-WebSocket:1.5.4'
     implementation 'org.locationtech.jts:jts-io:1.19.0'
-    implementation 'com.google.guava:guava:33.2.1-jre'
+    guavaProbe 'com.google.guava:guava:33.2.1-jre'
+    implementation 'com.google.guava:failureaccess:1.0.2'
     implementation 'one.util:streamex:0.8.3'
     implementation 'org.apache.commons:commons-math3:3.6.1'
 

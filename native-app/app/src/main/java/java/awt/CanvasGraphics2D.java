@@ -452,11 +452,55 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public boolean drawImage(java.awt.Image img, int x, int y, java.awt.image.ImageObserver observer) {
         trace("drawImage:x" + x + "y" + y);
-        return false;
+        Bitmap src = toBitmap(img);
+        if (src == null) return false;
+        canvas.drawBitmap(src, (float) x, (float) y, fillPaint);
+        return true;
     }
 
     @Override
-    public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.image.ImageObserver observer) { return false; }
+    public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.image.ImageObserver observer) {
+        trace("drawImage:x" + x + "y" + y + "w" + width + "h" + height);
+        Bitmap src = toBitmap(img);
+        if (src == null) return false;
+        Matrix m = new Matrix();
+        m.postScale(width / (float) src.getWidth(), height / (float) src.getHeight());
+        m.postTranslate(x, y);
+        canvas.drawBitmap(src, m, fillPaint);
+        return true;
+    }
+
+    @Override
+    public boolean drawImage(java.awt.Image img, int x, int y, java.awt.Color bgcolor, java.awt.image.ImageObserver observer) {
+        return drawImage(img, x, y, observer);
+    }
+
+    @Override
+    public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.Color bgcolor, java.awt.image.ImageObserver observer) {
+        return drawImage(img, x, y, width, height, observer);
+    }
+
+    public boolean drawImage(java.awt.Image img, AffineTransform xform, java.awt.image.ImageObserver observer) {
+        Bitmap src = toBitmap(img);
+        if (src == null) return false;
+        Matrix m = new Matrix();
+        m.postTranslate((float) xform.getTranslateX(), (float) xform.getTranslateY());
+        m.postScale((float) xform.getScaleX(), (float) xform.getScaleY());
+        canvas.drawBitmap(src, m, fillPaint);
+        return true;
+    }
+
+    private static Bitmap toBitmap(java.awt.Image img) {
+        if (!(img instanceof java.awt.image.BufferedImage bi)) return null;
+        int w = bi.getWidth();
+        int h = bi.getHeight();
+        if (w <= 0 || h <= 0) return null;
+        int[] pixels = new int[w * h];
+        bi.getRGB(0, 0, w, h, pixels, 0, w);
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        bmp.setPixels(pixels, 0, w, 0, 0, w, h);
+        return bmp;
+    }
 
     public Bitmap getBitmap() { return bitmap; }
 

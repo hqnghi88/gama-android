@@ -11,10 +11,10 @@ import java.util.jar.*;
 public class SpiPatcher {
 
     static final String[] SPI_PATHS = {
-        "META-INF/services/org.opengis.referencing.crs.CRSAuthorityFactory",
-        "META-INF/services/org.opengis.referencing.cs.CSAuthorityFactory",
-        "META-INF/services/org.opengis.referencing.operation.CoordinateOperationAuthorityFactory",
-        "META-INF/services/org.opengis.referencing.datum.DatumAuthorityFactory"
+        "META-INF/services/org.geotools.api.referencing.crs.CRSAuthorityFactory",
+        "META-INF/services/org.geotools.api.referencing.cs.CSAuthorityFactory",
+        "META-INF/services/org.geotools.api.referencing.operation.CoordinateOperationAuthorityFactory",
+        "META-INF/services/org.geotools.api.referencing.datum.DatumAuthorityFactory"
     };
 
     public static void main(String[] args) throws Exception {

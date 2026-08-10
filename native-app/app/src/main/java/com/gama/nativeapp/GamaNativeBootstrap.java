@@ -39,7 +39,7 @@ public class GamaNativeBootstrap {
         ClassLoader appClassLoader = context.getClassLoader();
 
         List<String> pluginNames = Arrays.asList(
-            "gama.core", "gama.library", "gama.headless", "gaml.compiler",
+            "gama.api", "gama.core", "gama.library", "gama.headless", "gaml.compiler",
             "gama.processor", "gama.annotations", "gama.dependencies",
             "gama.extension.bdi", "gama.extension.database", "gama.extension.fipa",
             "gama.extension.image", "gama.extension.maths", "gama.extension.network",
@@ -60,15 +60,133 @@ public class GamaNativeBootstrap {
         Log.i(TAG, "Registered " + registeredBundles.size() + " plugin bundles");
         callback.onProgress("Registered " + registeredBundles.size() + " plugin bundles");
 
+        // Install an Android workspace manager. The desktop implementation tracks
+        // the workspace through OSGi service discovery, which does not exist on
+        // Android; without a workspace, GamlResourceIndexer.<clinit> fails.
+        try {
+            Class<?> gamaClass = Class.forName("gama.api.GAMA");
+            gamaClass.getMethod("setWorkspaceManager", Class.forName("gama.api.runtime.IWorkspaceManager"))
+                .invoke(null, new AndroidWorkspaceManager());
+            Log.i(TAG, "Android workspace manager registered");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register workspace manager", e);
+        }
+
+        // Initialize the concrete data-type factories (shapes, topologies, paths, matrices,
+        // graphs, messages). Desktop does this in gama.core.CoreActivator.initializeFactories(),
+        // but that method starts with ProjectionFactory.initialize() which uses Java 21
+        // Thread.ofVirtual() (unavailable on Android), so we register each factory directly.
+        // Without these, GamaShapeFactory.InternalFactory is null and shape/topology creation crashes.
+        try {
+            String[][] factories = {
+                {"gama.api.types.geometry.GamaShapeFactory", "gama.api.types.geometry.IShapeFactory", "gama.core.geometry.InternalGamaShapeFactory"},
+                {"gama.api.types.topology.GamaTopologyFactory", "gama.api.types.topology.ITopologyFactory", "gama.core.topology.InternalTopologyFactory"},
+                {"gama.api.types.graph.GamaPathFactory", "gama.api.types.graph.IPathFactory", "gama.core.util.path.InternalGamaPathFactory"},
+                {"gama.api.types.matrix.GamaMatrixFactory", "gama.api.types.matrix.IMatrixFactory", "gama.core.util.matrix.InternalGamaMatrixFactory"},
+                {"gama.api.types.graph.GamaGraphFactory", "gama.api.types.graph.IGraphFactory", "gama.core.util.graph.InternalGamaGraphFactory"},
+                {"gama.api.types.message.GamaMessageFactory", "gama.api.types.message.IMessageFactory", "gama.core.util.messaging.GamaMessage$Factory"},
+            };
+            for (String[] f : factories) {
+                Class<?> holder = Class.forName(f[0]);
+                Class<?> iface = Class.forName(f[1]);
+                Method setBuilder = holder.getMethod("setBuilder", iface);
+                setBuilder.invoke(null, Class.forName(f[2]).getDeclaredConstructor().newInstance());
+            }
+            Log.i(TAG, "GAMA data-type factories initialized");
+            callback.onProgress("GAMA data-type factories initialized");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to initialize data-type factories", e);
+            callback.onProgress("Factory init error: " + e.getMessage());
+        }
+
+        // Register GAML compiler services BEFORE additions load (replicates gaml.compiler.GamlActivator.start()).
+        // Additions call GAML.getDescriptionFactory()/getArtefactFactory()/getExpressionFactory() via desc()/_facet()/_operator().
+        try {
+            Class<?> gamlClass = Class.forName("gama.api.gaml.GAML");
+
+            // 1. Symbol description factories (statements, species, experiments, ...)
+            Method registerSymbolFactory = gamlClass.getMethod("registerSymbolFactory",
+                Class.forName("gama.api.compilation.factories.ISymbolDescriptionFactory"));
+            String[] symbolFactoryClasses = {
+                "gaml.compiler.factories.ExperimentFactory",
+                "gaml.compiler.factories.ModelFactory",
+                "gaml.compiler.factories.PlatformFactory",
+                "gaml.compiler.factories.SpeciesFactory",
+                "gaml.compiler.factories.StatementFactory",
+                "gaml.compiler.factories.VariableFactory",
+                "gaml.compiler.factories.SkillFactory",
+                "gaml.compiler.factories.ClassFactory"
+            };
+            for (String fqcn : symbolFactoryClasses) {
+                registerSymbolFactory.invoke(null, Class.forName(fqcn).getMethod("getInstance").invoke(null));
+            }
+
+            // 2. Description factory
+            Method registerDescriptionFactory = gamlClass.getMethod("registerDescriptionFactory",
+                Class.forName("gama.api.compilation.descriptions.IDescriptionFactory"));
+            registerDescriptionFactory.invoke(null, Class.forName("gaml.compiler.descriptions.DescriptionFactory")
+                .getMethod("getInstance").invoke(null));
+
+            // 3. Artefact factory (operators)
+            Method registerArtefactFactory = gamlClass.getMethod("registerArtefactProtoFactory",
+                Class.forName("gama.api.compilation.artefacts.IArtefactFactory"));
+            registerArtefactFactory.invoke(null, Class.forName("gaml.compiler.prototypes.ArtefactFactory")
+                .getMethod("getInstance").invoke(null));
+
+            // 4. Expression factory
+            Method registerExpressionFactory = gamlClass.getMethod("registerExpressionFactory",
+                Class.forName("gama.api.compilation.factories.IExpressionFactory"));
+            registerExpressionFactory.invoke(null, Class.forName("gaml.compiler.expressions.GamlExpressionFactory")
+                .getMethod("getInstance").invoke(null));
+
+            // 5. Expression description factory
+            Method registerExpressionDescriptionFactory = gamlClass.getMethod("registerExpressionDescriptionFactory",
+                Class.forName("gama.api.compilation.factories.IExpressionDescriptionFactory"));
+            registerExpressionDescriptionFactory.invoke(null, Class.forName("gaml.compiler.factories.ExpressionDescriptionFactory")
+                .getMethod("getInstance").invoke(null));
+
+            // 6. GAML content provider (URI -> syntactic contents)
+            Method registerContentProvider = gamlClass.getMethod("registerGamlContentProvider", java.util.function.Function.class);
+            java.util.function.Function<org.eclipse.emf.common.util.URI, ?> contentProvider = uri -> {
+                try {
+                    return Class.forName("gaml.compiler.resource.GamlResourceServices")
+                        .getMethod("getOrCreateSyntacticContents", org.eclipse.emf.common.util.URI.class)
+                        .invoke(null, uri);
+                } catch (Exception e) {
+                    throw new RuntimeException("Failed to build syntactic contents for " + uri, e);
+                }
+            };
+            registerContentProvider.invoke(null, contentProvider);
+
+            // 7. Model builder
+            Method registerModelBuilder = gamlClass.getMethod("registerGamlModelBuilder",
+                Class.forName("gama.api.compilation.validation.IGamlModelBuilder"));
+            registerModelBuilder.invoke(null, Class.forName("gaml.compiler.validation.GamlModelBuilder")
+                .getMethod("getInstance").invoke(null));
+
+            // 8. Text validator
+            Method registerTextValidator = gamlClass.getMethod("registerGamlTextValidator",
+                Class.forName("gama.api.compilation.validation.IGamlTextValidator"));
+            registerTextValidator.invoke(null, Class.forName("gaml.compiler.validation.GamlTextValidator")
+                .getMethod("getInstance").invoke(null));
+
+            Log.i(TAG, "GAML services registered (symbol factories, descriptions, artefact factory, expression factories, content provider, model builder, validator)");
+            callback.onProgress("GAML services registered (parser, factories, builder, validator)");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register GAML services", e);
+            callback.onProgress("GAML registration skipped: " + e.getMessage());
+        }
+
         callback.onProgress("Loading GAML language additions...");
 
         String additionsBase = "gaml.additions";
         String additionsClass = "GamlAdditions";
 
         List<String> loadOrder = new ArrayList<>();
+        loadOrder.add("gama.api");
         loadOrder.add("gama.core");
         for (String name : registeredBundles.keySet()) {
-            if (!name.equals("gama.core")) {
+            if (!name.equals("gama.core") && !name.equals("gama.api")) {
                 loadOrder.add(name);
             }
         }
@@ -111,12 +229,134 @@ public class GamaNativeBootstrap {
         Log.i(TAG, "Loaded " + loaded + " plugin additions, skipped " + skipped);
         callback.onProgress("Loaded " + loaded + " plugin additions, skipped " + skipped);
 
+        // Register the base agent classes for species. Desktop does this in
+        // gama.core.CoreActivator.initializeAgentClasses(); without it,
+        // SpeciesDescription.getJavaBase() -> AgentConstructorsRegistry.getBaseClass()
+        // returns null and every species fails with "Java base is unknown".
+        try {
+            Class<?> registryClass = Class.forName("gama.api.additions.registries.AgentConstructorsRegistry");
+            Method register = registryClass.getMethod("register", Class.class, boolean.class);
+            register.invoke(null, Class.forName("gama.core.agent.GamlAgent"), false);
+            register.invoke(null, Class.forName("gama.core.agent.MinimalAgent"), true);
+            callback.onProgress("Agent base classes registered");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register agent base classes", e);
+            callback.onProgress("Agent base registration error: " + e.getMessage());
+        }
+
+        // Register event layer delegates (normally loaded via Eclipse extension points)
+        // MUST run before CoreConstantsSupplier below, which registers the mouse/keyboard
+        // event constants (#mouse_down, #mouse_move, etc.) by browsing EventLayerStatement.delegates
+        try {
+            Class<?> registryClass = Class.forName("gama.api.additions.registries.GamaAdditionRegistry");
+            Class<?> eventDelegateIface = Class.forName("gama.api.additions.delegates.IEventLayerDelegate");
+            Method addEventDelegate = registryClass.getMethod("addDelegate", eventDelegateIface);
+            addEventDelegate.invoke(null,
+                    Class.forName("gama.core.outputs.layers.MouseEventLayerDelegate").getDeclaredConstructor().newInstance());
+            addEventDelegate.invoke(null,
+                    Class.forName("gama.core.outputs.layers.KeyboardEventLayerDelegate").getDeclaredConstructor().newInstance());
+            Log.i(TAG, "Event layer delegates registered (mouse, keyboard)");
+            callback.onProgress("Event layer delegates registered");
+        } catch (Throwable e) {
+            Log.w(TAG, "Failed to register event layer delegates", e);
+            callback.onProgress("Event layer delegates registration skipped: " + e.getMessage());
+        }
+
+        // Register GAML constants (units, colors, etc.) BEFORE XText init.
+        // BuiltinGlobalScopeProvider.initialize() is invoked by
+        // GamlStandaloneSetup.initializeAfterPlatformReady() and snapshots GAML.getConstants()
+        // / getUnits() at that moment; if constants are registered afterwards, the built-in
+        // scope never contains the color/unit names (e.g. '#white') and synthetic expression
+        // compilation (grid defaults, facet defaults) fails to link them.
+        try {
+            Class<?> gamlConstClass = Class.forName("gama.api.gaml.GAML");
+            Class<?> acceptorClass = Class.forName("gama.api.additions.IConstantAcceptor");
+            Method getAcceptor = gamlConstClass.getMethod("getConstantAcceptor");
+            Object acceptor = getAcceptor.invoke(null);
+
+            Class<?> supplierClass = Class.forName("gama.api.gaml.constants.CoreConstantsSupplier");
+            Object supplier = supplierClass.getDeclaredConstructor().newInstance();
+            Class<?> supplierIface = Class.forName("gama.api.additions.delegates.IConstantsSupplier");
+            Method supply = supplierIface.getMethod("supplyConstantsTo", acceptorClass);
+            supply.invoke(supplier, acceptor);
+
+            // Also register math constants (ODE solvers)
+            try {
+                Class<?> mathSupplierClass = Class.forName("gama.extension.maths.ode.MathConstantSupplier");
+                Object mathSupplier = mathSupplierClass.getDeclaredConstructor().newInstance();
+                supply.invoke(mathSupplier, acceptor);
+                Log.i(TAG, "Math constants registered");
+            } catch (Throwable e) {
+                Log.e(TAG, "Math constants registration failed", e);
+            }
+
+            // Also register image constants
+            try {
+                Class<?> imgSupplierClass = Class.forName("gama.extension.image.ImageConstantSupplier");
+                Object imgSupplier = imgSupplierClass.getDeclaredConstructor().newInstance();
+                supply.invoke(imgSupplier, acceptor);
+                Log.i(TAG, "Image constants registered");
+            } catch (Throwable ignored) {}
+
+            Method getUnits = gamlConstClass.getMethod("getUnits");
+            @SuppressWarnings("unchecked")
+            java.util.Map<?, ?> units = (java.util.Map<?, ?>) getUnits.invoke(null);
+            Log.i(TAG, "GAML constants registered: " + units.size() + " entries (includes colors, units)");
+            callback.onProgress("GAML constants registered: " + units.size() + " entries");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register GAML constants", e);
+            callback.onProgress("Constants registration failed: " + e.getMessage());
+        }
+
+        // Register the Xtext resource factories for the "gaml" extension and
+        // initialize the built-in global scope provider. Mirrors what desktop
+        // does with GamlStandaloneSetup.doSetup() + initializeAfterPlatformReady().
+        // Must run AFTER the constants registration above so the built-in scope is
+        // populated with all color/unit constants.
+        try {
+            Class<?> setupClass = Class.forName("gaml.compiler.GamlStandaloneSetup");
+            Object injector = setupClass.getMethod("doSetup").invoke(null);
+            setupClass.getMethod("initializeAfterPlatformReady", Class.forName("com.google.inject.Injector"))
+                .invoke(null, injector);
+            callback.onProgress("Xtext GAML resource factory registered");
+        } catch (Throwable e) {
+            Log.w(TAG, "Xtext setup failed", e);
+            callback.onProgress("Xtext setup failed: " + e.getMessage());
+        }
+
+        // Force-initialize ALL GAMAPreferences nested classes BEFORE the meta-model is
+        // built. The platform species description snapshots the currently-registered
+        // prefs in PlatformSpeciesDescription.copyJavaAdditions(), and the runtime
+        // 'platform' species is compiled (and cached) from that description shortly
+        // afterwards. Any pref class that initializes AFTER that point only reaches the
+        // description (via GamaPreferences.register -> addPrefAsVariable) and never the
+        // cached runtime species, so creating the platform population later NPEs on a
+        // null getVar() (e.g. pref_console_size). On desktop the preference classes are
+        // all initialized during UI startup; on Android we must do it here explicitly.
+        try {
+            for (String prefClass : new String[] {
+                "gama.api.utils.prefs.GamaPreferences$Theme",
+                "gama.api.utils.prefs.GamaPreferences$Network",
+                "gama.api.utils.prefs.GamaPreferences$Interface",
+                "gama.api.utils.prefs.GamaPreferences$Modeling",
+                "gama.api.utils.prefs.GamaPreferences$Runtime",
+                "gama.api.utils.prefs.GamaPreferences$Displays",
+                "gama.api.utils.prefs.GamaPreferences$External",
+                "gama.api.utils.prefs.GamaPreferences$Experimental"
+            }) {
+                Class.forName(prefClass);
+            }
+            Log.i(TAG, "GAMA preference classes initialized");
+            callback.onProgress("GAMA preferences initialized");
+        } catch (Throwable e) {
+            Log.w(TAG, "Failed to initialize GAMA preference classes", e);
+        }
+
         callback.onProgress("Initializing GAMA meta-model...");
         try {
-            Class<?> metaModelClass = Class.forName("gama.gaml.compilation.kernel.GamaMetaModel");
-            Object metaModelInstance = metaModelClass.getField("INSTANCE").get(null);
+            Class<?> metaModelClass = Class.forName("gama.api.kernel.GamaMetaModel");
             Method buildMethod = metaModelClass.getMethod("build");
-            buildMethod.invoke(metaModelInstance);
+            buildMethod.invoke(null);
             callback.onProgress("Meta-model initialized");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to init meta-model", e);
@@ -125,7 +365,7 @@ public class GamaNativeBootstrap {
 
         callback.onProgress("Initializing type system...");
         try {
-            Class<?> typesClass = Class.forName("gama.gaml.types.Types");
+            Class<?> typesClass = Class.forName("gama.api.gaml.types.Types");
             Method initMethod = typesClass.getMethod("init");
             initMethod.invoke(null);
             callback.onProgress("Type system initialized");
@@ -134,15 +374,9 @@ public class GamaNativeBootstrap {
             callback.onProgress("Types init error: " + e.getMessage());
         }
 
-        try {
-            Class<?> bundleLoaderClass = Class.forName("gama.gaml.compilation.kernel.GamaBundleLoader");
-            java.lang.reflect.Field loadedField = bundleLoaderClass.getField("LOADED");
-            loadedField.set(null, true);
-            callback.onProgress("Set GamaBundleLoader.LOADED = true");
-        } catch (Throwable e) {
-            Log.w(TAG, "Failed to set LOADED flag", e);
-        }
-
+        // Note: GamaBundleLoader (gama.api.additions) no longer exposes a LOADED
+        // flag in the new architecture; extension loading is driven by the
+        // gaml.additions bundles loaded above, so this step is not needed.
         try {
             Class<?> datesClass = Class.forName("gama.gaml.operators.Dates");
             Method initMethod = datesClass.getMethod("initialize");
@@ -155,7 +389,7 @@ public class GamaNativeBootstrap {
         // Initialize the ForkJoinPool for parallel agent execution
         // On desktop this is triggered by preference change listeners, but on Android prefs are no-op
         try {
-            Class<?> executorClass = Class.forName("gama.core.runtime.concurrent.GamaExecutorService");
+            Class<?> executorClass = Class.forName("gama.api.runtime.GamaExecutorService");
             Method resetMethod = executorClass.getMethod("reset");
             resetMethod.invoke(null);
 
@@ -209,98 +443,22 @@ public class GamaNativeBootstrap {
             callback.onProgress("Display registration skipped: " + e.getMessage());
         }
 
-        // Register event layer delegates (normally loaded via Eclipse extension points)
-        // MUST run before CoreConstantsSupplier below, which registers the mouse/keyboard
-        // event constants (#mouse_down, #mouse_move, etc.) by browsing EventLayerStatement.delegates
+        // Register draw delegates (normally loaded via Eclipse extension points)
         try {
-            Class<?> eventLayerStatementClass = Class.forName("gama.core.outputs.layers.EventLayerStatement");
-            Class<?> eventDelegateIface = Class.forName("gama.core.common.interfaces.IEventLayerDelegate");
-            Method addEventDelegate = eventLayerStatementClass.getMethod("addDelegate", eventDelegateIface);
-            addEventDelegate.invoke(null,
-                    Class.forName("gama.core.outputs.layers.MouseEventLayerDelegate").getDeclaredConstructor().newInstance());
-            addEventDelegate.invoke(null,
-                    Class.forName("gama.core.outputs.layers.KeyboardEventLayerDelegate").getDeclaredConstructor().newInstance());
-            Log.i(TAG, "Event layer delegates registered (mouse, keyboard)");
-            callback.onProgress("Event layer delegates registered");
-        } catch (Throwable e) {
-            Log.w(TAG, "Failed to register event layer delegates", e);
-            callback.onProgress("Event layer delegates registration skipped: " + e.getMessage());
-        }
+            Class<?> registryClass = Class.forName("gama.api.additions.registries.GamaAdditionRegistry");
+            Class<?> drawDelegateIface = Class.forName("gama.api.additions.delegates.IDrawDelegate");
+            Method addDelegate = registryClass.getMethod("addDelegate", drawDelegateIface);
+            addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.ShapeDrawer").getDeclaredConstructor().newInstance());
+            addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.TextDrawer").getDeclaredConstructor().newInstance());
+            addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AssetDrawer").getDeclaredConstructor().newInstance());
+            addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AspectDrawer").getDeclaredConstructor().newInstance());
+            Log.i(TAG, "Draw delegates registered");
 
-        // Register GAML constants (units, colors, etc.) BEFORE XText init
-        // BuiltinGlobalScopeProvider reads GAML.UNITS in its constructor during XText init
-        try {
-            Class<?> gamlConstClass = Class.forName("gama.api.gaml.GAML");
-            Class<?> acceptorClass = Class.forName("gama.gaml.constants.IConstantAcceptor");
-            Method getAcceptor = gamlConstClass.getMethod("getConstantAcceptor");
-            Object acceptor = getAcceptor.invoke(null);
-
-            Class<?> supplierClass = Class.forName("gama.gaml.constants.CoreConstantsSupplier");
-            Object supplier = supplierClass.getDeclaredConstructor().newInstance();
-            Method supply = supplierClass.getMethod("supplyConstantsTo", acceptorClass);
-            supply.invoke(supplier, acceptor);
-
-            // Also register math constants (ODE solvers)
-            try {
-                Class<?> mathSupplierClass = Class.forName("gama.extension.maths.ode.MathConstantSupplier");
-                Object mathSupplier = mathSupplierClass.getDeclaredConstructor().newInstance();
-                supply.invoke(mathSupplier, acceptor);
-                Log.i(TAG, "Math constants registered");
-            } catch (Throwable ignored) {}
-
-            // Also register image constants
-            try {
-                Class<?> imgSupplierClass = Class.forName("gama.extension.image.ImageConstantSupplier");
-                Object imgSupplier = imgSupplierClass.getDeclaredConstructor().newInstance();
-                supply.invoke(imgSupplier, acceptor);
-                Log.i(TAG, "Image constants registered");
-            } catch (Throwable ignored) {}
-
-            Field unitsField = gamlConstClass.getField("UNITS");
+            // Verify registry contents
+            Method getDrawDelegates = registryClass.getMethod("getDrawDelegates");
             @SuppressWarnings("unchecked")
-            java.util.Map<?, ?> units = (java.util.Map<?, ?>) unitsField.get(null);
-            Log.i(TAG, "GAML constants registered: " + units.size() + " entries (includes colors, units)");
-            callback.onProgress("GAML constants registered: " + units.size() + " entries");
-        } catch (Throwable e) {
-            Log.e(TAG, "Failed to register GAML constants", e);
-            callback.onProgress("Constants registration failed: " + e.getMessage());
-        }
-
-        // Initialize XText/GAML compiler infrastructure
-        try {
-            Class<?> standaloneClass = Class.forName("gaml.compiler.gaml.GamlStandaloneSetup");
-            Method doSetup = standaloneClass.getMethod("doSetup");
-            Object injector = doSetup.invoke(null);
-            callback.onProgress("GAML compiler initialized (XText injector ready)");
-        } catch (Throwable e) {
-            Log.e(TAG, "Failed to init GAML compiler", e);
-            callback.onProgress("GAML compiler init failed: " + e.getMessage());
-        }
-
-        // Manually register draw delegates (normally loaded via Eclipse extension points)
-        // Try multiple classloaders to ensure the DELEGATES map is populated in the right one
-        try {
-            Class<?> drawStatementClass = Class.forName("gama.gaml.statements.draw.DrawStatement");
-            ClassLoader dsCl = drawStatementClass.getClassLoader();
-            Log.i(TAG, "DrawStatement classloader: " + dsCl);
-            Class<?> shapeDrawerClass = Class.forName("gama.gaml.statements.draw.ShapeDrawer");
-            Class<?> textDrawerClass = Class.forName("gama.gaml.statements.draw.TextDrawer");
-            Class<?> assetDrawerClass = Class.forName("gama.gaml.statements.draw.AssetDrawer");
-            Class<?> aspectDrawerClass = Class.forName("gama.gaml.statements.draw.AspectDrawer");
-            Method addDelegate = drawStatementClass.getMethod("addDelegate", Class.forName("gama.core.common.interfaces.IDrawDelegate"));
-            addDelegate.invoke(null, shapeDrawerClass.getDeclaredConstructor().newInstance());
-            addDelegate.invoke(null, textDrawerClass.getDeclaredConstructor().newInstance());
-            addDelegate.invoke(null, assetDrawerClass.getDeclaredConstructor().newInstance());
-            addDelegate.invoke(null, aspectDrawerClass.getDeclaredConstructor().newInstance());
-            Log.i(TAG, "Draw delegates registered on classloader " + dsCl);
-            callback.onProgress("Draw delegates registered");
-
-            // Verify DELEGATES map
-            Field delegatesField = drawStatementClass.getDeclaredField("DELEGATES");
-            delegatesField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.Map<?, ?> delegates = (java.util.Map<?, ?>) delegatesField.get(null);
-            Log.i(TAG, "DELEGATES map size: " + delegates.size() + " keys: " + delegates.keySet());
+            java.util.Map<?, ?> delegates = (java.util.Map<?, ?>) getDrawDelegates.invoke(null);
+            Log.i(TAG, "Draw delegates map size: " + delegates.size() + " keys: " + delegates.keySet());
         } catch (Throwable e) {
             Log.w(TAG, "Failed to register draw delegates", e);
             callback.onProgress("Draw delegates registration skipped: " + e.getMessage());
@@ -308,82 +466,24 @@ public class GamaNativeBootstrap {
 
         // Register create delegates (normally loaded via Eclipse extension points)
         try {
-            Class<?> createStatementClass = Class.forName("gama.gaml.statements.CreateStatement");
-            Class<?> nullDelegateClass = Class.forName("gama.gaml.statements.create.CreateFromNullDelegate");
-            Class<?> csvDelegateClass = Class.forName("gama.gaml.statements.create.CreateFromCSVDelegate");
-            Class<?> geomDelegateClass = Class.forName("gama.gaml.statements.create.CreateFromGeometriesDelegate");
-            Class<?> gridDelegateClass = Class.forName("gama.gaml.statements.create.CreateFromGridFileDelegate");
-            Class<?> icdInterface = Class.forName("gama.core.common.interfaces.ICreateDelegate");
-            Method addCreateDelegate = createStatementClass.getMethod("addDelegate", icdInterface);
-            addCreateDelegate.invoke(null, nullDelegateClass.getDeclaredConstructor().newInstance());
-            addCreateDelegate.invoke(null, csvDelegateClass.getDeclaredConstructor().newInstance());
-            addCreateDelegate.invoke(null, geomDelegateClass.getDeclaredConstructor().newInstance());
-            addCreateDelegate.invoke(null, gridDelegateClass.getDeclaredConstructor().newInstance());
+            Class<?> registryClass = Class.forName("gama.api.additions.registries.GamaAdditionRegistry");
+            Class<?> createDelegateIface = Class.forName("gama.api.additions.delegates.ICreateDelegate");
+            Method addCreateDelegate = registryClass.getMethod("addDelegate", createDelegateIface);
+            addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromNullDelegate").getDeclaredConstructor().newInstance());
+            addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromCSVDelegate").getDeclaredConstructor().newInstance());
+            addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromGeometriesDelegate").getDeclaredConstructor().newInstance());
+            addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromGridFileDelegate").getDeclaredConstructor().newInstance());
             Log.i(TAG, "Create delegates registered (4)");
-            callback.onProgress("Create delegates registered");
+
+            Method getCreateDelegates = registryClass.getMethod("getCreateDelegates");
+            @SuppressWarnings("unchecked")
+            java.lang.Iterable<?> createDelegates = (java.lang.Iterable<?>) getCreateDelegates.invoke(null);
+            int createCount = 0;
+            for (Object ignored : createDelegates) { createCount++; }
+            Log.i(TAG, "Create delegates count: " + createCount);
         } catch (Throwable e) {
             Log.w(TAG, "Failed to register create delegates", e);
             callback.onProgress("Create delegates registration skipped: " + e.getMessage());
-        }
-
-        // Register GAML parser, info provider, ecore utils, model builder, validator
-        // (equivalent to GamlActivator.start() in OSGi)
-        try {
-            // 1. Register parser provider
-            Class<?> exprFactory = Class.forName("gama.gaml.expressions.GamlExpressionFactory");
-            Class<?> compilerClass = Class.forName("gaml.compiler.gaml.expression.GamlExpressionCompiler");
-            Class<?> providerClass = Class.forName("gama.gaml.expressions.GamlExpressionFactory$ParserProvider");
-            Method registerParser = exprFactory.getMethod("registerParserProvider",
-                Class.forName("gama.gaml.expressions.GamlExpressionFactory$ParserProvider"));
-            Object parserProvider = java.lang.reflect.Proxy.newProxyInstance(
-                appClassLoader,
-                new Class[]{ providerClass },
-                (proxy, method, args) -> {
-                    if ("get".equals(method.getName())) {
-                        return compilerClass.getDeclaredConstructor().newInstance();
-                    }
-                    return null;
-                });
-            registerParser.invoke(null, parserProvider);
-            Log.i(TAG, "GAML parser provider registered");
-
-            // 2. Register info provider
-            Class<?> gamlClass = Class.forName("gama.api.gaml.GAML");
-            Class<?> infoProviderClass = Class.forName("gaml.compiler.gaml.resource.GamlResourceInfoProvider");
-            Object infoProviderInstance = infoProviderClass.getField("INSTANCE").get(null);
-            Class<?> infoProviderIface = Class.forName("gama.core.util.file.IGamlResourceInfoProvider");
-            Method registerInfo = gamlClass.getMethod("registerInfoProvider", infoProviderIface);
-            registerInfo.invoke(null, infoProviderInstance);
-            Log.i(TAG, "GAML info provider registered");
-
-            // 3. Register ecore utils
-            Class<?> egamlClass = Class.forName("gaml.compiler.gaml.EGaml");
-            Object egamlInstance = egamlClass.getMethod("getInstance").invoke(null);
-            Class<?> ecoreUtilsIface = Class.forName("gama.gaml.compilation.IGamlEcoreUtils");
-            Method registerEcore = gamlClass.getMethod("registerGamlEcoreUtils", ecoreUtilsIface);
-            registerEcore.invoke(null, egamlInstance);
-            Log.i(TAG, "GAML ecore utils registered");
-
-            // 4. Register model builder
-            Class<?> modelBuilderClass = Class.forName("gaml.compiler.gaml.validation.GamlModelBuilder");
-            Object modelBuilderInstance = modelBuilderClass.getMethod("getDefaultInstance").invoke(null);
-            Class<?> modelBuilderIface = Class.forName("gama.gaml.compilation.IGamlModelBuilder");
-            Method registerModelBuilder = gamlClass.getMethod("registerGamlModelBuilder", modelBuilderIface);
-            registerModelBuilder.invoke(null, modelBuilderInstance);
-            Log.i(TAG, "GAML model builder registered");
-
-            // 5. Register text validator
-            Class<?> validatorClass = Class.forName("gaml.compiler.gaml.validation.GamlTextValidator");
-            Object validatorInstance = validatorClass.getDeclaredConstructor().newInstance();
-            Class<?> validatorIface = Class.forName("gama.gaml.compilation.IGamlTextValidator");
-            Method registerValidator = gamlClass.getMethod("registerGamlTextValidator", validatorIface);
-            registerValidator.invoke(null, validatorInstance);
-            Log.i(TAG, "GAML text validator registered");
-
-            callback.onProgress("GAML services registered (parser, info, ecore, builder, validator)");
-        } catch (Throwable e) {
-            Log.e(TAG, "Failed to register GAML services", e);
-            callback.onProgress("GAML registration skipped: " + e.getMessage());
         }
 
         initialized = true;

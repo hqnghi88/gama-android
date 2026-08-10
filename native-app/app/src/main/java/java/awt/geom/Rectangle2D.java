@@ -33,8 +33,24 @@ public abstract class Rectangle2D extends RectangularShape implements Cloneable 
         setRect(r.getX(), r.getY(), r.getWidth(), r.getHeight());
     }
 
+    public void setFrame(double x, double y, double w, double h) {
+        setRect(x, y, w, h);
+    }
+
+    public void setFrameFromDiagonal(double x1, double y1, double x2, double y2) {
+        double minX = Math.min(x1, x2);
+        double minY = Math.min(y1, y2);
+        double maxX = Math.max(x1, x2);
+        double maxY = Math.max(y1, y2);
+        setRect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    public void setFrameFromDiagonal(Point2D p1, Point2D p2) {
+        setFrameFromDiagonal(p1.getX(), p1.getY(), p2.getX(), p2.getY());
+    }
+
     public static class Double extends Rectangle2D {
-        protected double x, y, width, height;
+        public double x, y, width, height;
         public Double() { this(0, 0, 0, 0); }
         public Double(double x, double y, double w, double h) { this.x = x; this.y = y; this.width = w; this.height = h; }
         public double getX() { return x; }
@@ -45,7 +61,7 @@ public abstract class Rectangle2D extends RectangularShape implements Cloneable 
     }
 
     public static class Float extends Rectangle2D {
-        protected float x, y, width, height;
+        public float x, y, width, height;
         public Float() { this(0, 0, 0, 0); }
         public Float(float x, float y, float w, float h) { this.x = x; this.y = y; this.width = w; this.height = h; }
         public double getX() { return x; }

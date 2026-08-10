@@ -241,7 +241,17 @@ Understanding how experiments run (critical for debugging):
 | `Containers` D8 lambda bug | `PrecisePredicatePatcher` — changes SAM name from `apply` to `test` |
 | 3D display skipped on Android | `Display3DPatcher` — removes `is3D()` early return |
 | GAML constants not registered | `CoreConstantsSupplier.supplyConstantsTo()` in bootstrap |
+| Grid models failed: `#white` / `element 'white' cannot be resolved` | Constants were registered AFTER `BuiltinGlobalScopeProvider.initialize()` (called by `GamlStandaloneSetup.initializeAfterPlatformReady()`), so the built-in scope snapshot lacked colors/units. Fixed by moving event-delegate + constants registration BEFORE the XText init block in `GamaNativeBootstrap.java` (verified 2026-08-10) |
 | `setWillNotDraw(false)` missing | Added in `AndroidDisplaySurface` constructor |
+| Ant Foraging `NoClassDefFoundError` (`renderer.output.Output`) | jsvg stubs in `app/src/main/java/com/github/weisj/` had wrong packages (`renderer.Output` vs `renderer.output.Output`). Fixed (2026-08-10): deleted the stubs, bundled real `jsvg-2.0.0.jar` + StAX stack (`stax-api-1.0-2`, `stax2-api-4.2.2`, `woodstox-core-7.1.1`) in `app/libs`, and patched jsvg's `StaxSVGLoader` `newFactory()`->`newInstance()` via `tools/StaxNewFactoryPatcher.java`. NOTE: after adding jars to `app/libs`, `rm -rf app/build/intermediates/dex` or AGP's dex task stays up-to-date and new classes never reach the APK (only their resources get packaged) |
+| jsvg needs `java.awt.MultipleGradientPaint$CycleMethod` | Added stub `app/src/main/java/java/awt/MultipleGradientPaint.java` (abstract, nested enums `CycleMethod {NO_CYCLE,REFLECT,REPEAT}` and `ColorSpaceType {SRGB,LINEAR_RGB}`); jsvg's `SpreadMethod` enum maps to it at `<clinit>` time |
+| `AffineTransform` float ctor / `setTransform` missing | Added `AffineTransform(float...x6)` ctor and `setTransform(AffineTransform)` to the awt stub |
+| `java.awt.geom.Path2D` absent (jsvg core geometry) | New real `Path2D` impl in `app/src/main/java/java/awt/geom/Path2D.java` (Float+Double, segment storage, working PathIterator, `getCurrentPoint()`, `setWindingRule`, `append`, bounds) |
+| `java.awt.geom.Area` absent (gama SVG clipping) | New `Area` impl wrapping a Shape with bounds-based `add`/`intersect` (approximate) + `isRectangular()`; `RectangularShape.getPathIterator` was `null` -> now emits real rect outline |
+| **BUG:** `PathIterator` constants were WRONG (`SEG_MOVETO=1...` instead of real `0..4`) | Any external consumer (JTS `ShapeReader`) does raw switch on segment ints; wrong values caused NPE. Fixed to canonical `SEG_MOVETO=0..SEG_CLOSE=4` |
+| `as_matrix(image_file, dims)` returned all zeros -> Ant Foraging `Division by zero` at `(grid_values-min)/range` | `ImageHelper.resize`/`matrixValueFromImage` draw into a `BufferedImage` via `Graphics2D.drawImage`, but (a) `CanvasGraphics2D.drawImage` was a no-op and (b) `BufferedImage.getRGB` read the `data[]` array while drawing went to the android `Bitmap` (never synced). Fixed: real Bitmap-based `drawImage` (scaled + AffineTransform variants) in `CanvasGraphics2D`, and `BufferedImage.getRGB` now reads `androidBitmap.getPixel` when present |
+| Boids `BootstrapMethodError: Exception from call site #0 bootstrap method` (root: `ClassCastException: String cannot be cast to Object`) at `AbstractTopology.accept` (via `overlapping` -> `getAgentsIn`) | JDK 17+/25 `javac` emits `invokedynamic java/lang/runtime/SwitchBootstraps.enumSwitch` for any enum `switch` containing `case null:` (GAMA's `accept()` has `case null: default:`). `SwitchBootstraps` does not exist on ART, and D8 (debug, no R8) does NOT desugar it (lambdas are desugared, this isn't). A hand-written `app/libs/switch-bootstraps-stub.jar` cannot work (ART ignores app-defined `java.*`). **Fix (2026-08-10): `tools/EnumSwitchPatcher.java`** — ASM tree patcher (same shape as `TypeSwitchPatcher`) that replaces each `enumSwitch` indy with an unrolled `ldc <name>; aload sel; Enum.name(); String.equals(); ifne caseLabel` chain + null->no-match jump, preserving the surrounding `tableswitch` and re-targeting loop-back gotos. Semantics match the JDK: match by name -> case index, else -1. Wired into `patchGamaJars` for ALL toolchain jars (`toolchainJars` list). Also **extended `TypeSwitchPatcher` to the same full `toolchainJars` list** (it was missing `gama.workspace`, which contained an unpatched `typeSwitch` in `FileMetaDataProvider`). Boids "Basic" + Ant Foraging "Classic" + Life2 verified with 0 runtime errors. NOTE: `switch-bootstraps-stub.jar` is dead weight now (harmless, ineffective) — can be removed from `app/libs` |
+
 | `requestLayout()+invalidate()` missing | Added in `updateDisplay()` |
 | Patchers run after D8 (not in APK) | Added `compileDebugJavaWithJavac` dependency on `patchGamaJars` |
 
@@ -265,15 +275,11 @@ Before the task-order fix (`patchGamaJars` before D8):
 
 ## 11. Immediate Next Steps
 
-1. **Fix the BootstrapMethodError** — This is the #1 blocker. Options in priority order:
-   - Option A: Write a `StringConcatFactoryPatcher` that rewrites `invokedynamic StringConcatFactory` to `StringBuilder` concatenation in `SymbolDescription` and other affected classes
-   - Option B: Override `getCommonSuperClass()` in the `ClassWriter` to do proper class loading (allow `COMPUTE_FRAMES` to produce correct stack maps)
-   - Option C: Try using R8 instead of D8 for dexing
-   - Option D: Move patched classes to a separate JAR/classpath so D8 processes them independently
-
-2. **After fixing compilation:** Test SimpleTest and Life models end-to-end
-3. **Fix Display3DPatcher** — Pattern may not match the committed JAR (already patched from earlier commit)
-4. **Address memory warning** — Patch `RuntimeMemoryManager` or set larger heap
+1. **Grid model compilation RESOLVED** (2026-08-10) — constants now registered before XText init. Verified: `g5_freq`, `m_grid_bare`, `m_diffuse`, `m_grid_fixed`, and the flagship `Life.gaml` (Game of Life) all compile. Life runs end-to-end: experiment starts, grid steps, `AndroidDisplaySurface` invalidates every cycle, screenshot shows rendered cells.
+2. **m_grid's errors were model bugs, not engine bugs** — `center` is a user-declared global in the real Ant model (`point center ... const: true <- {...}`); the test model omitted it. `distance_between [self, center]` failed only downstream of the unknown `center`. The `color` redefinition from skill `grid` is INFO-level (override is legal).
+3. **Regression-test remaining grid models** on device: `g1`–`g5`, `m_diffuse`, plus other library models that previously failed on `#white`.
+4. **Cleanup:** stale `/data/data/com.gama.nativeapp/files/tests/Life.gaml` (owned by u0_a0, 5252 bytes) blocks overwrite; workaround = use a fresh filename (`Life2.gaml`) or clear via device settings.
+5. **Cosmetic:** initial `updateDisplays: surface is not a View: null` probe warning self-heals into `invalidating AndroidDisplaySurface` — safe to silence.
 
 ---
 
@@ -354,3 +360,102 @@ native-app/
 │   └── TargetedPredicatePatcher.java         # Abandoned
 └── HANDOFF.md                                # This file
 ```
+
+---
+
+## Session 2 (2026-08-11) — Adaptation to new GAMA jars `202608091252`
+
+Repo moved to `/Users/hqnghi/git/gama-android`. All GAMA jars replaced with the new
+mainline build `0.0.0.202608091252` (from `/Users/hqnghi/git/gama/gama.product/target/repository/plugins/`).
+Everything that ran on the old jars (`202605140230`) must still run — verified by full-library regression.
+
+### Regression harness
+- `scripts/regression.sh` — 6 asset models + `--lib` subset; `scripts/discover_library_experiments.py`
+  extracts all `(jar_path, experiment)` pairs (inline `experiment X` + `import "…" as` resolution from
+  sibling `.experiment` files) → **142 experiments**; `scripts/sweep_library.sh` drives the background
+  sweep (~40s/model, ~1.5-2h), logs to `/var/folders/.../opencode/sweep/`.
+- Key zsh pitfalls fixed in the harness: `status` is read-only; `path` is tied to `PATH`; `ACT` must be
+  `com.gama.nativeapp/.ExperimentActivity` (with `/`); asset models need `--es file_path` (else library
+  fallback → "Entry not found"); `adb shell` joins args with spaces so **each arg is single-quoted**
+  (spaces in "Traffic and Pollution.gaml" otherwise truncate); `--es key value` must be separate argv
+  elements each quoted; backgrounded subshells inherit stdin and steal `while read` input (use fd 3 +
+  `< /dev/null`).
+
+### New-gamma adaptation fixes (this session)
+1. **`gama.extension.androidsensor` no longer exists** in mainline. Ported to source against the new API:
+   - `app/src/main/java/gama/extension/androidsensor/AndroidSensorSkill.java` — extends
+     `gama.api.kernel.skill.Skill`; `@skill(name="android_sensor", doc={@doc(…)})` is **mandatory**
+     (missing → NPE `SkillDescription.getDocAnnotation`); reads `AndroidSensorBridge.getSnapshot()`.
+   - `app/src/main/java/gaml/additions/androidsensor/GamlAdditions.java` — extends
+     `gama.api.additions.AbstractGamlAdditions`; 18 `_var` + 3 `_action`; keyword constants from
+     `gama.annotations.constants.IKeyword`, T/F/SC/AS/O/B from `UtilsForGamlAdditions`.
+   - `AndroidSensorBridge.java` (existing) unchanged.
+2. **3D light color**: new `GamaColor` is a `Record` with `getAWTColor()`/`internalColor()`, no
+   `getRed/getGreen/getBlue/getAlpha`. `AndroidDisplayGraphics.java` now uses `colorToARGB()` helper.
+3. **Math/ODE solver constants not registered** (SIR (ABM vs EBM) failed with
+   `rk4 is not a unit or constant name`): `GamaNativeBootstrap.java` fetched the `supplyConstantsTo`
+   method from `CoreConstantsSupplier.class`, so invoking it on `MathConstantSupplier` threw
+   `IllegalArgumentException` (receiver mismatch) that was swallowed. Fixed by fetching the method from
+   the `gama.api.additions.delegates.IConstantsSupplier` interface — math constants now register
+   (364 total constants) and `#rk4`-using models compile.
+
+### Sweep results (142 experiments, fixed build)
+- **135 PASS** (includes SIR (ABM vs EBM) after the constants fix), all user-named categories green
+  (Traffic and Pollution, Evacuation, Flooding comodels, etc.).
+- **6 pre-existing Android limitations** (also broken on the old jars — documented, not regressions):
+  - Save to ASC / KML / PNG (Data Exportation), Image vectorization (shp export): no file-format
+    providers registered on Android → "Unknown file extension. Accepted formats are: []".
+  - Voronoi (Art), Waterflow Field Elevation: `ColorBrewer` loads palette XMLs via
+    `Class.getResource()` which fails on Android; `Colors.BREWER` stays null (ColorsPatcher fail-softs).
+- **2 discovery artifacts**: `hydrocomodel`/`movecomodel` come from `import "Experiment_comodel/…"
+  as …` — they are micro-model agent species, not runnable experiments of the importing file.
+
+### Bootstrap constants flow (for future jar upgrades)
+`CoreConstantsSupplier`, `MathConstantSupplier`, `ImageConstantSupplier` supply GAML constants via
+`IConstantsSupplier.supplyConstantsTo(IConstantAcceptor)`. Desktop discovers them through the Eclipse
+`gama.constants` extension point; the Android app registers them explicitly in `GamaNativeBootstrap`
+(before XText init) using `GAML.getConstantAcceptor()`. The method must always be fetched from the
+interface, not from a concrete supplier class.
+
+---
+
+## Session 3 (2026-08-11) — Align GeoTools stack to 33.4 + fix GIS runtime errors
+
+Traffic (and GIS) models crashed at runtime with the 202608091252 jars. The GeoTools jars in `app/libs/`
+were a mixed bag (gt-main/gt-shapefile 33.4 but gt-referencing 25.0 + jsr-363 units 2.0.1). Fixed by
+matching the desktop `gama.dependencies` bundle exactly:
+
+### GeoTools 33.4 alignment (`app/libs/`)
+- `gt-referencing-25.0.jar` → `gt-referencing-33.4.jar` (from `/Users/hqnghi/git/gama/gama.dependencies/libs/geotools 33.4/`).
+- JSR-363 units upgraded to the desktop set: `unit-api-2.2.jar`, `indriya-2.2.jar`,
+  `si-units-2.1.jar`, `si-quantity-2.1.jar`, `uom-lib-common-2.2.jar`.
+- **`systems-common-2.1.jar` added** (also in `geotools 33.4/`) — provides
+  `systems.uom.common.USCustomary` (FOOT/YARD/MILE…), which gt-metadata-33.4's `PrefixDefinitions`
+  references. Without it: `NoSuchFieldError: YARD`.
+- Old versions removed: `indriya-2.1.2`, `si-units-2.0.1`, `si-quantity-2.0.1`, `unit-api-2.1.2`,
+  `uom-lib-common-2.1`.
+
+### Patchers (`app/build.gradle` + `patchers/`)
+- `SpiPatcher` args updated to `gt-referencing-33.4.jar` — 33.4's SPI files are under
+  `META-INF/services/org.geotools.api.referencing.*` (the 25.0-era paths `org.geotools.referencing.*`
+  no longer exist). Patches the `LongitudeFirst*` factories out of the SPI files.
+- `MapProjectionPatcher` args updated to the same 33.4 jar (patches `transform([DI[DII)V` /
+  `transform([FI[FII)V` in `MathTransformProxy`).
+
+### Shadowing stub removed
+- `app/src/main/java/systems/uom/common/USCustomary.java` was an early shim that shadowed the real
+  class in the project dex (classes11.dex) and **stripped it to 5 fields** — hiding the full version
+  from `systems-common-2.1.jar` in classes13.dex → `NoSuchFieldError: YARD`. Deleted; the real class
+  now loads. Lesson: stub classes in `app/src/main/java` can shadow lib classes in an earlier dex.
+
+### Display scope fix (`AndroidDisplaySurface.java`)
+- The display scope was being re-bound to the **simulation** agent on first frames
+  (`GridLayerData.compute()` needs `getPopulationFor()`). Desktop keeps the **experiment** agent
+  (`output.getScope().copyForGraphics(...)`), and `getPopulationFor` walks the host chain. The
+  simulation-agent override broke overlay aspect scoping: `loop over: pollutions.pairs` (experiment
+  variable) resolved to nil → NPE. Reverted to the experiment-agent scope; grid layers still work.
+
+### Verified on device
+- **Traffic and Pollution** (Traffic and Pollution.gaml / experiment `traffic`): compiles, starts,
+  road/building shapefiles load via GeoTools 33.4, overlay legend renders, sim steps every ~1s.
+- **Segregation (GIS)** (nha2.shp + nha2.prj real CRS): compiles, starts, renders, steps, no errors.

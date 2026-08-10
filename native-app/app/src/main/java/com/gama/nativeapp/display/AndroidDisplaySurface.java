@@ -218,15 +218,18 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         androidGraphics.setCanvas(canvas);
         androidGraphics.resetDrawnShapesCount();
 
-        // On first frames, try to capture simulation and update scope to use simulation agent
-        // instead of experiment agent. GridLayerData.compute() calls scope.getAgent().getPopulationFor(name)
-        // which needs the simulation agent, not the experiment agent.
+        // Keep the display scope bound to the experiment agent, matching desktop behavior
+        // (Java2DDisplaySurface uses output.getScope().copyForGraphics(...)). Overlay aspects
+        // reference experiment variables, which only resolve when the scope agent is the experiment.
+        // GridLayerData.compute() calls scope.getAgent().getPopulationFor(name), which on desktop
+        // walks up the host chain to the simulation, so the experiment agent works there too.
         if (!scopeUpdated) {
             if (scope == null) {
                 try {
                     gama.api.runtime.scope.IScope outScope = output.getScope();
                     if (outScope != null) {
                         setDisplayScope(outScope.copyForGraphics("in android2d display"));
+                        scopeUpdated = true;
                         android.util.Log.i("ANDROID_DISPLAY", "Initialized display scope from output");
                     }
                 } catch (Throwable t) {
@@ -240,16 +243,6 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
                         capturedSim = outScope.getSimulation();
                     }
                 } catch (Throwable t) {}
-            }
-            if (capturedSim != null) {
-                try {
-                    gama.api.runtime.scope.IScope simScope = capturedSim.getScope();
-                    if (simScope != null) {
-                        setDisplayScope(simScope.copyForGraphics("in android2d display"));
-                        scopeUpdated = true;
-                        android.util.Log.i("ANDROID_DISPLAY", "Updated display scope to simulation agent");
-                    }
-                } catch (Throwable t) { /* leave scope as is */ }
             }
         }
 

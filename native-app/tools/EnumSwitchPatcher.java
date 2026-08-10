@@ -5,32 +5,43 @@ import java.util.*;
 import java.util.zip.*;
 
 /**
- * Patches all invokedynamic typeSwitch calls (Java 21 pattern matching) to use
- * traditional instanceof + checkcast chains.
+ * Patches all invokedynamic enumSwitch calls (JDK 17+ null-tolerant enum switches)
+ * into plain bytecode that Android can run.
  *
- * Java 21's javac compiles chains of `if (obj instanceof Type t) ...` into:
- *   aload obj
- *   iload matchIdx
- *   invokedynamic typeSwitch:(Object, int) -> int
- *   tableswitch { -1: noMatch, 0: case0, 1: case1, ... default: fallthrough }
+ * javac emits `java.lang.runtime.SwitchBootstraps.enumSwitch` (which does not exist
+ * on Android/ART) when a `switch` over an enum contains `case null:` (or `case null,
+ * default:`) -- e.g.:
  *
- * D8/Android cannot handle this invokedynamic. This patcher replaces it with:
- *   aload obj
- *   instanceof Type0
- *   ifne case0_label
- *   aload obj
- *   instanceof Type1
- *   ifne case1_label
- *   ...
- *   goto default_label
+ *   switch (rel) {
+ *       case OVERLAP: ...
+ *       case null:
+ *       default:
+ *           break;
+ *   }
  *
- * The case bodies (checkcast + work) and goto return_point are unchanged.
+ * Bytecode shape (from JDK 21+ javac):
+ *   aload_<sel>            // the enum selector
+ *   iconst_<startIdx>      // repeat/start index (0 on first entry)
+ *   invokedynamic enumSwitch:(EnumType;I)I
+ *   tableswitch { -1: noMatch, 0: case0, 1: case1, ... default: noMatch }
+ *
+ * Per java.lang.runtime.SwitchBootstraps.enumSwitch, the resolved handle is:
+ *   if (selector == null) return -1;
+ *   String n = selector.name();
+ *   for (int i = startIdx; i < labels.length; i++)
+ *       if (n.equals(labels[i])) return i;
+ *   return -1;
+ *
+ * This patcher replaces the invokedynamic with an unrolled chain of
+ * `ldc name; aload sel; Enum.name(); String.equals; ifne caseLabel` comparisons
+ * (mirroring TypeSwitchPatcher), preserving the surrounding tableswitch and
+ * re-targeting any loop-back gotos that re-enter the switch with startIdx > 0.
  */
-public class TypeSwitchPatcher {
+public class EnumSwitchPatcher {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 1) {
-            System.err.println("Usage: TypeSwitchPatcher <jar> [jar2 ...]");
+            System.err.println("Usage: EnumSwitchPatcher <jar> [jar2 ...]");
             System.exit(1);
         }
 
@@ -45,7 +56,7 @@ public class TypeSwitchPatcher {
     }
 
     private static void processJar(File jarFile) throws Exception {
-        File tmpJar = new File(jarFile.getAbsolutePath() + ".typeswitch_tmp");
+        File tmpJar = new File(jarFile.getAbsolutePath() + ".enumswitch_tmp");
         int totalPatched = 0;
 
         ZipFile zipIn = new ZipFile(jarFile);
@@ -87,13 +98,13 @@ public class TypeSwitchPatcher {
         zipOut.close();
 
         // Replace original with patched
-        File origBak = new File(jarFile.getAbsolutePath() + ".typeswitch_bak");
+        File origBak = new File(jarFile.getAbsolutePath() + ".enumswitch_bak");
         jarFile.renameTo(origBak);
         tmpJar.renameTo(jarFile);
         origBak.delete();
 
         if (totalPatched > 0) {
-            System.out.println("TypeSwitchPatcher: patched " + totalPatched + " typeSwitch calls in " + jarFile.getName());
+            System.out.println("EnumSwitchPatcher: patched " + totalPatched + " enumSwitch calls in " + jarFile.getName());
         }
     }
 
@@ -101,70 +112,47 @@ public class TypeSwitchPatcher {
         int totalPatched = 0;
         for (MethodNode mn : cn.methods) {
             if (mn.instructions == null) continue;
-            int patched = processMethod(cn, mn);
-            totalPatched += patched;
+            List<InvokeDynamicInsnNode> dynNodes = new ArrayList<>();
+            for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+                if (insn instanceof InvokeDynamicInsnNode idn
+                        && idn.bsm != null && "enumSwitch".equals(idn.bsm.getName())) {
+                    dynNodes.add(idn);
+                }
+            }
+            for (InvokeDynamicInsnNode idn : dynNodes) {
+                try {
+                    if (patchEnumSwitch(cn, mn, idn)) {
+                        totalPatched++;
+                    }
+                } catch (Exception e) {
+                    System.err.println("Warning: failed to patch enumSwitch in "
+                            + cn.name + "." + mn.name + ": " + e.getMessage());
+                }
+            }
         }
         return totalPatched;
     }
 
-    private static int processMethod(ClassNode cn, MethodNode mn) {
-        int patched = 0;
-        List<AbstractInsnNode> toRemove = new ArrayList<>();
-
-        List<InvokeDynamicInsnNode> dynNodes = new ArrayList<>();
-        for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-            if (insn instanceof InvokeDynamicInsnNode idn) {
-                if (idn.bsm != null && "typeSwitch".equals(idn.bsm.getName())) {
-                    dynNodes.add(idn);
-                }
-            }
-        }
-
-        for (InvokeDynamicInsnNode idn : dynNodes) {
-            try {
-                patchTypeSwitch(cn, mn, idn);
-                patched++;
-            } catch (Exception e) {
-                System.err.println("Warning: failed to patch typeSwitch in " + cn.name + "." + mn.name + ": " + e.getMessage());
-            }
-        }
-        return patched;
-    }
-
-    private static void patchTypeSwitch(ClassNode cn, MethodNode mn, InvokeDynamicInsnNode idn) {
-        // --- Step 1: Classify bootstrap args ---
-        // typeSwitch bsmArgs can be: Type (class pattern), ConstantDynamic (class ref), or String (string switch)
-        List<Type> caseTypes = new ArrayList<>();
-        List<String> caseStrings = new ArrayList<>();
-        boolean isStringSwitch = false;
-        boolean isTypeSwitch = false;
-
+    private static boolean patchEnumSwitch(ClassNode cn, MethodNode mn, InvokeDynamicInsnNode idn) {
+        // --- Step 1: Collect case labels (String constants in source order) ---
+        List<String> names = new ArrayList<>();
         for (Object arg : idn.bsmArgs) {
-            if (arg instanceof Type type) {
-                caseTypes.add(type);
-                isTypeSwitch = true;
-            } else if (arg instanceof ConstantDynamic cd) {
-                caseTypes.add(Type.getType(cd.getDescriptor()));
-                isTypeSwitch = true;
-            } else if (arg instanceof String s) {
-                caseStrings.add(s);
-                isStringSwitch = true;
+            if (arg instanceof String s) {
+                names.add(s);
             } else {
-                System.err.println("Warning: unexpected bootstrap arg type: " + arg.getClass() + " in " + cn.name + "." + mn.name);
-                return;
+                System.err.println("Warning: unexpected enumSwitch bootstrap arg type "
+                        + arg.getClass() + " in " + cn.name + "." + mn.name + " -- skipped");
+                return false;
             }
         }
-
-        if (caseTypes.isEmpty() && caseStrings.isEmpty()) {
-            System.err.println("Warning: no case types/strings found in typeSwitch bootstrap args in " + cn.name + "." + mn.name);
-            return;
+        if (names.isEmpty()) {
+            System.err.println("Warning: no case labels in enumSwitch bootstrap args in "
+                    + cn.name + "." + mn.name);
+            return false;
         }
 
-        // --- Step 2: Find the preceding aload of the scrutinee ---
-        // Pattern: aload temp; {iload idx | iconst_0 | bipush | sipush | ldc Integer}; invokedynamic typeSwitch
-        // A LabelNode+FrameNode can sit between the int push and the invokedynamic when a
-        // backward `goto` re-enters the switch with a non-zero startIndex (loop-back), so
-        // those metadata nodes must be skipped while locating the push + aload.
+        // --- Step 2: Find the preceding aload (selector) + int push (startIdx) ---
+        // Pattern: aload temp; {iconst_0|bipush|...}; invokedynamic enumSwitch
         AbstractInsnNode intPush = null;
         AbstractInsnNode aloadInsn = null;
         LabelNode loopbackLabel = null;
@@ -192,8 +180,8 @@ public class TypeSwitchPatcher {
                 || (intPush instanceof LdcInsnNode && ((LdcInsnNode) intPush).cst instanceof Integer);
         }
         if (!intPushOk) {
-            System.err.println("Warning: expected int push before invokedynamic in " + cn.name + "." + mn.name);
-            return;
+            System.err.println("Warning: expected int push before enumSwitch in " + cn.name + "." + mn.name);
+            return false;
         }
 
         {
@@ -205,16 +193,12 @@ public class TypeSwitchPatcher {
             aloadInsn = scan;
         }
         if (!(aloadInsn instanceof VarInsnNode aloadVar) || aloadVar.getOpcode() != Opcodes.ALOAD) {
-            System.err.println("Warning: expected aload before int push in " + cn.name + "." + mn.name);
-            return;
+            System.err.println("Warning: expected aload before enumSwitch in " + cn.name + "." + mn.name);
+            return false;
         }
         int scrutineeLocal = aloadVar.var;
 
-        // --- Step 2b: Find loop-back gotos that re-enter the switch with startIndex > 0 ---
-        // javac emits `aload scrut; iconst_N; goto <switch label>` to re-run the typeSwitch
-        // starting at case N (skipping already-tested cases). These must jump into the
-        // replacement chain at the N-th case instead of at the top, and the dead pushes
-        // before them are removed.
+        // --- Step 2b: Find loop-back gotos that re-enter the switch with startIdx > 0 ---
         List<JumpInsnNode> loopbackGotos = new ArrayList<>();
         List<Integer> loopbackIndices = new ArrayList<>();
         List<AbstractInsnNode> deadLoopbackPushes = new ArrayList<>();
@@ -243,16 +227,16 @@ public class TypeSwitchPatcher {
                     }
                 }
                 if (!ok) {
-                    System.err.println("Warning: unexpected loop-back into typeSwitch in " + cn.name + "." + mn.name);
-                    return;
+                    System.err.println("Warning: unexpected loop-back into enumSwitch in " + cn.name + "." + mn.name);
+                    return false;
                 }
                 AbstractInsnNode ga = gp.getPrevious();
                 while (ga != null && (ga instanceof LineNumberNode || ga instanceof LabelNode || ga instanceof FrameNode)) {
                     ga = ga.getPrevious();
                 }
                 if (!(ga instanceof VarInsnNode gav) || gav.getOpcode() != Opcodes.ALOAD || gav.var != scrutineeLocal) {
-                    System.err.println("Warning: unexpected loop-back stack before typeSwitch in " + cn.name + "." + mn.name);
-                    return;
+                    System.err.println("Warning: unexpected loop-back stack before enumSwitch in " + cn.name + "." + mn.name);
+                    return false;
                 }
                 loopbackGotos.add(j);
                 loopbackIndices.add(idxVal);
@@ -267,55 +251,47 @@ public class TypeSwitchPatcher {
             next = next.getNext();
         }
         if (!(next instanceof TableSwitchInsnNode tsi)) {
-            System.err.println("Warning: expected tableswitch after invokedynamic in " + cn.name + "." + mn.name);
-            return;
+            System.err.println("Warning: expected tableswitch after enumSwitch in " + cn.name + "." + mn.name);
+            return false;
         }
 
         int low = tsi.min;
-        int high = tsi.max;
         LabelNode defaultLabel = tsi.dflt;
 
         // --- Step 4: Build replacement instructions ---
         InsnList insertions = new InsnList();
         Map<Integer, LabelNode> entryLabels = new HashMap<>();
-        int caseCount = Math.max(caseTypes.size(), caseStrings.size());
 
-        // Entry at startIndex 0 is the normal fall-through path.
         LabelNode entry0 = new LabelNode();
         entryLabels.put(0, entry0);
         insertions.add(entry0);
 
+        // null selector -> no-match label (javac maps `case null:` here, at tsi.min == -1)
         if (low == -1) {
             LabelNode nullCaseLabel = tsi.labels.get(0);
             insertions.add(new VarInsnNode(Opcodes.ALOAD, scrutineeLocal));
             insertions.add(new JumpInsnNode(Opcodes.IFNULL, nullCaseLabel));
         }
 
-        for (int i = 0; i < caseCount; i++) {
-            int caseIndex = i;
-            if (caseIndex < low || caseIndex > high) continue;
+        for (int i = 0; i < names.size(); i++) {
+            if (i < low || i > tsi.max) continue;
 
-            LabelNode caseLabel = tsi.labels.get(caseIndex - low);
+            LabelNode caseLabel = tsi.labels.get(i - low);
             if (i > 0) {
                 entryLabels.computeIfAbsent(i, k -> new LabelNode());
                 insertions.add(entryLabels.get(i));
             }
 
-            if (isStringSwitch && i < caseStrings.size()) {
-                // String-based switch: use String.equals() comparisons
-                insertions.add(new VarInsnNode(Opcodes.ALOAD, scrutineeLocal));
-                insertions.add(new LdcInsnNode(caseStrings.get(i)));
-                insertions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z", false));
-                insertions.add(new JumpInsnNode(Opcodes.IFNE, caseLabel));
-            } else if (i < caseTypes.size()) {
-                // Type-based switch: use instanceof checks
-                insertions.add(new VarInsnNode(Opcodes.ALOAD, scrutineeLocal));
-                insertions.add(new TypeInsnNode(Opcodes.INSTANCEOF, caseTypes.get(i).getInternalName()));
-                insertions.add(new JumpInsnNode(Opcodes.IFNE, caseLabel));
-            }
+            insertions.add(new LdcInsnNode(names.get(i)));
+            insertions.add(new VarInsnNode(Opcodes.ALOAD, scrutineeLocal));
+            insertions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/Enum",
+                    "name", "()Ljava/lang/String;", false));
+            insertions.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL, "java/lang/String",
+                    "equals", "(Ljava/lang/Object;)Z", false));
+            insertions.add(new JumpInsnNode(Opcodes.IFNE, caseLabel));
         }
 
-        // goto default (no match)
+        // no name matched -> the tableswitch default (== enumSwitch returning -1)
         insertions.add(new JumpInsnNode(Opcodes.GOTO, defaultLabel));
 
         // --- Step 5: Redirect loop-back gotos, remove dead code, insert chain ---
@@ -347,5 +323,6 @@ public class TypeSwitchPatcher {
         } else {
             mn.instructions.add(insertions);
         }
+        return true;
     }
 }
