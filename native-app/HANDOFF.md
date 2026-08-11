@@ -477,3 +477,29 @@ matching the desktop `gama.dependencies` bundle exactly:
     null on Android → absolute path used as-is.
 - Verified: Procedural City renders textured buildings (screenshot ~1750 distinct colors);
   Traffic still passes (no regression).
+
+### Evacuation Phuc Xa blank display fix (ColorBrewer + commons-collections4)
+- Symptom: blank display; `NullPointerException: ColorBrewer.hasPalette` on a null object at
+  `Colors.brewerPaletteColors` during sim init (`brewer_colors(qualitativePalette, N)` in the
+  model globals). This was previously documented as a "pre-existing Android limitation" — it is
+  now FIXED.
+- Root cause: `ColorBrewer.load()` reads the palette XMLs with the DOM idiom
+  `node.getFirstChild().toString()`. On the JVM, DOM text nodes override `toString()` to return
+  their text; Android's Harmony DOM (`org.apache.harmony.xml.dom.TextImpl`) does NOT, so the
+  parser saw `"org.apache.harmony.xml.dom.TextImpl@..."` and threw `NumberFormatException`
+  (sample size parse). `ColorBrewer.instance()` then threw, and `ColorsPatcher`'s try-catch left
+  `Colors.BREWER = null` → every `brewer_colors(...)`/`palette(...)` NPE'd.
+- Fix: `tools/ColorBrewerPatcher.java` (new, wired into `patchGamaJars` for `gt-brewer-33.4.jar`):
+  rewrites the 7 `invokevirtual Object.toString()` calls in `ColorBrewer.load` (each preceded by
+  `invokeinterface Node.getFirstChild`) to `invokeinterface Node.getNodeValue()` — identical stack
+  effect, real text on Android, equivalent on JVM. Must skip `LineNumberNode`/`LabelNode`/`FrameNode`
+  when finding the preceding instruction, and capture `getNext()` before `InsnList.set()` (set
+  detaches the node). Idempotent (a second run finds no remaining `toString` pairs).
+- Also added `app/libs/org.apache.commons.commons-collections4_4.5.0.jar` (from
+  `/Users/hqnghi/git/gama/gama.product/target/repository/plugins/`) + pristine copy:
+  `gama.extension.traffic`'s `RoadSkill` (the `driving` skill) extends
+  `commons.collections4.bidimap.DualTreeBidiMap` → NoClassDefFoundError otherwise.
+- Verified on device: **Evacuation Phuc Xa** compiles, starts, renders roads (lightgray), buildings,
+  green evacuation points and red vehicles, animates, and pauses at `time > 15000` (model's own
+  `end_sim`). **Traffic and Pollution** re-tested: no regression. **Color Brewer.gaml** recipe
+  (`BrewerPalette` experiment) compiles/starts clean — `brewer_colors` now fully functional.
