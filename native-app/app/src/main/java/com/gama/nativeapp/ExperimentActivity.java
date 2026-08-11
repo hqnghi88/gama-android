@@ -1379,6 +1379,12 @@ public class ExperimentActivity extends Activity {
 
                 boolean changed = cycleCount >= 0 && cycleCount != lastCycle[0];
                 if (cycleCount >= 0) lastCycle[0] = cycleCount;
+                if (changed && scopeField != null) {
+                    try {
+                        Object scope = scopeField.get(controller);
+                        if (scope != null && (cycleCount % 3 == 0)) dumpAntState(scope, cycleCount);
+                    } catch (Exception ignored) {}
+                }
 
                 long elapsed = System.currentTimeMillis() - startTime;
                 long min = (elapsed / 1000) / 60;
@@ -1402,6 +1408,115 @@ public class ExperimentActivity extends Activity {
             if (isRunning) handler.postDelayed(statePollRunnable, 100);
         };
         handler.postDelayed(statePollRunnable, 100);
+    }
+
+    private void dumpAntState(Object scope, int cycle) {
+        try {
+            Object sim = scope.getClass().getMethod("getSimulation").invoke(scope);
+            if (sim == null) { Log.i(TAG, "DIAG: no simulation"); return; }
+            Object pop = null;
+            try { pop = sim.getClass().getMethod("getPopulationFor", String.class).invoke(sim, "ant"); } catch (Exception e) {}
+            if (pop == null) {
+                try { pop = findMicroPopulationReflect(sim, "ant", 0); } catch (Exception e) {}
+            }
+            if (pop == null) { Log.i(TAG, "DIAG: ant population not found"); return; }
+            java.lang.reflect.Method sizeM = pop.getClass().getMethod("size");
+            int size = (int) sizeM.invoke(pop);
+            if (size == 0) { Log.i(TAG, "DIAG: ant population empty"); return; }
+            java.lang.reflect.Method getM = pop.getClass().getMethod("get", int.class);
+            double sumDist = 0, sumHeading = 0;
+            int carrying = 0, nearNest = 0, carryingNearNest = 0;
+            double totalFood = 0;
+            StringBuilder sample = new StringBuilder();
+            java.lang.reflect.Method directVar = gama.api.kernel.agent.IAgent.class
+                    .getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class);
+            Object gridPop = null;
+            try { gridPop = sim.getClass().getMethod("getPopulationFor", String.class).invoke(sim, "ant_grid"); } catch (Exception e) {}
+            for (int i = 0; i < size && i < 400; i++) {
+                Object obj = getM.invoke(pop, i);
+                if (!(obj instanceof gama.api.kernel.agent.IAgent a) || a.dead()) continue;
+                gama.api.types.geometry.IPoint loc = a.getLocation();
+                Object heading = null, hasFood = null, state = null;
+                try { heading = directVar.invoke(a, scope, "heading"); } catch (Exception e) {}
+                try { hasFood = directVar.invoke(a, scope, "has_food"); } catch (Exception e) {}
+                try { state = directVar.invoke(a, scope, "state"); } catch (Exception e) {}
+                if (loc != null) {
+                    double d = Math.hypot(loc.getX() - 50, loc.getY() - 50);
+                    sumDist += d;
+                    if (Boolean.TRUE.equals(hasFood) && d < 4) carryingNearNest++;
+                    if (d < 4) nearNest++;
+                    if (heading instanceof Number n) sumHeading += n.doubleValue();
+                }
+                if (Boolean.TRUE.equals(hasFood)) carrying++;
+                if (i < 6) sample.append(String.format("(%s,%s)h=%s/s=%s; ",
+                        loc == null ? "?" : String.format("%.0f", loc.getX()),
+                        loc == null ? "?" : String.format("%.0f", loc.getY()),
+                        heading, state));
+            }
+            if (gridPop != null) {
+                java.lang.reflect.Method gsizeM = gridPop.getClass().getMethod("size");
+                java.lang.reflect.Method ggetM = gridPop.getClass().getMethod("get", int.class);
+                int gs = (int) gsizeM.invoke(gridPop);
+                for (int j = 0; j < gs; j++) {
+                    Object cell = ggetM.invoke(gridPop, j);
+                    if (cell instanceof gama.api.kernel.agent.IAgent c && !c.dead()) {
+                        Object food = directVar.invoke(c, scope, "food");
+                        if (food instanceof Number n) totalFood += n.doubleValue();
+                    }
+                }
+            }
+            Log.i(TAG, String.format("DIAG cycle=%d ants=%d carrying=%d nearNest=%d carryingNearNest=%d totalFood=%.0f avgDistTo50=%.2f avgHeading=%.0f %s",
+                    cycle, size, carrying, nearNest, carryingNearNest, totalFood,
+                    size > 0 ? sumDist / size : 0,
+                    size > 0 ? sumHeading / size : 0, sample));
+            StringBuilder tracked = new StringBuilder();
+            java.lang.reflect.Method dvar = gama.api.kernel.agent.IAgent.class
+                    .getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class);
+            for (int idx : new int[]{0, 1, 2}) {
+                if (idx >= size) continue;
+                Object a = getM.invoke(pop, idx);
+                if (a instanceof gama.api.kernel.agent.IAgent ag && !ag.dead()) {
+                    gama.api.types.geometry.IPoint l = ag.getLocation();
+                    Object h = null, st = null, hf = null;
+                    try { h = dvar.invoke(ag, scope, "heading"); } catch (Exception e) {}
+                    try { st = dvar.invoke(ag, scope, "state"); } catch (Exception e) {}
+                    try { hf = dvar.invoke(ag, scope, "has_food"); } catch (Exception e) {}
+                    tracked.append(String.format("A%d=(%s,%s)h=%s s=%s f=%s; ", idx,
+                            l == null ? "?" : String.format("%.1f", l.getX()),
+                            l == null ? "?" : String.format("%.1f", l.getY()), h, st, hf));
+                }
+            }
+            Object fg = null, fp = null;
+            try { fg = sim.getClass().getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class)
+                    .invoke(sim, scope, "food_gathered"); } catch (Exception e) {}
+            try { fp = sim.getClass().getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class)
+                    .invoke(sim, scope, "food_placed"); } catch (Exception e) {}
+            Log.i(TAG, "DIAG tracked cycle=" + cycle + " food_gathered=" + fg + " food_placed=" + fp + " " + tracked);
+        } catch (Throwable t) {
+            Log.i(TAG, "DIAG error: " + t);
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Object findMicroPopulationReflect(Object macro, String speciesName, int depth) throws Exception {
+        if (depth > 6) return null;
+        Object pop = macro.getClass().getMethod("getPopulation").invoke(macro);
+        if (pop == null) return null;
+        java.lang.reflect.Method sizeM = pop.getClass().getMethod("size");
+        java.lang.reflect.Method getM = pop.getClass().getMethod("get", int.class);
+        java.lang.reflect.Method getPopFor = gama.api.kernel.agent.IAgent.class.getMethod("getPopulationFor", String.class);
+        int size = (int) sizeM.invoke(pop);
+        for (int i = 0; i < size; i++) {
+            Object ag = getM.invoke(pop, i);
+            if (!(ag instanceof gama.api.kernel.agent.IMacroAgent macro2)) continue;
+            try {
+                Object mp = getPopFor.invoke(macro2, speciesName);
+                if (mp != null && (int) sizeM.invoke(mp) > 0) return mp;
+            } catch (Exception e) {}
+            Object deeper = findMicroPopulationReflect(macro2, speciesName, depth + 1);
+            if (deeper != null) return deeper;
+        }
+        return null;
     }
 
     private void cacheReflectionFields(Object controller) {

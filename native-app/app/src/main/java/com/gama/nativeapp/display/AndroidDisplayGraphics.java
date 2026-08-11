@@ -493,8 +493,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /**
      * Rotate a point about an origin using the same quaternion GAMA builds in
-     * Rotation3D(AxisAngle): the half-angle is negated, so the effective rotation
-     * is -angle around the (normalized) axis. Matches desktop rendering exactly.
+     * Rotation3D(AxisAngle). The half-angle is positive, so the effective rotation
+     * is +angle around the (normalized) axis. This matches desktop GAMA's net
+     * world rotation for sprite/geometry headings: desktop applies
+     * gl.rotateBy(-angle) on Y-negated vertices, whose combined effect is R(+angle)
+     * in world coordinates. Verified empirically: `draw img rotate: heading` must
+     * orient the sprite along (cos heading, sin heading) so it points at the model's
+     * own arrow line. (Previously the negated half-angle mirrored the rotation and
+     * made sprites turn the opposite way to their heading arrows.)
      */
     private static double[] rotatePoint(double px, double py, double pz,
             double cx, double cy, double cz, AxisAngle rot) {
@@ -508,7 +514,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             az = 1;
             norm = 1;
         }
-        double a = -0.5 * Math.toRadians(rot.getAngle());
+        double a = 0.5 * Math.toRadians(rot.getAngle());
         double q0 = Math.cos(a);
         double s = Math.sin(a) / norm;
         double q1 = s * ax, q2 = s * ay, q3 = s * az;
@@ -1264,14 +1270,18 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     if (fileInitRot != null && fileInitRot.getAngle() != 0.0) {
                         c = rotateVertexOBJ(c, fileInitRot);
                     }
-                    // Convert to geometry coordinates (Y-down) and apply draw rotation
-                    double[] p = transformVertex(c[0], -c[1], c[2], center, k, rot);
-                    // Fix: OBJ model uses Z-up, model's r0 assumes Y-up. Flip 180° around X in geometry coords.
-                    p[1] = -p[1];
-                    p[2] = -p[2];
-                    model[w * 3] = (float) (p[0] + ox);
-                    model[w * 3 + 1] = (float) (p[1] + oy);
-                    model[w * 3 + 2] = (float) (p[2] + oz);
+                    // Convert to geometry coordinates (Y-down) and flip 180° around X into the
+                    // ground-plane frame. The flip is applied BEFORE the heading rotation: a
+                    // reflection does not commute with a rotation, so flipping after rotating
+                    // mirrored the ant and made it turn opposite to the heading. The rotation
+                    // below uses the same rotatePoint as the verified sprite path.
+                    double fx = (c[0] - center[0]) * k;
+                    double fy = (c[1] + center[1]) * k;
+                    double fz = (center[2] - c[2]) * k;
+                    double[] p = rotatePoint(fx, fy, fz, 0, 0, 0, rot);
+                    model[w * 3] = (float) (center[0] + p[0] + ox);
+                    model[w * 3 + 1] = (float) (-center[1] + p[1] + oy);
+                    model[w * 3 + 2] = (float) (-center[2] + p[2] + oz);
                     if (ft[w] > 0 && ft[w] - 1 < file.setOfVertexTextures.size()) {
                         double[] tc = file.setOfVertexTextures.get(ft[w] - 1);
                         double v = tc[1];
