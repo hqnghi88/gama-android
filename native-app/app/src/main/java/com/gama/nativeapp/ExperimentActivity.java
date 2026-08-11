@@ -57,6 +57,15 @@ public class ExperimentActivity extends Activity {
 
     private static final String TAG = "ExperimentActivity";
 
+    // All model compilations run serially on this executor. Compiles started by a
+    // destroyed activity must not overlap a new activity's compile: GAML's builder
+    // serializes itself, but other shared statics (e.g. GamlResourceServices'
+    // resource sets) are unsynchronized, and concurrent use corrupts them, causing
+    // random "Compilation FAILED (N errors)" on the model launched right after a
+    // back-navigation during (or just after) a previous compile.
+    private static final java.util.concurrent.ExecutorService COMPILE_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
     // UI components
     private MaterialToolbar toolbar;
     private TextView toolbarTitle;
@@ -90,6 +99,7 @@ public class ExperimentActivity extends Activity {
 
     // State
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private volatile boolean destroyed = false;
     private Object compiledModel;
     private String modelName;
     private boolean isDarkTheme = false;
@@ -892,7 +902,7 @@ public class ExperimentActivity extends Activity {
         for (Object err : errors) sb.append("\u2022 ").append(err).append("\n");
         String fullMsg = sb.toString();
         log(fullMsg);
-        handler.post(() -> {
+        postUi(() -> {
             contentArea.removeAllViews();
             ScrollView scroll = new ScrollView(this);
             TextView errText = new TextView(this);
@@ -908,7 +918,7 @@ public class ExperimentActivity extends Activity {
 
     private void compileModelFromAsset(String assetPath) {
         log("Compiling: " + assetPath);
-        new Thread(() -> {
+        COMPILE_EXECUTOR.execute(() -> {
             try {
                 File cacheDir = getCacheDir();
                 File modelFile = new File(cacheDir, assetPath);
@@ -920,40 +930,40 @@ public class ExperimentActivity extends Activity {
                 }
                 extractIncludesFromJarForAsset(modelFile, assetPath);
                 Object model = compileFile(modelFile);
-                if (model != null) handler.post(() -> showExperiments(model));
+                if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "Compilation error", e);
                 String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
                 log(msg);
-                handler.post(() -> showError(msg));
+                postUi(() -> showError(msg));
             }
-        }).start();
+        });
     }
 
     private void compileModelFromFilePath(String filePath) {
         log("Compiling: " + filePath);
-        new Thread(() -> {
+        COMPILE_EXECUTOR.execute(() -> {
             try {
                 File modelFile = new File(filePath);
                 if (!modelFile.exists()) {
                     log("ERROR: File not found");
-                    handler.post(() -> showError("File not found: " + filePath));
+                    postUi(() -> showError("File not found: " + filePath));
                     return;
                 }
                 Object model = compileFile(modelFile);
-                if (model != null) handler.post(() -> showExperiments(model));
+                if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "File compilation error", e);
                 String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
                 log(msg);
-                handler.post(() -> showError(msg));
+                postUi(() -> showError(msg));
             }
-        }).start();
+        });
     }
 
     private void compileModelFromLibrary(String jarEntryPath) {
         log("Compiling from library: " + jarEntryPath);
-        new Thread(() -> {
+        COMPILE_EXECUTOR.execute(() -> {
             try {
                 File cacheDir = getCacheDir();
                 File cacheJar = LibraryJarUtil.ensureCached(this);
@@ -967,7 +977,7 @@ public class ExperimentActivity extends Activity {
                 if (entry == null) {
                     jarFile.close();
                     log("ERROR: Entry not found");
-                    handler.post(() -> showError("Entry not found in library: " + jarEntryPath));
+                    postUi(() -> showError("Entry not found in library: " + jarEntryPath));
                     return;
                 }
 
@@ -997,14 +1007,18 @@ public class ExperimentActivity extends Activity {
 
                 File modelFile = new File(cacheDir, jarEntryPath);
                 Object model = compileFile(modelFile);
-                if (model != null) handler.post(() -> showExperiments(model));
+                if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "Library compilation error", e);
                 String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
                 log(msg);
-                handler.post(() -> showError(msg));
+                postUi(() -> showError(msg));
             }
-        }).start();
+        });
+    }
+
+    private void postUi(Runnable r) {
+        handler.post(() -> { if (!destroyed) r.run(); });
     }
 
     private Object compileFile(File modelFile) throws Exception {
@@ -1110,7 +1124,7 @@ public class ExperimentActivity extends Activity {
     }
 
     private void showError(String message) {
-        handler.post(() -> {
+        postUi(() -> {
             contentArea.removeAllViews();
             TextView errText = new TextView(this);
             errText.setText(message);
@@ -1432,6 +1446,7 @@ public class ExperimentActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        destroyed = true;
         if (sensorBridge != null) sensorBridge.stop();
         if (statePollRunnable != null) handler.removeCallbacks(statePollRunnable);
         if (clockUpdateRunnable != null) handler.removeCallbacks(clockUpdateRunnable);
