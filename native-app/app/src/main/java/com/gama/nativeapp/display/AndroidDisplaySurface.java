@@ -26,7 +26,7 @@ import java.util.Set;
 
 import gama.api.runtime.GeneralSynchronizer;
 import gama.api.ui.displays.IDisplayData;
-import gama.api.ui.displays.IDisplaySurface;
+import gama.api.ui.displays.IDisplaySurface.OpenGL;
 import gama.api.ui.displays.IGraphics;
 import gama.annotations.constants.IKeyword;
 import gama.api.ui.layers.ILayer;
@@ -43,11 +43,12 @@ import gama.core.outputs.LayeredDisplayData;
 import gama.core.outputs.LayeredDisplayOutput;
 import gama.core.outputs.display.LayerManager;
 import gama.api.ui.layers.IEventLayerListener;
+import gama.api.ui.layers.IDrawingAttributes;
 import gama.core.outputs.layers.OverlayLayer;
 import gama.api.GAMA;
 import gama.api.ui.displays.IGraphicsScope;
 
-public class AndroidDisplaySurface extends View implements IDisplaySurface {
+public class AndroidDisplaySurface extends View implements OpenGL {
 
     private final LayeredDisplayOutput output;
     private final ILayerManager layerManager;
@@ -919,6 +920,54 @@ public class AndroidDisplaySurface extends View implements IDisplaySurface {
         if (property == LayeredDisplayData.Changes.BACKGROUND) {
             bgPaint.setColor(((java.awt.Color) value).getRGB() | 0xFF000000);
         }
+    }
+
+    @Override
+    public IEnvelope getROIDimensions() {
+        try {
+            gama.api.runtime.scope.IScope s = output.getScope();
+            if (s != null) {
+                gama.api.kernel.agent.IMacroAgent sim = s.getSimulation();
+                if (sim != null) {
+                    IEnvelope env = sim.getEnvelope();
+                    if (env != null) return env;
+                }
+            }
+        } catch (Throwable t) {}
+        double envW = getEnvWidth();
+        double envH = getEnvHeight();
+        if (envW > 0 && envH > 0) {
+            return GamaEnvelopeFactory.of(0, envW, 0, envH, 0, 0);
+        }
+        return null;
+    }
+
+    @Override
+    public void setPaused(boolean paused) {}
+
+    @Override
+    public void selectAgent(IDrawingAttributes attributes) {}
+
+    @Override
+    public void selectionIn(IEnvelope env) {
+        if (env == null || disposed) return;
+        int w = getWidth();
+        int h = getHeight();
+        if (w <= 0 || h <= 0) return;
+        double eW = env.getWidth();
+        double eH = env.getHeight();
+        if (eW <= 0 || eH <= 0) return;
+        double scale = Math.min(w / eW, h / eH);
+        int newW = Math.max(1, (int) Math.round(eW * scale));
+        int newH = Math.max(1, (int) Math.round(eH * scale));
+        int left = (int) Math.round(env.getMinX() * scale);
+        int top = (int) Math.round(env.getMinY() * scale);
+        displayWidth = newW;
+        displayHeight = newH;
+        viewPort.set(left, top, left + newW, top + newH);
+        zoomFit = false;
+        updateZoomLevel();
+        invalidateSafe();
     }
 
     @Override

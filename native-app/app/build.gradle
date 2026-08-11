@@ -192,7 +192,8 @@ tasks.register('patchGamaJars') {
             ['GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
             ['StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
             ['ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
-            ['GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]]
+            ['GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]],
+            ['GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]]
         ]
         patchers.each { name, cls, args ->
             def outDir = file("$buildDir/tmp/patch_$name")
