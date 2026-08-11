@@ -933,7 +933,7 @@ public class ExperimentActivity extends Activity {
                 if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "Compilation error", e);
-                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                String msg = "ERROR: " + rootMessage(e);
                 log(msg);
                 postUi(() -> showError(msg));
             }
@@ -945,20 +945,105 @@ public class ExperimentActivity extends Activity {
         COMPILE_EXECUTOR.execute(() -> {
             try {
                 File modelFile = new File(filePath);
-                if (!modelFile.exists()) {
-                    log("ERROR: File not found");
-                    postUi(() -> showError("File not found: " + filePath));
+                if (!modelFile.exists() || !modelFile.canRead()) {
+                    String reason = !modelFile.exists() ? "file does not exist"
+                            : "file exists but is not readable (permission denied)";
+                    if (tryCompileLibraryFallback(filePath)) return;
+                    log("ERROR: File not found: " + filePath + " (" + reason + ")");
+                    postUi(() -> showError("File not found: " + filePath + " (" + reason + ")"));
                     return;
                 }
                 Object model = compileFile(modelFile);
                 if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "File compilation error", e);
-                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                String msg = "ERROR: " + rootMessage(e);
+                if (isFileAccessError(e) && tryCompileLibraryFallback(filePath)) return;
                 log(msg);
                 postUi(() -> showError(msg));
             }
         });
+    }
+
+    /**
+     * When a workspace file is missing or unreadable (e.g. copied with the wrong
+     * ownership/permissions), find the matching model in the bundled library and
+     * compile that instead, so the same model still runs from the workspace entry.
+     * Returns true if a library match was found and compilation was started.
+     */
+    private boolean tryCompileLibraryFallback(String filePath) {
+        try {
+            String fileName = new File(filePath).getName();
+            File cacheJar = LibraryJarUtil.ensureCached(this);
+            if (cacheJar == null) return false;
+            String match = null;
+            try (JarFile jarFile = new JarFile(cacheJar)) {
+                match = reconstructFromWorkspacePath(jarFile, filePath);
+                if (match == null) {
+                    java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
+                    while (entries.hasMoreElements()) {
+                        JarEntry e = entries.nextElement();
+                        if (e.isDirectory()) continue;
+                        String name = e.getName();
+                        if (!name.endsWith("/" + fileName)) continue;
+                        if (name.contains("/models/")) { match = name; break; }
+                        if (match == null) match = name;
+                    }
+                }
+            }
+            if (match == null) return false;
+            log("Workspace file unreadable/missing, compiling library copy instead: " + match);
+            compileModelFromLibrary(match);
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Library fallback failed", e);
+            return false;
+        }
+    }
+
+    /**
+     * Workspace copies of library projects are stored under a folder named by
+     * WorkspaceManager.sanitizePath(projectKey), e.g. the library entry
+     * "models/Toy Models/Evacuation/models/Evacuation Phuc Xa.gaml" becomes
+     * "<workspace>/models_Toy Models_Evacuation/models/Evacuation Phuc Xa.gaml".
+     * Invert that mapping (replace '_' with '/') and check the jar for the exact
+     * entry so we resolve the correct library model deterministically.
+     */
+    private String reconstructFromWorkspacePath(JarFile jarFile, String filePath) {
+        try {
+            String root = WorkspaceManager.workspaceRoot(this).getAbsolutePath();
+            String rel = filePath;
+            if (rel.startsWith(root + "/")) rel = rel.substring(root.length() + 1);
+            int slash = rel.indexOf('/');
+            if (slash <= 0) return null;
+            String folder = rel.substring(0, slash);
+            if (!folder.contains("_")) return null;
+            String rest = rel.substring(slash + 1);
+            String candidate = folder.replace('_', '/') + "/" + rest;
+            if (jarFile.getJarEntry(candidate) != null) return candidate;
+            if (rest.startsWith("models/")) {
+                String alt = folder.replace('_', '/') + "/" + rest;
+                if (jarFile.getJarEntry(alt) != null) return alt;
+            }
+            return null;
+        } catch (Exception e) {
+            Log.e(TAG, "Reconstruct failed", e);
+            return null;
+        }
+    }
+
+    private static boolean isFileAccessError(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof java.io.FileNotFoundException) return true;
+            if (cur instanceof java.io.IOException) {
+                String m = cur.getMessage();
+                if (m != null && (m.contains("EACCES") || m.contains("Permission denied")
+                        || m.contains("open failed") || m.contains("No such file"))) return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private void compileModelFromLibrary(String jarEntryPath) {
@@ -1010,7 +1095,7 @@ public class ExperimentActivity extends Activity {
                 if (model != null) postUi(() -> showExperiments(model));
             } catch (Exception e) {
                 Log.e(TAG, "Library compilation error", e);
-                String msg = "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
+                String msg = "ERROR: " + rootMessage(e);
                 log(msg);
                 postUi(() -> showError(msg));
             }
@@ -1028,10 +1113,21 @@ public class ExperimentActivity extends Activity {
         Object uri = uriClass.getMethod("createFileURI", String.class).invoke(null, modelFile.getAbsolutePath());
         List<Object> errors = new ArrayList<>();
         Class<?> modelClass = Class.forName("gama.api.kernel.species.IModelSpecies");
-        Object model = builderClass.getMethod("compile", uriClass, List.class).invoke(builder, uri, errors);
+        Object model;
+        try {
+            model = builderClass.getMethod("compile", uriClass, List.class).invoke(builder, uri, errors);
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable cause = ite.getCause() != null ? ite.getCause() : ite;
+            if (cause instanceof Exception) throw (Exception) cause;
+            throw new RuntimeException(cause);
+        }
 
         if (model == null) {
-            showCompilationError("Compilation FAILED (" + errors.size() + " errors)", errors);
+            if (errors.isEmpty()) {
+                showCompilationError("Compilation FAILED (no diagnostics reported)", errors);
+            } else {
+                showCompilationError("Compilation FAILED (" + errors.size() + " errors)", errors);
+            }
             return null;
         }
 
@@ -1039,6 +1135,17 @@ public class ExperimentActivity extends Activity {
         String name = (String) modelClass.getMethod("getName").invoke(model);
         log("Compiled: " + name);
         return model;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur.getMessage() != null && !cur.getMessage().isEmpty()) {
+                return cur.getClass().getSimpleName() + ": " + cur.getMessage();
+            }
+            cur = cur.getCause();
+        }
+        return t.getClass().getSimpleName() + ": " + t;
     }
 
     private void extractIncludesFromJarForAsset(File modelFile, String assetPath) {
