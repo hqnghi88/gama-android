@@ -459,3 +459,21 @@ matching the desktop `gama.dependencies` bundle exactly:
 - **Traffic and Pollution** (Traffic and Pollution.gaml / experiment `traffic`): compiles, starts,
   road/building shapefiles load via GeoTools 33.4, overlay legend renders, sim steps every ~1s.
 - **Segregation (GIS)** (nha2.shp + nha2.prj real CRS): compiles, starts, renders, steps, no errors.
+
+### Procedural City blank display fix (EFS stubs)
+- Symptom: blank display; `NoSuchMethodError: IFileSystem.getStore(IPath)` per building.
+- Chain: `draw shape texture:[...]` → `ShapeDrawer.addTextures` (String branch) →
+  `GamaFileType.createFile` → `GamaImageFile.<init>` → `FileUtils.constructAbsoluteFilePath`
+  → `findOutsideWorkspace` → `EFS.getLocalFileSystem().getStore(new Path(fp))`.
+- The `org.eclipse.core.filesystem` stubs were empty interfaces returning null; the gama.api jar
+  is compiled against the real Eclipse `IFileSystem.getStore(IPath)`, so ART's verifier threw
+  NoSuchMethodError on every textured draw. (Shapefiles worked because relative paths skip this.)
+- Fix: implemented the stubs backed by `java.io.File`:
+  - `IFileSystem` — added `getStore(IPath)`, `getStore(URI)`, `attributes()`, `canDelete()`, `canWrite()`.
+  - `EFS.getLocalFileSystem()` → `LocalFileSystem.INSTANCE`.
+  - New `LocalFileSystem`, `LocalFileStore`, `LocalFileInfo` (real file I/O; `fetchInfo().exists()`
+    reflects the on-device cache where the library jar project is extracted).
+  - `findOutsideWorkspace` then resolves via real `exists()`; `createLinkToExternalFile` returns
+    null on Android → absolute path used as-is.
+- Verified: Procedural City renders textured buildings (screenshot ~1750 distinct colors);
+  Traffic still passes (no regression).
