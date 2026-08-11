@@ -795,6 +795,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         int w = img.getWidth();
         int h = img.getHeight();
         if (w <= 0 || h <= 0) return null;
+        if (!cache) {
+            syncRasterDataToBitmap(img);
+        }
         int[] pixels = new int[w * h];
         img.getRGB(0, 0, w, h, pixels, 0, w);
         int type = img.getType();
@@ -852,6 +855,23 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             IMAGE_TO_BITMAP.put(img, bmp);
         }
         return bmp;
+    }
+
+    private static void syncRasterDataToBitmap(java.awt.image.BufferedImage img) {
+        try {
+            java.awt.image.DataBuffer db = img.getRaster().getDataBuffer();
+            if (db instanceof java.awt.image.DataBufferInt) {
+                int[] buf = ((java.awt.image.DataBufferInt) db).getData();
+                boolean hasContent = false;
+                for (int i = 0; i < buf.length; i++) {
+                    if (buf[i] != 0) { hasContent = true; break; }
+                }
+                if (hasContent) {
+                    img.syncDataToBitmap();
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     /** Caches the Bitmap conversion per source BufferedImage (GAMA reuses image objects per frame). */

@@ -1,6 +1,6 @@
 package java.awt;
 
-public class RenderingHints extends java.util.AbstractMap<RenderingHints.Key, Object> {
+public class RenderingHints extends java.util.AbstractMap<RenderingHints.Key, Object> implements Cloneable {
     public static final Key KEY_ALPHA_INTERPOLATION = new Key(1);
     public static final Key KEY_ANTIALIASING = new Key(2);
     public static final Key KEY_COLOR_RENDERING = new Key(3);
@@ -63,6 +63,14 @@ public class RenderingHints extends java.util.AbstractMap<RenderingHints.Key, Ob
     public void add(RenderingHints.Key key, Object value) {}
     public void add(RenderingHints hints) {}
     public boolean isKey(Object key) { return false; }
+
+    @Override public Object clone() {
+        try {
+            return super.clone();
+        } catch (CloneNotSupportedException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     public static class Key {
         private int key;

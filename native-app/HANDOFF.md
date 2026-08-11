@@ -503,3 +503,36 @@ matching the desktop `gama.dependencies` bundle exactly:
   green evacuation points and red vehicles, animates, and pauses at `time > 15000` (model's own
   `end_sim`). **Traffic and Pollution** re-tested: no regression. **Color Brewer.gaml** recipe
   (`BrewerPalette` experiment) compiles/starts clean — `brewer_colors` now fully functional.
+
+### Waterflow Field Elevation fix (RenderingHints + ImageIO stub + GridFileFallbackPatcher)
+- Symptom: `NullPointerException: IProjection.getProjectedEnvelope()` on null during sim init
+  (`geometry shape <- envelope(dem_file)` for `DEM_100m_PP.asc`). Previously documented as a
+  ColorBrewer limitation — it is now FIXED.
+- Chain: `GamaGridFile.computeEnvelope` (`if (gis == null) createCoverage(scope); return
+  gis.getProjectedEnvelope();`) → `createCoverage` → `privateCreateCoverage` →
+  `new ArcGridReader(fis, hints)`. `gis` (`GamaGisFile.public IProjection gis`) is only set by
+  `computeProjection` inside `privateCreateCoverage`; when the ArcGridReader path failed, `gis`
+  stayed null and the constructor-era exception was swallowed (`System.out.println("On est ici: ...")`).
+- Fix 1 — `app/src/main/java/java/awt/RenderingHints.java`: added `implements Cloneable` + `clone()`.
+  Fixed `CloneNotSupportedException: Class org.geotools.util.factory.Hints doesn't implement
+  Cloneable` (geotools `Hints extends java.awt.RenderingHints`; real `RenderingHints` implements
+  `Cloneable`; `AbstractGridCoverage2DReader` calls `Hints.clone()` → `super.clone()`).
+- Fix 2 — `app/src/main/java/javax/imageio/ImageIO.java`: added `getUseCache()`, `setUseCache()`,
+  `getCacheDirectory()`, `createImageOutputStream()`, `getImageReaders()`. Fixed
+  `NoSuchMethodError: No static method getUseCache()Z in class javax/imageio/ImageIO` (the stub
+  shadowed the JDK class but lacked the cache API called by `ArcGridReader`, `ImageIOExt`,
+  `MaskOverviewProvider`). Also added `stream/ImageOutputStream.java` +
+  `FileImageOutputStream.java` (minimal write-side counterparts).
+- Fix 3 — `tools/GridFileFallbackPatcher.java` (new, wired into `patchGamaJars` for
+  `gama.core_*.jar`): in `GamaGridFile.privateCreateCoverage`, widens `catch (Exception e)`
+  to `catch (Throwable e)` and rethrows as `RuntimeException`. This routes ALL grid-read failures
+  (Errors included, which the old `catch(Exception)` swallowed or let escape) to `createCoverage`'s
+  existing `customAscReader` fallback, which fully populates `gis`/`ascData`/`numRows`/`numCols`.
+  ASM details: update the handler's StackMapTable `FrameNode` (stack top + local slot 4 → Throwable)
+  or the device verifier rejects the widened catch; insert `new RuntimeException, dup, aload, <init>(Throwable), athrow`
+  immediately after the handler's `astore` (rest of handler becomes dead code, harmless).
+- Verified on device: **Waterflow Field Elevation** compiles (`WaterOnFields_model`), starts, opens
+  the `d` 3D display on `OpenGLDisplayView` (3D display type preserved), renders the terrain mesh
+  (`palette(#burlywood..#green)`) and animates the `flow` mesh (Blues palette) — no errors, no
+  `"On est ici"`, no NPE. Regressions: **Evacuation Phuc Xa** and **Traffic and Pollution** still
+  compile/render with no errors.

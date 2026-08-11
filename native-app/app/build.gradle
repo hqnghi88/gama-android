@@ -191,7 +191,8 @@ tasks.register('patchGamaJars') {
                 ["${libsDir}/eclipse-core-stubs.jar", gamaCoreJar]],
             ['GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
             ['StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
-            ['ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]]
+            ['ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
+            ['GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]]
         ]
         patchers.each { name, cls, args ->
             def outDir = file("$buildDir/tmp/patch_$name")
