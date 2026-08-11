@@ -1,0 +1,13 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: Android Sensors
+Bundle-SymbolicName: gama.extension.androidsensor;singleton:=true
+Bundle-Version: 0.0.0.qualifier
+Require-Bundle: gama.core,
+ gama.dependencies
+Import-Package: org.locationtech.jts.geom
+Export-Package: gama.extension.androidsensor
+Bundle-ClassPath: .
+Bundle-ActivationPolicy: lazy
+Bundle-RequiredExecutionEnvironment: JavaSE-21
+Automatic-Module-Name: gama.extension.androidsensor
