@@ -836,9 +836,9 @@ public class AndroidScene3D {
         int r = (argb >>> 16) & 0xFF, g = (argb >>> 8) & 0xFF, b = argb & 0xFF;
         float ar = (ambientLight >>> 16) & 0xFF, ag = (ambientLight >>> 8) & 0xFF, ab = ambientLight & 0xFF;
         float sr = (sunColor >>> 16) & 0xFF, sg = (sunColor >>> 8) & 0xFF, sb = sunColor & 0xFF;
-        float fr = ar / 255f + (sr / 255f) * nd;
-        float fg = ag / 255f + (sg / 255f) * nd;
-        float fb = ab / 255f + (sb / 255f) * nd;
+        float fr = Math.min(1f, ar / 255f + (sr / 255f) * nd);
+        float fg = Math.min(1f, ag / 255f + (sg / 255f) * nd);
+        float fb = Math.min(1f, ab / 255f + (sb / 255f) * nd);
         int rr = Math.round(r * fr); if (rr > 255) rr = 255;
         int gg = Math.round(g * fg); if (gg > 255) gg = 255;
         int bb = Math.round(b * fb); if (bb > 255) bb = 255;
@@ -938,9 +938,9 @@ public class AndroidScene3D {
                 int sr255 = (sunColor >>> 16) & 0xFF;
                 int sg255 = (sunColor >>> 8) & 0xFF;
                 int sb255 = sunColor & 0xFF;
-                float fr = ar / 255f + (sr255 / 255f) * nd;
-                float fg = ag / 255f + (sg255 / 255f) * nd;
-                float fb = ab / 255f + (sb255 / 255f) * nd;
+                float fr = Math.min(1f, ar / 255f + (sr255 / 255f) * nd);
+                float fg = Math.min(1f, ag / 255f + (sg255 / 255f) * nd);
+                float fb = Math.min(1f, ab / 255f + (sb255 / 255f) * nd);
                 float r = (sr * tr >> 8) * fr;
                 float g = (sg * tg >> 8) * fg;
                 float b = (sb * tb >> 8) * fb;

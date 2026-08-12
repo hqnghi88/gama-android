@@ -1079,7 +1079,10 @@ public class ExperimentActivity extends Activity {
                     String relativePath = eName.substring(projectRoot.length());
                     if (relativePath.isEmpty()) continue;
                     File outFile = new File(cacheDir, projectRoot + relativePath);
-                    if (outFile.exists() && !force) continue;
+                    if (outFile.exists()) {
+                        if (!force) continue;
+                        if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                    }
                     outFile.getParentFile().mkdirs();
                     try (InputStream is = jarFile.getInputStream(e);
                          FileOutputStream fos = new FileOutputStream(outFile)) {
@@ -1162,7 +1165,10 @@ public class ExperimentActivity extends Activity {
                 if (e.isDirectory() || !eName.contains("/includes/")) continue;
                 String includePath = eName.substring(eName.indexOf("/includes/") + "/includes/".length());
                 File outFile = new File(modelFile.getParentFile(), "../includes/" + includePath);
-                if (outFile.exists() && !force) continue;
+                if (outFile.exists()) {
+                    if (!force) continue;
+                    if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                }
                 outFile.getParentFile().mkdirs();
                 try (InputStream is = jarFile.getInputStream(e);
                      FileOutputStream fos = new FileOutputStream(outFile)) {

@@ -554,15 +554,11 @@ public class ModelEditorActivity extends AppCompatActivity {
                 if (filePath != null) {
                     WorkspaceManager.writeText(new File(filePath), content);
                 } else if (fromLibrary && jarPath != null) {
-                    File copied = WorkspaceManager.copyProjectToWorkspace(this, jarPath);
-                    if (copied == null) {
-                        throw new java.io.IOException("Could not copy project to workspace");
-                    }
-                    WorkspaceManager.writeText(copied, content);
-                    filePath = copied.getAbsolutePath();
+                    File cacheFile = new File(getCacheDir(), jarPath);
+                    WorkspaceManager.writeText(cacheFile, content);
                     mainHandler.post(() -> {
-                        titleText.setText(modelName + "  \u00B7  workspace");
-                        Toast.makeText(this, "Saved a copy to your workspace", Toast.LENGTH_LONG).show();
+                        titleText.setText(modelName + "  \u00B7  library");
+                        Toast.makeText(this, "Saved to library", Toast.LENGTH_SHORT).show();
                     });
                 } else {
                     File modelsDir = new File(getFilesDir(), "models");
@@ -590,11 +586,7 @@ public class ModelEditorActivity extends AppCompatActivity {
             Intent intent = new Intent(this, ExperimentActivity.class);
             intent.putExtra("model_name", modelName);
 
-            if (filePath != null) {
-                WorkspaceManager.writeText(new File(filePath), codeEditor.getText().toString());
-                isModified = false;
-                intent.putExtra("file_path", filePath);
-            } else if (fromLibrary && jarPath != null) {
+            if (fromLibrary && jarPath != null) {
                 File cacheFile = new File(getCacheDir(), jarPath);
                 cacheFile.getParentFile().mkdirs();
                 FileOutputStream fos = new FileOutputStream(cacheFile);
@@ -603,6 +595,10 @@ public class ModelEditorActivity extends AppCompatActivity {
                 isModified = false;
                 intent.putExtra("jar_path", jarPath);
                 intent.putExtra("from_library", true);
+            } else if (filePath != null) {
+                WorkspaceManager.writeText(new File(filePath), codeEditor.getText().toString());
+                isModified = false;
+                intent.putExtra("file_path", filePath);
             } else {
                 File modelsDir = new File(getFilesDir(), "models");
                 modelsDir.mkdirs();

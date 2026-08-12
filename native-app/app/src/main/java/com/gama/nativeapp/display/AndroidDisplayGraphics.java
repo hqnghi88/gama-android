@@ -412,11 +412,13 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     cz += lift;
                     double d = depth > 0 ? depth : Math.max(w, h);
                     if (tex != null) {
+                        Object wallTex = resolveTexture(texAttrs, 1, getSurface().getScope());
+                        if (wallTex == null) wallTex = tex;
                         double bz0 = cz - d / 2, bz1 = cz + d / 2;
                         Coordinate[] boxShell = new Coordinate[] {
                             new Coordinate(cx - w / 2, cy - h / 2), new Coordinate(cx + w / 2, cy - h / 2),
                             new Coordinate(cx + w / 2, cy + h / 2), new Coordinate(cx - w / 2, cy + h / 2) };
-                        addPrism3D(boxShell, bz0, bz1, 0, 0, fill, border, tex, tint);
+                        addPrism3D(boxShell, bz0, bz1, 0, 0, fill, border, tex, wallTex, tint);
                     } else {
                         AxisAngle rot = attributes.getRotation();
                         if (rot != null) {
@@ -438,7 +440,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
                         z0 += terrainLift(cx, cy);
                         Coordinate[] ts = transformShell(shell, center, k, rot);
-                        addPrism3D(ts, z0, z0 + depth, ox, oy, fill, border, tex, tint);
+                        addPrism3D(ts, z0, z0 + depth, ox, oy, fill, border, tex, tex, tint);
                     } else {
                         float[] model = new float[shell.length * 3];
                         for (int i = 0; i < shell.length; i++) {
@@ -573,11 +575,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border) {
-        addPrism3D(shell, z0, z1, ox, oy, fill, border, null, 0);
+        addPrism3D(shell, z0, z1, ox, oy, fill, border, null, null, 0);
     }
 
+    /** Draws an extruded polygon prism. `topTex` is applied to the top/bottom faces,
+     *  `wallTex` to the sides (desktop GAMA: primary vs alternate texture). Either may
+     *  be null, in which case the corresponding face(s) fall back to the fill color. */
     private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border,
-                            Object tex, int tint) {
+                            Object topTex, Object wallTex, int tint) {
         int n = shell.length;
         float[] bottom = new float[n * 3];
         float[] top = new float[n * 3];
@@ -589,16 +594,22 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             top[i * 3 + 1] = (float) (shell[i].y + oy);
             top[i * 3 + 2] = (float) z1;
         }
-        if (tex != null) {
-            scene3d.addTexturedPoly(top, n, envelopeUvs(top, n), tex, tint, 0, 0);
-            for (int i = 0; i < n - 1; i++) {
-                scene3d.addPoly(wall(bottom, top, i), 4, fill, border, 1f, false);
-            }
+        if (topTex != null) {
+            scene3d.addTexturedPoly(top, n, envelopeUvs(top, n), topTex, tint, 0, 0);
+        } else {
+            scene3d.addPoly(top, n, fill, border, 1f, false);
+        }
+        if (wallTex != null) {
+            scene3d.addTexturedPoly(bottom, n, envelopeUvs(bottom, n), wallTex, tint, 0, 0);
         } else {
             scene3d.addPoly(bottom, n, fill, border, 1f, false);
-            scene3d.addPoly(top, n, fill, border, 1f, false);
-            for (int i = 0; i < n - 1; i++) {
-                scene3d.addPoly(wall(bottom, top, i), 4, fill, border, 1f, false);
+        }
+        for (int i = 0; i < n - 1; i++) {
+            float[] w = wall(bottom, top, i);
+            if (wallTex != null) {
+                scene3d.addTexturedPoly(w, 4, envelopeUvs(w, 4), wallTex, tint, 0, 0);
+            } else {
+                scene3d.addPoly(w, 4, fill, border, 1f, false);
             }
         }
     }
@@ -910,9 +921,16 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /** Resolves the first element of a draw attributes texture list to a cached Bitmap or AnimatedTexture. */
     private Object loadTexture(List<?> textures, IScope scope) {
-        if (textures == null || textures.isEmpty()) return null;
+        return resolveTexture(textures, 0, scope);
+    }
+
+    /** Resolves the element at `index` of a draw attributes texture list to a cached Bitmap or AnimatedTexture.
+     *  Elements can be image providers (e.g. GamaImageFile), BufferedImages or plain String paths
+     *  (as produced by `file(...).path` in GAML), mirroring what desktop GAMA accepts. */
+    private Object resolveTexture(List<?> textures, int index, IScope scope) {
+        if (textures == null || index < 0 || index >= textures.size()) return null;
         try {
-            Object first = textures.get(0);
+            Object first = textures.get(index);
             BufferedImage bi = null;
             String key = null;
             if (first instanceof IImageProvider ip) {
@@ -931,9 +949,27 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     }
                 }
                 bi = ip.getImage(scope, true);
+            } else if (first instanceof String s) {
+                key = s;
+                if (key.toLowerCase().endsWith(".gif")) {
+                    Object cachedGif = textureCache.get(key);
+                    if (cachedGif != null) return cachedGif;
+                    AndroidScene3D.AnimatedTexture at = decodeAnimatedGif(key);
+                    if (at != null) {
+                        textureCache.put(key, at);
+                        return at;
+                    }
+                }
+                bi = gama.extension.image.ImageCache.getInstance().getImageFromFile(scope, s, true, null, null);
+                if (bi == null) {
+                    android.util.Log.w("ANDROID_3D", "loadTexture: no image for path " + s);
+                    return null;
+                }
             } else if (first instanceof BufferedImage b) {
                 bi = b;
                 key = "bi@" + System.identityHashCode(b);
+            } else {
+                return null;
             }
             if (bi == null || key == null) return null;
             Object cached = textureCache.get(key);

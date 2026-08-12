@@ -872,6 +872,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             }
 
             File cacheDir = getCacheDir();
+            File cacheJar = new File(cacheDir, LibraryJarUtil.JAR_NAME);
             int[] counts = {0};
             long[] bytes = {0};
 
@@ -884,7 +885,10 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 if (entry.isDirectory()) continue;
 
                 File outFile = new File(cacheDir, name);
-                if (outFile.exists() && !force) continue;
+                if (outFile.exists()) {
+                    if (!force) continue;
+                    if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                }
                 outFile.getParentFile().mkdirs();
 
                 try (InputStream is = jarFile.getInputStream(entry);
