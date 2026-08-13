@@ -49,6 +49,15 @@ public class GridFileFallbackPatcher {
                     }
                 }
 
+                for (MethodNode mn : cn.methods) {
+                    if (!mn.name.equals("customAscReader") || !mn.desc.equals("(Lgama/api/runtime/scope/IScope;)V")) continue;
+                    if (patchCustomAscReaderEmptyTokenGuard(mn)) {
+                        patched = true;
+                        System.out.println("Patched " + TARGET
+                                + " customAscReader: empty-token guard now uses isEmpty()");
+                    }
+                }
+
                 ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS);
                 cn.accept(cw);
                 data = cw.toByteArray();
@@ -70,6 +79,27 @@ public class GridFileFallbackPatcher {
             tmpJar.delete();
             System.err.println("WARNING: Target not found or not patched, JAR unchanged");
         }
+    }
+
+    /**
+     * GAMA's customAscReader parses ASCII grid data rows with
+     * `if (l[i] == "") continue;`. The reference comparison only works on desktop
+     * where split() returns the interned empty string; on Android the empty tokens
+     * are fresh objects, so Double.valueOf("") throws NumberFormatException.
+     * Rewrite `ldc ""; if_acmpne <parse>` into `String.isEmpty(); ifeq <parse>`.
+     */
+    static boolean patchCustomAscReaderEmptyTokenGuard(MethodNode mn) {
+        boolean changed = false;
+        for (AbstractInsnNode insn = mn.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (!(insn instanceof LdcInsnNode ldc) || !"".equals(ldc.cst)) continue;
+            AbstractInsnNode next = ldc.getNext();
+            if (!(next instanceof JumpInsnNode jmp) || jmp.getOpcode() != Opcodes.IF_ACMPNE) continue;
+            mn.instructions.set(ldc, new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+                    "java/lang/String", "isEmpty", "()Z", false));
+            jmp.setOpcode(Opcodes.IFEQ);
+            changed = true;
+        }
+        return changed;
     }
 
     static void updateHandlerFrame(TryCatchBlockNode tcb, MethodNode mn) {

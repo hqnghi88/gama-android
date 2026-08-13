@@ -1,6 +1,20 @@
 package java.awt.geom;
 
 public abstract class Rectangle2D extends RectangularShape implements Cloneable {
+    public static final int OUT_LEFT = 1;
+    public static final int OUT_TOP = 2;
+    public static final int OUT_RIGHT = 4;
+    public static final int OUT_BOTTOM = 8;
+
+    public int outcode(double x, double y) {
+        double x1 = getX(), y1 = getY(), x2 = x1 + getWidth(), y2 = y1 + getHeight();
+        int out = 0;
+        if (x < x1) out |= OUT_LEFT;
+        else if (x > x2) out |= OUT_RIGHT;
+        if (y > y2) out |= OUT_BOTTOM;
+        else if (y < y1) out |= OUT_TOP;
+        return out;
+    }
     public abstract double getX();
     public abstract double getY();
     public abstract double getWidth();
@@ -9,8 +23,24 @@ public abstract class Rectangle2D extends RectangularShape implements Cloneable 
     public boolean contains(double x, double y) { return x >= getX() && y >= getY() && x < getX() + getWidth() && y < getY() + getHeight(); }
     public boolean contains(double x, double y, double w, double h) { return false; }
     public boolean intersects(double x, double y, double w, double h) { return false; }
-    public java.awt.Shape createIntersection(Rectangle2D r) { return this; }
-    public java.awt.Shape createUnion(Rectangle2D r) { return this; }
+    public Rectangle2D createIntersection(Rectangle2D r) {
+        if (r == null) return new Double(getX(), getY(), getWidth(), getHeight());
+        double minX = Math.max(getX(), r.getX());
+        double minY = Math.max(getY(), r.getY());
+        double maxX = Math.min(getX() + getWidth(), r.getX() + r.getWidth());
+        double maxY = Math.min(getY() + getHeight(), r.getY() + r.getHeight());
+        double w = maxX - minX, h = maxY - minY;
+        if (w < 0 || h < 0) return new Double(0, 0, 0, 0);
+        return new Double(minX, minY, w, h);
+    }
+    public Rectangle2D createUnion(Rectangle2D r) {
+        if (r == null) return new Double(getX(), getY(), getWidth(), getHeight());
+        double minX = Math.min(getX(), r.getX());
+        double minY = Math.min(getY(), r.getY());
+        double maxX = Math.max(getX() + getWidth(), r.getX() + r.getWidth());
+        double maxY = Math.max(getY() + getHeight(), r.getY() + r.getHeight());
+        return new Double(minX, minY, maxX - minX, maxY - minY);
+    }
     public void add(double x, double y) {
         double minX = Math.min(getX(), x);
         double minY = Math.min(getY(), y);

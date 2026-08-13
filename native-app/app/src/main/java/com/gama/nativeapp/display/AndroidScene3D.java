@@ -327,6 +327,8 @@ public class AndroidScene3D {
     }
 
     private boolean fitLocked = false;
+    private int diagCount = 0;
+    private int diagBoundsCount = 0;
     private float fitNeed = -1f;
     private double fitDist = -1;
     private double fitCamX, fitCamY, fitCamZ;
@@ -354,6 +356,11 @@ public class AndroidScene3D {
 
         float[] b = sceneBounds();
         if (b == null) return;
+        if (diagBoundsCount < 3) {
+            diagBoundsCount++;
+            android.util.Log.i("SHAPE3D", "SCENEBOUNDS [x:" + b[0] + ".." + b[3] + " y:" + b[1] + ".." + b[4] + " z:" + b[2] + ".." + b[5] + "] prims=" + prims.size());
+            logPrimHistogram();
+        }
         float minX = b[0], minY = b[1], minZ = b[2];
         float maxX = b[3], maxY = b[4], maxZ = b[5];
         float cx = (minX + maxX) / 2f, cy = (minY + maxY) / 2f, cz = (minZ + maxZ) / 2f;
@@ -385,28 +392,8 @@ public class AndroidScene3D {
         // fit zooms out too far on portrait screens and leaves the terrain
         // centred with large white borders.
         double fvx = dxc / dist, fvy = dyc / dist, fvz = dzc / dist;
-        double rvx = -fvz, rvy = 0, rvz = fvx; // cross(f, worldUp(0,0,1))
-        double rl = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
-        if (rl < 1e-9) { rvx = 1; rvy = 0; rvz = 0; rl = 1; }
-        rvx /= rl; rvy /= rl; rvz /= rl;
-        double uvx = rvy * fvz - rvz * fvy;
-        double uvy = rvz * fvx - rvx * fvz;
-        double uvz = rvx * fvy - rvy * fvx;
-        double maxRight = 0, maxUp = 0;
-        double[] offsX = {minX - cx, maxX - cx};
-        double[] offsY = {minY - cy, maxY - cy};
-        double[] offsZ = {minZ - cz, maxZ - cz};
-        for (double ox : offsX) {
-            for (double oy : offsY) {
-                for (double oz : offsZ) {
-                    double px = ox * rvx + oy * rvy + oz * rvz;
-                    double py = ox * uvx + oy * uvy + oz * uvz;
-                    maxRight = Math.max(maxRight, Math.abs(px));
-                    maxUp = Math.max(maxUp, Math.abs(py));
-                }
-            }
-        }
-        double neededFit = Math.max(maxRight / Math.tan(halfH), maxUp / Math.tan(halfV)) * 1.05;
+        double neededFit = frameDistance(fvx, fvy, fvz, halfV, halfH, cx, cy, cz,
+                minX, minY, minZ, maxX, maxY, maxZ);
         long nowMs = System.currentTimeMillis();
         if (fitStartMs < 0) fitStartMs = nowMs;
         if (fitLocked) {
@@ -436,6 +423,60 @@ public class AndroidScene3D {
             fitCamZ = camZ;
             fitDist = dist;
             if (nowMs - fitStartMs > 2000) fitLocked = true;
+        }
+
+        // Re-aim the camera so its view axis passes through the scene centre.
+        // GAMA's own camera target can end up far from the drawn content when a
+        // comodel mixes micro-model coordinate frames (e.g. Flood Evacuation's
+        // grid cells live at the micro-model's raw DEM coordinates); without this
+        // the whole scene is pushed off-screen and the display looks blank.
+        {
+            double offx = cx - tarX, offy = cy - tarY, offz = cz - tarZ;
+            double fdot = offx * fvx + offy * fvy + offz * fvz;
+            double perpX = offx - fdot * fvx;
+            double perpY = offy - fdot * fvy;
+            double perpZ = offz - fdot * fvz;
+            double perpLen = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+            if (perpLen > r * 0.01) {
+                tarX += perpX;
+                tarY += perpY;
+                tarZ += perpZ;
+                camX += perpX;
+                camY += perpY;
+                camZ += perpZ;
+            }
+        }
+
+        // Elevate flat scenes. A mostly-2D world (a comodel whose micro-model
+        // lives in its own coordinate frame, or any display whose GAMA camera
+        // sits at ground level) is seen edge-on and renders blank when the
+        // camera looks horizontally from the same height as the geometry.
+        // Lift the camera above the scene centre and aim it back down at the
+        // usual oblique angle, re-framing the whole footprint.
+        {
+            float zSpan = maxZ - minZ;
+            float xySpan = Math.max(maxX - minX, maxY - minY);
+            if (zSpan < xySpan * 0.05f && zSpan < (float) r * 0.2f) {
+                double vx = camX - tarX, vy = camY - tarY, vz = camZ - tarZ;
+                double camDist = Math.sqrt(vx * vx + vy * vy + vz * vz);
+                double elevRad = camDist > 1e-9 ? Math.atan2(vz, Math.hypot(vx, vy)) : 0;
+                if (elevRad < Math.toRadians(25)) {
+                    double az = camDist > 1e-9 ? Math.atan2(vy, vx) : Math.PI;
+                    double elev = Math.toRadians(55);
+                    double fvx2 = Math.cos(elev) * Math.cos(az);
+                    double fvy2 = Math.cos(elev) * Math.sin(az);
+                    double fvz2 = Math.sin(elev);
+                    double need = frameDistance(fvx2, fvy2, fvz2, halfV, halfH, cx, cy, cz,
+                            minX, minY, minZ, maxX, maxY, maxZ);
+                    tarX = cx;
+                    tarY = cy;
+                    tarZ = cz;
+                    camX = tarX + fvx2 * need;
+                    camY = tarY + fvy2 * need;
+                    camZ = tarZ + fvz2 * need;
+                    dist = need;
+                }
+            }
         }
 
         if (rotYawDeg != 0f || rotPitchDeg != 0f) {
@@ -493,7 +534,104 @@ public class AndroidScene3D {
             }
         }
 
+        diagCount++;
+        if (diagCount == 2) {
+            try {
+                java.io.File dir = new java.io.File("/data/data/com.gama.nativeapp/files");
+                dir.mkdirs();
+                java.io.File f = new java.io.File(dir, "frame3d.png");
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                frameBmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fos);
+                fos.close();
+                Log.i(TAG, "WROTE " + f.getAbsolutePath() + " " + viewW + "x" + viewH);
+            } catch (Throwable t) {
+                Log.w(TAG, "frame dump failed: " + t);
+            }
+        }
+        if ((diagCount & 3) == 1 && diagCount < 40) {
+            int opaque = 0, total = 0;
+            try {
+                int w = frameBmp.getWidth(), h = frameBmp.getHeight();
+                int[] px = new int[w * h];
+                frameBmp.getPixels(px, 0, w, 0, 0, w, h);
+                for (int i = 0; i < px.length; i += 97) {
+                    total++;
+                    if (((px[i] >>> 24) & 0xFF) > 0) opaque++;
+                }
+            } catch (Throwable t) {}
+            int nPoly = 0, nText = 0, nLine = 0, nBill = 0, fillZero = 0, cullTrue = 0;
+            int projOk = 0, onScreen = 0;
+            for (Prim p : visible) {
+                boolean ok = true, vis = false;
+                for (int i = 0; i < p.v.length; i += 3) {
+                    float[] out = p0;
+                    if (!project(p.v[i], p.v[i + 1], p.v[i + 2], out)) { ok = false; continue; }
+                    if (out[0] >= -4 && out[0] <= viewW + 4 && out[1] >= -4 && out[1] <= viewH + 4) vis = true;
+                }
+                if (ok) projOk++;
+                if (vis) onScreen++;
+            }
+            StringBuilder samples = new StringBuilder();
+            int si = 0;
+            for (Prim p : prims) {
+                switch (p.kind) {
+                    case TEXT: nText++; break;
+                    case LINE: nLine++; break;
+                    case BILLBOARD: nBill++; break;
+                    default: nPoly++; if (p.fill == 0) fillZero++; break;
+                }
+                if (p.cull) cullTrue++;
+                if (si < 6 && p.v != null && p.v.length >= 3) {
+                    String kn = p.kind == TEXT ? "TEXT" : p.kind == LINE ? "LINE" : p.kind == BILLBOARD ? "BILLBOARD" : "POLY";
+                    samples.append("[").append(kn).append(" fill=0x")
+                            .append(Integer.toHexString(p.fill)).append(" cull=").append(p.cull)
+                            .append(" v=(").append(p.v[0]).append(",").append(p.v[1]).append(",").append(p.v[2])
+                            .append(")] ");
+                    si++;
+                }
+            }
+            Log.i(TAG, "renderdiag cam=(" + camX + "," + camY + "," + camZ
+                    + ") target=(" + tarX + "," + tarY + "," + tarZ
+                    + ") visible=" + visible.size() + "/" + prims.size()
+                    + " projOk=" + projOk + " onScreen=" + onScreen
+                    + " poly=" + nPoly + " text=" + nText + " line=" + nLine + " bill=" + nBill
+                    + " fillZero=" + fillZero + " cullTrue=" + cullTrue
+                    + " r=" + r + " dist=" + dist + " near=" + nearPlane + " far=" + farPlane
+                    + " opaqueSamples=" + opaque + "/" + total
+                    + " bounds=[" + minX + "," + minY + "," + minZ + "]-[" + maxX + "," + maxY + "," + maxZ + "]"
+                    + " first=" + samples);
+        }
+
         canvas.drawBitmap(frameBmp, 0, 0, null);
+    }
+
+    /** Distance needed to frame the scene's 2D footprint from a view direction. */
+    private double frameDistance(double fvx, double fvy, double fvz, double halfV, double halfH,
+                                 float cx, float cy, float cz,
+                                 float minX, float minY, float minZ,
+                                 float maxX, float maxY, float maxZ) {
+        double rvx = -fvz, rvy = 0, rvz = fvx; // cross(f, worldUp(0,0,1))
+        double rl = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
+        if (rl < 1e-9) { rvx = 1; rvy = 0; rvz = 0; rl = 1; }
+        rvx /= rl; rvy /= rl; rvz /= rl;
+        double uvx = rvy * fvz - rvz * fvy;
+        double uvy = rvz * fvx - rvx * fvz;
+        double uvz = rvx * fvy - rvy * fvx;
+        double maxRight = 0, maxUp = 0;
+        double[] offsX = {minX - cx, maxX - cx};
+        double[] offsY = {minY - cy, maxY - cy};
+        double[] offsZ = {minZ - cz, maxZ - cz};
+        for (double ox : offsX) {
+            for (double oy : offsY) {
+                for (double oz : offsZ) {
+                    double px = ox * rvx + oy * rvy + oz * rvz;
+                    double py = ox * uvx + oy * uvy + oz * uvz;
+                    maxRight = Math.max(maxRight, Math.abs(px));
+                    maxUp = Math.max(maxUp, Math.abs(py));
+                }
+            }
+        }
+        return Math.max(maxRight / Math.tan(halfH), maxUp / Math.tan(halfV)) * 1.05;
     }
 
     /** Returns {minX,minY,minZ,maxX,maxY,maxZ} of all prims, or null when empty. */
@@ -512,6 +650,24 @@ public class AndroidScene3D {
         if (!Float.isFinite(minX) || !Float.isFinite(minY) || !Float.isFinite(minZ)
                 || !Float.isFinite(maxX) || !Float.isFinite(maxY) || !Float.isFinite(maxZ)) return null;
         return new float[]{minX, minY, minZ, maxX, maxY, maxZ};
+    }
+
+    private void logPrimHistogram() {
+        try {
+            java.util.TreeMap<String, Integer> counts = new java.util.TreeMap<>();
+            for (Prim p : prims) {
+                for (int i = 0; i < p.v.length; i += 3) {
+                    String key = Math.round(p.v[i] / 1000f) + "k," + Math.round(p.v[i + 1] / 1000f) + "k";
+                    Integer c = counts.get(key);
+                    counts.put(key, c == null ? 1 : c + 1);
+                }
+            }
+            StringBuilder sb = new StringBuilder("PRIMHIST total=" + prims.size() + " ");
+            for (java.util.Map.Entry<String, Integer> e : counts.entrySet()) {
+                sb.append(e.getKey()).append("=").append(e.getValue()).append(" ");
+            }
+            android.util.Log.i("SHAPE3D", sb.toString());
+        } catch (Throwable t) {}
     }
 
     /**
@@ -717,6 +873,7 @@ public class AndroidScene3D {
         return m;
     }
 
+    private int polyClipDiag = 0;
     private void drawPolyClipped(Canvas canvas, Prim p) {
         int n = p.v.length / 3;
         if (n < 3) return;
@@ -742,6 +899,18 @@ public class AndroidScene3D {
             sx[i] = p0[0];
             sy[i] = p0[1];
             q[i] = -dz[i];
+        }
+        if (polyClipDiag < 4 && Math.abs(p.v[0]) > 1e6f) {
+            polyClipDiag++;
+            StringBuilder sb = new StringBuilder();
+            sb.append("clipDiag n=").append(n).append(" clipped=").append(clipped)
+                    .append(" firstV=(").append(p.v[0]).append(",").append(p.v[1]).append(",").append(p.v[2]).append(")");
+            for (int i = 0; i < clipped && i < 8; i++) {
+                sb.append(" sx").append(i).append("=").append(sx[i]).append(" sy").append(i).append("=").append(sy[i])
+                        .append(" q").append(i).append("=").append(q[i]);
+            }
+            sb.append(" camZ=").append(p.v[2]);
+            Log.i(TAG, sb.toString());
         }
         if (textured) {
             fillTexturedPoly(canvas, p, clipped);

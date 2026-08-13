@@ -22,6 +22,7 @@ public class CanvasGraphics2D extends Graphics2D {
     private final Paint textPaint;
     private final Matrix currentMatrix;
     private final Matrix savedMatrix;
+    private final java.awt.image.BufferedImage ownerImage;
     private AffineTransform awtTransform;
     private Shape clipShape;
     private Color currentColor = Color.BLACK;
@@ -31,7 +32,12 @@ public class CanvasGraphics2D extends Graphics2D {
     private java.awt.Composite composite;
 
     public CanvasGraphics2D(Bitmap bitmap) {
+        this(bitmap, null);
+    }
+
+    public CanvasGraphics2D(Bitmap bitmap, java.awt.image.BufferedImage ownerImage) {
         this.bitmap = bitmap;
+        this.ownerImage = ownerImage;
         this.canvas = new Canvas(bitmap);
         this.fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         this.fillPaint.setStyle(Paint.Style.FILL);
@@ -78,6 +84,7 @@ public class CanvasGraphics2D extends Graphics2D {
         } else {
             trace("setPaint:" + (paint != null ? paint.getClass().getSimpleName() : "null"));
         }
+        if (callCount < logCap) android.util.Log.w("AWT_CHART", "     color=" + Integer.toHexString(toArgb(paint instanceof Color c ? c : currentColor)));
     }
 
     @Override
@@ -152,6 +159,16 @@ public class CanvasGraphics2D extends Graphics2D {
 
     private int fillCount = 0;
     private int callCount = 0;
+    private int logCap = 60;
+    private void markDrawn() {
+        if (ownerImage != null) ownerImage.markGraphicsDrawn();
+    }
+
+    private int argb(Paint p) {
+        if (p == null) return 0;
+        try { return p.getColor(); } catch (Throwable t) { return -1; }
+    }
+
     private void trace(String method) {
         if (callCount < 500) {
             android.util.Log.w("AWT_CHART", callCount + " " + method);
@@ -159,10 +176,14 @@ public class CanvasGraphics2D extends Graphics2D {
         callCount++;
     }
 
+    private String hex(int c) { return Integer.toHexString(c); }
+
     @Override
     public void fill(Shape s) {
         if (s == null) return;
+        markDrawn();
         trace("fill:" + s.getClass().getSimpleName());
+        if (callCount < 60) android.util.Log.w("AWT_CHART", "  fillColor=" + hex(fillPaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
         try {
             if (s instanceof Arc2D a) {
                 android.util.Log.w("AWT_CHART", "  Arc2D: cx=" + a.getCenterX() + " cy=" + a.getCenterY() +
@@ -182,7 +203,9 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void draw(Shape s) {
         if (s == null) return;
+        markDrawn();
         trace("draw:" + s.getClass().getSimpleName());
+        if (callCount < 60) android.util.Log.w("AWT_CHART", "  drawColor=" + hex(strokePaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
         try {
             Path path = shapeToPath(s);
             if (path != null) {
@@ -196,6 +219,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void drawString(String str, float x, float y) {
         if (str == null || str.isEmpty()) return;
+        markDrawn();
         trace("drawStr:" + str);
         canvas.drawText(str, x, y, textPaint);
     }
@@ -203,32 +227,38 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void drawString(String str, int x, int y) {
         if (str == null) return;
+        markDrawn();
         canvas.drawText(str, (float) x, (float) y, textPaint);
     }
 
     @Override
     public void drawString(java.text.AttributedString as, float x, float y) {
         if (as == null) return;
+        markDrawn();
         canvas.drawText(as.toString(), x, y, textPaint);
     }
 
     @Override
     public void drawLine(int x1, int y1, int x2, int y2) {
+        markDrawn();
         canvas.drawLine(x1, y1, x2, y2, strokePaint);
     }
 
     @Override
     public void fillRect(int x, int y, int width, int height) {
+        markDrawn();
         canvas.drawRect(x, y, x + width, y + height, fillPaint);
     }
 
     @Override
     public void drawRect(int x, int y, int width, int height) {
+        markDrawn();
         canvas.drawRect(x, y, x + width, y + height, strokePaint);
     }
 
     @Override
     public void clearRect(int x, int y, int width, int height) {
+        markDrawn();
         Paint clearPaint = new Paint();
         clearPaint.setColor(android.graphics.Color.WHITE);
         clearPaint.setStyle(Paint.Style.FILL);
@@ -237,16 +267,19 @@ public class CanvasGraphics2D extends Graphics2D {
 
     @Override
     public void fillOval(int x, int y, int width, int height) {
+        markDrawn();
         canvas.drawOval(x, y, x + width, y + height, fillPaint);
     }
 
     @Override
     public void drawOval(int x, int y, int width, int height) {
+        markDrawn();
         canvas.drawOval(x, y, x + width, y + height, strokePaint);
     }
 
     @Override
     public void fillArc(int x, int y, int width, int height, int startAngle, int arcAngle) {
+        markDrawn();
         Path path = new Path();
         RectF oval = new RectF(x, y, x + width, y + height);
         path.moveTo(x + width / 2f, y + height / 2f);
@@ -257,18 +290,21 @@ public class CanvasGraphics2D extends Graphics2D {
 
     @Override
     public void drawArc(int x, int y, int width, int height, int startAngle, int arcAngle) {
+        markDrawn();
         RectF oval = new RectF(x, y, x + width, y + height);
         canvas.drawArc(oval, -startAngle, -arcAngle, false, strokePaint);
     }
 
     @Override
     public void fillRoundRect(int x, int y, int width, int height, int arcWidth, int arcHeight) {
+        markDrawn();
         RectF rect = new RectF(x, y, x + width, y + height);
         canvas.drawRoundRect(rect, arcWidth / 2f, arcHeight / 2f, fillPaint);
     }
 
     @Override
     public void drawRoundRect(int x, int y, int width, int height, int arcWidth, int arcHeight) {
+        markDrawn();
         RectF rect = new RectF(x, y, x + width, y + height);
         canvas.drawRoundRect(rect, arcWidth / 2f, arcHeight / 2f, strokePaint);
     }
@@ -276,6 +312,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void drawPolygon(int[] xPoints, int[] yPoints, int nPoints) {
         if (nPoints < 2) return;
+        markDrawn();
         Path path = new Path();
         path.moveTo(xPoints[0], yPoints[0]);
         for (int i = 1; i < nPoints; i++) {
@@ -288,6 +325,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void fillPolygon(int[] xPoints, int[] yPoints, int nPoints) {
         if (nPoints < 2) return;
+        markDrawn();
         Path path = new Path();
         path.moveTo(xPoints[0], yPoints[0]);
         for (int i = 1; i < nPoints; i++) {
@@ -300,6 +338,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void drawPolyline(int[] xPoints, int[] yPoints, int nPoints) {
         if (nPoints < 2) return;
+        markDrawn();
         Path path = new Path();
         path.moveTo(xPoints[0], yPoints[0]);
         for (int i = 1; i < nPoints; i++) {
@@ -451,6 +490,7 @@ public class CanvasGraphics2D extends Graphics2D {
 
     @Override
     public boolean drawImage(java.awt.Image img, int x, int y, java.awt.image.ImageObserver observer) {
+        markDrawn();
         trace("drawImage:x" + x + "y" + y);
         Bitmap src = toBitmap(img);
         if (src == null) return false;
@@ -460,6 +500,7 @@ public class CanvasGraphics2D extends Graphics2D {
 
     @Override
     public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.image.ImageObserver observer) {
+        markDrawn();
         trace("drawImage:x" + x + "y" + y + "w" + width + "h" + height);
         Bitmap src = toBitmap(img);
         if (src == null) return false;
@@ -481,6 +522,7 @@ public class CanvasGraphics2D extends Graphics2D {
     }
 
     public boolean drawImage(java.awt.Image img, AffineTransform xform, java.awt.image.ImageObserver observer) {
+        markDrawn();
         Bitmap src = toBitmap(img);
         if (src == null) return false;
         Matrix m = new Matrix();

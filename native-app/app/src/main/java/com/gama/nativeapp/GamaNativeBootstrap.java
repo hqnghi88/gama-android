@@ -486,6 +486,45 @@ public class GamaNativeBootstrap {
             callback.onProgress("Create delegates registration skipped: " + e.getMessage());
         }
 
+        // Register save delegates (normally loaded via Eclipse extension points)
+        try {
+            Class<?> registryClass = Class.forName("gama.api.additions.registries.GamaAdditionRegistry");
+            Class<?> saveDelegateIface = Class.forName("gama.api.additions.delegates.ISaveDelegate");
+            Method addSaveDelegate = registryClass.getMethod("addDelegate", saveDelegateIface);
+            String[] saverClasses = {
+                "gama.gaml.statements.save.ShapeSaver",
+                "gama.gaml.statements.save.TextSaver",
+                "gama.gaml.statements.save.CSVSaver",
+                "gama.gaml.statements.save.JsonSaver",
+                "gama.gaml.statements.save.ExcelSaver",
+                "gama.gaml.statements.save.GeoJSonSaver",
+                "gama.gaml.statements.save.KmlSaver",
+                "gama.gaml.statements.save.ParquetSaver",
+                "gama.gaml.statements.save.AvroSaver",
+                "gama.gaml.statements.save.ASCSaver",
+                "gama.gaml.statements.save.GeoTiffSaver"
+            };
+            int registered = 0;
+            for (String clsName : saverClasses) {
+                try {
+                    Class<?> cls = Class.forName(clsName);
+                    addSaveDelegate.invoke(null, cls.getDeclaredConstructor().newInstance());
+                    registered++;
+                } catch (Throwable e) {
+                    Log.w(TAG, "Skipped save delegate " + clsName + ": " + e.getMessage());
+                }
+            }
+            Log.i(TAG, "Save delegates registered (" + registered + "/" + saverClasses.length + ")");
+
+            Method getSaveDelegates = registryClass.getMethod("getSaveDelegates");
+            @SuppressWarnings("unchecked")
+            java.util.Map<?, ?> saveDelegates = (java.util.Map<?, ?>) getSaveDelegates.invoke(null);
+            Log.i(TAG, "Save delegates map size: " + saveDelegates.size() + " keys: " + saveDelegates.keySet());
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register save delegates: " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
+            callback.onProgress("Save delegates registration skipped: " + e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+
         initialized = true;
         callback.onSuccess("GAMA engine initialized! " + loaded + " plugins loaded.");
     }

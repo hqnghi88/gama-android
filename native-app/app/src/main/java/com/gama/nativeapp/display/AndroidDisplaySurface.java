@@ -261,6 +261,29 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 layerManager.drawLayersOn(androidGraphics);
                 drewShapes = androidGraphics.getDrawnShapesCount() > 0;
             }
+            if (frames < 20) {
+                try {
+                    int n = 0;
+                    java.lang.StringBuilder names = new java.lang.StringBuilder();
+                    java.util.List<gama.api.ui.layers.ILayer> lyr = layerManager.getItems();
+                    if (lyr != null) {
+                        n = lyr.size();
+                        for (gama.api.ui.layers.ILayer l : lyr) {
+                            if (names.length() > 0) names.append(", ");
+                            names.append(l.getName());
+                        }
+                    }
+                    android.util.Log.i("ANDROID_DISPLAY",
+                            "diag frame=" + frames + " drawn=" + drewShapes
+                                    + " is3d=" + androidGraphics.is3dMode()
+                                    + " scopeNull=" + (drawScope == null)
+                                    + " scopeInterrupted=" + (drawScope != null && drawScope.interrupted())
+                                    + " layers=" + n + " [" + names + "]"
+                                    + " prims=" + androidGraphics.getScene3dSize());
+                } catch (Throwable t) {
+                    android.util.Log.i("ANDROID_DISPLAY", "diag error: " + t);
+                }
+            }
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DISPLAY", "layerManager draw error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
         }

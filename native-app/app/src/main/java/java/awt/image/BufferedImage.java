@@ -31,6 +31,11 @@ public class BufferedImage extends Image implements Transparency {
     private ColorModel colorModel;
     private WritableRaster raster;
     private Bitmap androidBitmap;
+    // true once the image's Graphics2D (a CanvasGraphics2D) has actually drawn onto
+    // androidBitmap. For such images the androidBitmap is the source of truth and the
+    // int[] data[] is stale, so image -> bitmap extraction must sync bitmap->data
+    // (and never the reverse, which would clobber the rendered chart).
+    private boolean graphicsDrawn = false;
 
     public BufferedImage(int width, int height, int imageType) {
         this.width = width;
@@ -79,10 +84,13 @@ public class BufferedImage extends Image implements Transparency {
 
     public Graphics2D createGraphics() {
         if (androidBitmap != null) {
-            return new CanvasGraphics2D(androidBitmap);
+            return new CanvasGraphics2D(androidBitmap, this);
         }
         return new Graphics2D();
     }
+
+    public void markGraphicsDrawn() { graphicsDrawn = true; }
+    public boolean isGraphicsDrawn() { return graphicsDrawn; }
 
     @Override
     public void flush() {
