@@ -57,7 +57,12 @@ public class CanvasGraphics2D extends Graphics2D {
     }
 
     private int toArgb(Color c) {
-        return android.graphics.Color.argb(c.getAlpha(), c.getRed(), c.getGreen(), c.getBlue());
+        int a = c.getAlpha();
+        // GAMA rgb colors (e.g. BoxWhisker default `ffffff`, brewer_colors) carry alpha 0,
+        // which renders as transparent/invisible fills & strokes on this alpha-backed canvas.
+        // For chart painting, opaque is the desired default.
+        if (a == 0) a = 255;
+        return android.graphics.Color.argb(a, c.getRed(), c.getGreen(), c.getBlue());
     }
 
     private void applyColorToPaint(Paint p, Color c) {

@@ -201,6 +201,8 @@ tasks.register('patchGamaJars') {
             ['FontRenderContextPatcher', 'FontRenderContextPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
+            ['WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
+            ['GridColorPatcher', 'GridColorPatcher', [gamaCoreJar]],
             ['GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]]
         ]
         patchers.each { name, cls, args ->

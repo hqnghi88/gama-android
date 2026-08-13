@@ -41,6 +41,9 @@ public class AffineTransform {
     public java.awt.Shape createTransformedShape(java.awt.Shape pSrc) {
         if (pSrc == null) return null;
         java.awt.geom.PathIterator pi = pSrc.getPathIterator(this);
+        if (pi == null) {
+            return pSrc;
+        }
         java.awt.geom.GeneralPath path = new java.awt.geom.GeneralPath(pi.getWindingRule());
         double[] coords = new double[6];
         while (!pi.isDone()) {
