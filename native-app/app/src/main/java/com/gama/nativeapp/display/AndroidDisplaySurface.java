@@ -59,6 +59,10 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private int displayWidth, displayHeight;
     private boolean zoomFit = true;
     private double zoomLevel = 1.0;
+    // Fullscreen mode: the display fills the whole screen edge to edge. The
+    // world keeps its true shape but the viewport (and the 3D cover-fit) take
+    // the full surface size so no empty bands remain on tall phone screens.
+    private volatile boolean fillScreen = false;
     private volatile boolean disposed = false;
     private boolean isLocked = false;
     private int frames = 0;
@@ -84,6 +88,35 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         } else {
             uiHandler.post(this::invalidate);
         }
+    }
+
+    /**
+     * Toggles fullscreen fill mode. In this mode the viewport takes the full
+     * surface size and the 3D scene cover-fits it, so the display fills the
+     * screen edge to edge. The 3D auto-fit is reset so the new mode applies.
+     */
+    public void setFillScreen(boolean fill) {
+        if (this.fillScreen == fill) return;
+        this.fillScreen = fill;
+        if (androidGraphics != null) {
+            androidGraphics.setSceneCoverFit(fill);
+            androidGraphics.resetSceneFit();
+        }
+        int w = getWidth(), h = getHeight();
+        if (fill) {
+            if (w > 0 && h > 0) {
+                displayWidth = w;
+                displayHeight = h;
+                viewPort.set(0, 0, w, h);
+                zoomFit = true;
+                updateZoomLevel();
+            }
+        } else {
+            // Refit on the next layout pass once the view shrinks back.
+            zoomFit = true;
+            requestLayout();
+        }
+        invalidateSafe();
     }
 
     private float lastTouchX, lastTouchY;
@@ -191,7 +224,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             return;
         }
         boolean is3D = output != null && output.getData().is3D();
-        if (is3D) {
+        if (fillScreen || is3D) {
             setMeasuredDimension(parentW, parentH);
             return;
         }
@@ -986,19 +1019,27 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         if (w <= 0 || h <= 0) return;
         // One-time initial framing; afterwards keep the current view and just redraw.
         if (!firstFitDone) {
-            final double eW = env.getWidth();
-            final double eH = env.getHeight();
-            if (eW > 0 && eH > 0) {
-                double scale = Math.min(w / eW, h / eH);
-                int newW = Math.max(1, (int) Math.round(eW * scale));
-                int newH = Math.max(1, (int) Math.round(eH * scale));
-                int left = (int) Math.round(env.getMinX() * scale);
-                int top = (int) Math.round(env.getMinY() * scale);
-                displayWidth = newW;
-                displayHeight = newH;
-                viewPort.set(left, top, left + newW, top + newH);
-                zoomFit = false;
+            if (fillScreen) {
+                displayWidth = w;
+                displayHeight = h;
+                viewPort.set(0, 0, w, h);
+                zoomFit = true;
                 updateZoomLevel();
+            } else {
+                final double eW = env.getWidth();
+                final double eH = env.getHeight();
+                if (eW > 0 && eH > 0) {
+                    double scale = Math.min(w / eW, h / eH);
+                    int newW = Math.max(1, (int) Math.round(eW * scale));
+                    int newH = Math.max(1, (int) Math.round(eH * scale));
+                    int left = (int) Math.round(env.getMinX() * scale);
+                    int top = (int) Math.round(env.getMinY() * scale);
+                    displayWidth = newW;
+                    displayHeight = newH;
+                    viewPort.set(left, top, left + newW, top + newH);
+                    zoomFit = false;
+                    updateZoomLevel();
+                }
             }
             firstFitDone = true;
         }
@@ -1036,6 +1077,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     }
 
     private int[] computeBoundsFrom(int vwidth, int vheight) {
+        if (fillScreen) return new int[]{vwidth, vheight};
         if (!layerManager.stayProportional()) return new int[]{vwidth, vheight};
         double ratio = getEnvHeight() / getEnvWidth();
         int[] dim = new int[2];

@@ -334,6 +334,24 @@ public class AndroidScene3D {
     private double fitCamX, fitCamY, fitCamZ;
     private long fitStartMs = -1;
 
+    // When true the auto-fit "covers" the viewport (zooms in so the scene fills
+    // the whole screen, cropping the excess) instead of "containing" it (fits
+    // the whole scene, leaving empty bands on the mismatched axis). Used by the
+    // fullscreen mode so wide maps fill tall phone screens edge to edge.
+    private boolean coverFit = false;
+
+    public void setCoverFit(boolean cover) {
+        coverFit = cover;
+    }
+
+    /** Re-runs the auto-fit on the next render with the current cover-fit mode. */
+    public void resetFit() {
+        fitLocked = false;
+        fitNeed = -1f;
+        fitDist = -1;
+        fitStartMs = -1;
+    }
+
     // Frozen camera frame: when set, the camera always frames exactly this world
     // rectangle (in model units) instead of the live union of all prims. Agent
     // prims that leave the world (e.g. ants foraging past the border) no longer
@@ -476,6 +494,18 @@ public class AndroidScene3D {
                 camX += ux * back;
                 camY += uy * back;
                 camZ += uz * back;
+                dxc = camX - tarX;
+                dyc = camY - tarY;
+                dzc = camZ - tarZ;
+                dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+            } else if (coverFit && fitNeed < dist) {
+                // Cover: zoom in until the scene fills the viewport. Uses the
+                // settle-window maximum so a static frame settles to one value.
+                double ux = fvx, uy = fvy, uz = fvz;
+                double forward = dist - fitNeed;
+                camX -= ux * forward;
+                camY -= uy * forward;
+                camZ -= uz * forward;
                 dxc = camX - tarX;
                 dyc = camY - tarY;
                 dzc = camZ - tarZ;
@@ -694,7 +724,12 @@ public class AndroidScene3D {
                 }
             }
         }
-        return Math.max(maxRight / Math.tan(halfH), maxUp / Math.tan(halfV)) * 1.05;
+        // "Contain" pulls back until both axes fit (letterbox). "Cover" zooms in
+        // so the scene fills the viewport on the tighter axis, cropping the rest.
+        double dRight = maxRight / Math.tan(halfH);
+        double dUp = maxUp / Math.tan(halfV);
+        double needed = coverFit ? Math.min(dRight, dUp) : Math.max(dRight, dUp);
+        return needed * 1.05;
     }
 
     /** Returns {minX,minY,minZ,maxX,maxY,maxZ} of all prims, or null when empty. */

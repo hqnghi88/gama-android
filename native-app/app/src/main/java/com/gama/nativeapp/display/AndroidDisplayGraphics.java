@@ -1794,6 +1794,16 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         }
     }
 
+    /** Sets whether the 3D scene cover-fits the viewport (fill the screen). */
+    public void setSceneCoverFit(boolean cover) {
+        if (scene3d != null) scene3d.setCoverFit(cover);
+    }
+
+    /** Re-runs the 3D auto-fit on the next frame (e.g. after a fullscreen toggle). */
+    public void resetSceneFit() {
+        if (scene3d != null) scene3d.resetFit();
+    }
+
     private void renderScene3D() {
         Canvas c = canvas;
         if (c == null || scene3d.size() == 0) return;

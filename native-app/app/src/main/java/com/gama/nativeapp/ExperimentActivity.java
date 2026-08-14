@@ -866,7 +866,9 @@ public class ExperimentActivity extends Activity {
         if (target != null) {
             target.post(() -> {
                 try {
-                    if (isFullscreen) target.getClass().getMethod("zoomFit").invoke(target);
+                    if (target instanceof com.gama.nativeapp.display.AndroidDisplaySurface) {
+                        ((com.gama.nativeapp.display.AndroidDisplaySurface) target).setFillScreen(isFullscreen);
+                    }
                 } catch (Exception e) {
                     Log.w(TAG, "Fullscreen refit failed", e);
                 }
