@@ -1,7 +1,14 @@
 package javax.imageio;
 
+import android.graphics.Bitmap;
+
+import java.awt.image.BufferedImage;
+import java.awt.image.RenderedImage;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -53,5 +60,29 @@ public class ImageIO {
             return new FileImageInputStream((File) input);
         }
         return null;
+    }
+
+    public static boolean write(RenderedImage im, String formatName, File output) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(output)) {
+            return write(im, formatName, fos);
+        }
+    }
+
+    public static boolean write(RenderedImage im, String formatName, OutputStream output) throws IOException {
+        if (im instanceof BufferedImage) {
+            BufferedImage bi = (BufferedImage) im;
+            Bitmap bmp = bi.getAndroidBitmap();
+            if (bmp != null && !bmp.isRecycled()) {
+                Bitmap.CompressFormat fmt = isJpeg(formatName) ? Bitmap.CompressFormat.JPEG
+                        : Bitmap.CompressFormat.PNG;
+                return bmp.compress(fmt, 100, output);
+            }
+        }
+        return false;
+    }
+
+    private static boolean isJpeg(String formatName) {
+        return formatName != null
+                && ("jpg".equalsIgnoreCase(formatName) || "jpeg".equalsIgnoreCase(formatName));
     }
 }

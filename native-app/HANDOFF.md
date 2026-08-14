@@ -623,3 +623,39 @@ matching the desktop `gama.dependencies` bundle exactly:
   of a whole directory tree hits a permission error; a tarball works).
 - Remaining model-side messages are not errors: `File denoted by ... not found` (data not yet
   pushed) and `DIAG: ant population not found` (a model diagnostic for an absent "ant" species).
+
+## Session 6 (2026-08-14) — URL Image Import: two-layer WebbException fix
+
+`URL Image Import.gaml` (`image_file("https://...")` + `save shuffled_copy`) threw `WebbException`.
+Two independent problems, fixed in order:
+
+### 1. Emulator DNS broken (root `WebbException: UnknownHostException`)
+- The emulator had been up 40+ h since before the Mac's DNS moved behind an IPv6 VPN
+  (`2001:ee0:26::26`), so SLIRP's DNS forwarder (`10.0.2.3`) could not resolve anything
+  (`EAI_NODATA`/`ETIMEDOUT`); raw IP still worked.
+- Android-side workarounds (restart `netd`, `svc wifi`, private DNS, `ndc resolver`, hosts
+  bind-mount) all failed — `/` is read-only and the resolver is managed by ConnectivityService.
+- **Fix:** relaunched the emulator with a pinned public DNS:
+  `emulator -avd Medium_Phone_2 -dns-server 8.8.8.8 -no-snapshot-load` (same flags as before).
+  App data and pushed models persisted (userdata not wiped). DNS then resolved
+  (`doQuery: rcode=0`), and the 404/HTTP responses from the server proved the download path works.
+- Also note: the model's bundled URL `.../wiki/gama-platform/gama/resources/images/general/GamaPlatform.png`
+  is dead (HTTP 404, file removed upstream). The model works with any live image URL
+  (tested with `.../master/gama.library/gama.feature.library.png`).
+
+### 2. Missing `ImageIO.write(RenderedImage, String, File)` (root `NoSuchMethodError`)
+- With DNS fixed, `save shuffled_copy` → `GamaImageFile.flushBuffer` → `ImageIO.write(...)` failed:
+  `NoSuchMethodError: No static method write(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z`.
+  The app-source `javax.imageio.ImageIO` stub lacked every `write` overload, and
+  `java.awt.image.RenderedImage` did not exist anywhere (no jar provides it).
+- **Fixes (app stubs, no jar patch needed):**
+  - `app/src/main/java/java/awt/image/RenderedImage.java` — new API-complete stub interface
+    (tile/grid/getData/getSources/getNumSources etc.).
+  - `app/src/main/java/java/awt/image/BufferedImage.java` — now `implements RenderedImage`;
+    tiles/grid map to the single raster, `getSources()` = empty.
+  - `app/src/main/java/javax/imageio/ImageIO.java` — added
+    `write(RenderedImage, String, File)` and `write(RenderedImage, String, OutputStream)`,
+    encoding via `BufferedImage.getAndroidBitmap().compress()` (PNG/JPEG).
+- **Verified on device:** model compiles, downloads the image, shuffles the matrix, and
+  writes `files/images/local_copy.png`; both displays (`Original`, `Shuffled_copy`) render
+  (`updateDisplays: 2 output(s)`), zero runtime errors.

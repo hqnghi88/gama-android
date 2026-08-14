@@ -7,9 +7,11 @@ import java.awt.Color;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Image;
+import java.awt.Rectangle;
 import java.awt.Transparency;
+import java.util.Vector;
 
-public class BufferedImage extends Image implements Transparency {
+public class BufferedImage extends Image implements Transparency, RenderedImage {
     public static final int TYPE_INT_RGB = 1;
     public static final int TYPE_INT_ARGB = 2;
     public static final int TYPE_INT_ARGB_PRE = 3;
@@ -164,4 +166,52 @@ public class BufferedImage extends Image implements Transparency {
         }
         return rgbArray;
     }
+
+    @Override
+    public Raster getTile(int tileX, int tileY) { return raster; }
+
+    @Override
+    public Raster getData() { return raster; }
+
+    @Override
+    public Raster getData(Rectangle rect) { return raster; }
+
+    @Override
+    public WritableRaster copyData(WritableRaster outRaster) { return outRaster; }
+
+    @Override
+    public int getMinTileX() { return 0; }
+
+    @Override
+    public int getMaxTileX() { return 0; }
+
+    @Override
+    public int getMinTileY() { return 0; }
+
+    @Override
+    public int getMaxTileY() { return 0; }
+
+    @Override
+    public int getTileGridXOffset() { return getMinX(); }
+
+    @Override
+    public int getTileGridYOffset() { return getMinY(); }
+
+    @Override
+    public int getNumXTiles() { return 1; }
+
+    @Override
+    public int getNumYTiles() { return 1; }
+
+    @Override
+    public int getTileWidth() { return width; }
+
+    @Override
+    public int getTileHeight() { return height; }
+
+    @Override
+    public SampleModel getSampleModel() { return raster != null ? raster.getSampleModel() : null; }
+
+    @Override
+    public Vector<RenderedImage> getSources() { return new Vector<>(); }
 }

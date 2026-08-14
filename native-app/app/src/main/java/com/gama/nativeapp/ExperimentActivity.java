@@ -97,6 +97,12 @@ public class ExperimentActivity extends Activity {
     private LinearLayout.LayoutParams displayWrapperLp;
     private LinearLayout.LayoutParams bottomPanelLp;
 
+    // Fullscreen
+    private boolean isFullscreen = false;
+    private LinearLayout fabContainer;
+    private TextView fullscreenBtn;
+    private int displayTabScrollVisibility = View.GONE;
+
     // State
     private final Handler handler = new Handler(Looper.getMainLooper());
     private volatile boolean destroyed = false;
@@ -288,7 +294,7 @@ public class ExperimentActivity extends Activity {
         displayToolbar.setVisibility(View.GONE);
 
         String[][] tools = {
-            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}
+            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
         };
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
@@ -298,6 +304,7 @@ public class ExperimentActivity extends Activity {
             btn.setPadding(dp(6), dp(4), dp(6), dp(4));
             btn.setGravity(Gravity.CENTER);
             btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
+            if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
             displayToolbar.addView(btn);
         }
         displayToolbar.setTag("displayToolbar");
@@ -529,7 +536,7 @@ public class ExperimentActivity extends Activity {
     }
 
     private void buildFabs(ViewGroup root) {
-        LinearLayout fabContainer = new LinearLayout(this);
+        fabContainer = new LinearLayout(this);
         fabContainer.setOrientation(LinearLayout.VERTICAL);
         fabContainer.setGravity(Gravity.END | Gravity.BOTTOM);
         fabContainer.setPadding(0, 0, dp(16), dp(16));
@@ -793,6 +800,10 @@ public class ExperimentActivity extends Activity {
     }
 
     private void handleDisplayAction(String action) {
+        if ("\u26F6".equals(action)) {
+            toggleFullscreen();
+            return;
+        }
         View target = getActiveDisplayView();
         if (target == null) return;
         try {
@@ -809,6 +820,57 @@ public class ExperimentActivity extends Activity {
             }
         } catch (Exception e) {
             Log.w(TAG, "Display action failed", e);
+        }
+    }
+
+    /** Expands the display so it fills the whole phone screen, hiding the app
+     *  toolbar, tabs, bottom panel, FABs and system bars. Tapping again restores. */
+    private void toggleFullscreen() {
+        isFullscreen = !isFullscreen;
+
+        toolbar.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        tabLayout.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        dragHandle.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        bottomPanel.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        if (fabContainer != null) fabContainer.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        if (isFullscreen) {
+            displayTabScrollVisibility = displayTabScroll.getVisibility();
+            displayTabScroll.setVisibility(View.GONE);
+        } else {
+            displayTabScroll.setVisibility(displayTabScrollVisibility);
+        }
+        displayWrapperLp.weight = 1f;
+        displayWrapperLp.height = 0;
+        displayWrapper.requestLayout();
+
+        View decor = getWindow().getDecorView();
+        if (isFullscreen) {
+            decor.setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+        } else {
+            decor.setSystemUiVisibility(0);
+        }
+
+        if (fullscreenBtn != null) {
+            fullscreenBtn.setTextColor(isFullscreen
+                    ? thc(0xFF006847, 0xFF81C784)
+                    : thc(0xFFAAAAAA, 0xFF999999));
+        }
+
+        View target = getActiveDisplayView();
+        if (target != null) {
+            target.post(() -> {
+                try {
+                    if (isFullscreen) target.getClass().getMethod("zoomFit").invoke(target);
+                } catch (Exception e) {
+                    Log.w(TAG, "Fullscreen refit failed", e);
+                }
+            });
         }
     }
 
