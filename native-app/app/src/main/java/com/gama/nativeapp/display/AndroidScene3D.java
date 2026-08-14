@@ -334,6 +334,27 @@ public class AndroidScene3D {
     private double fitCamX, fitCamY, fitCamZ;
     private long fitStartMs = -1;
 
+    // Frozen camera frame: when set, the camera always frames exactly this world
+    // rectangle (in model units) instead of the live union of all prims. Agent
+    // prims that leave the world (e.g. ants foraging past the border) no longer
+    // shift the bounds centre, so the ground stops panning/re-scaling every step.
+    private boolean frameBoundsSet = false;
+    private float frameMinX, frameMinY, frameMaxX, frameMaxY;
+
+    /** Locks the camera framing to the given world rectangle. Pass NaN to unlock. */
+    public void setFrameBounds(float minX, float minY, float maxX, float maxY) {
+        if (Float.isNaN(minX) || Float.isNaN(minY) || Float.isNaN(maxX) || Float.isNaN(maxY)
+                || !(maxX > minX) || !(maxY > minY)) {
+            frameBoundsSet = false;
+            return;
+        }
+        frameMinX = minX;
+        frameMinY = minY;
+        frameMaxX = maxX;
+        frameMaxY = maxY;
+        frameBoundsSet = true;
+    }
+
     private int viewW, viewH;
 
     private float rotYawDeg = 0f;
@@ -363,13 +384,55 @@ public class AndroidScene3D {
         }
         float minX = b[0], minY = b[1], minZ = b[2];
         float maxX = b[3], maxY = b[4], maxZ = b[5];
+        // Freeze the camera framing to the first-render world rectangle (the live
+        // union of all prims) instead of re-centering every frame on the moving
+        // agent prims. Agent prims that leave the world (e.g. ants foraging past
+        // the border) then no longer shift the bounds centre, so the ground stops
+        // panning/re-scaling every step. The frame is captured from the prims
+        // themselves (not the env envelope) so it matches the drawn content's
+        // coordinate space exactly. It is re-captured when a new simulation
+        // presents a substantially different world box.
+        if (!frameBoundsSet) {
+            frameMinX = minX;
+            frameMinY = minY;
+            frameMaxX = maxX;
+            frameMaxY = maxY;
+            frameBoundsSet = true;
+        } else {
+            float overlapX = Math.max(0f, Math.min(maxX, frameMaxX) - Math.max(minX, frameMinX));
+            float overlapY = Math.max(0f, Math.min(maxY, frameMaxY) - Math.max(minY, frameMinY));
+            float frameW = frameMaxX - frameMinX, frameH = frameMaxY - frameMinY;
+            if (overlapX < frameW * 0.3f || overlapY < frameH * 0.3f) {
+                frameMinX = minX;
+                frameMinY = minY;
+                frameMaxX = maxX;
+                frameMaxY = maxY;
+            }
+        }
+        minX = frameMinX;
+        minY = frameMinY;
+        maxX = frameMaxX;
+        maxY = frameMaxY;
         float cx = (minX + maxX) / 2f, cy = (minY + maxY) / 2f, cz = (minZ + maxZ) / 2f;
         double r2 = 0;
-        for (Prim p : prims) {
-            for (int i = 0; i < p.v.length; i += 3) {
-                double dx = p.v[i] - cx, dy = p.v[i + 1] - cy, dz = p.v[i + 2] - cz;
-                double d = dx * dx + dy * dy + dz * dz;
-                if (d > r2) r2 = d;
+        if (frameBoundsSet) {
+            float[] xs = {minX, maxX}, ys = {minY, maxY}, zs = {minZ, maxZ};
+            for (float fx : xs) {
+                for (float fy : ys) {
+                    for (float fz : zs) {
+                        double dx = fx - cx, dy = fy - cy, dz = fz - cz;
+                        double d = dx * dx + dy * dy + dz * dz;
+                        if (d > r2) r2 = d;
+                    }
+                }
+            }
+        } else {
+            for (Prim p : prims) {
+                for (int i = 0; i < p.v.length; i += 3) {
+                    double dx = p.v[i] - cx, dy = p.v[i + 1] - cy, dz = p.v[i + 2] - cz;
+                    double d = dx * dx + dy * dy + dz * dz;
+                    if (d > r2) r2 = d;
+                }
             }
         }
         double r = Math.sqrt(r2);
@@ -679,7 +742,16 @@ public class AndroidScene3D {
         if (canvas == null || prims.isEmpty() || viewW <= 0 || viewH <= 0) return;
         float[] b = sceneBounds();
         if (b == null) return;
-        float cx = (b[0] + b[3]) / 2f, cy = (b[1] + b[4]) / 2f, cz = (b[2] + b[5]) / 2f;
+        float cx, cy, cz;
+        if (frameBoundsSet) {
+            cx = (frameMinX + frameMaxX) / 2f;
+            cy = (frameMinY + frameMaxY) / 2f;
+            cz = (b[2] + b[5]) / 2f;
+        } else {
+            cx = (b[0] + b[3]) / 2f;
+            cy = (b[1] + b[4]) / 2f;
+            cz = (b[2] + b[5]) / 2f;
+        }
         render(canvas, cx, cy, cz + 1.0, cx, cy, cz, fovDeg, viewW, viewH);
     }
 

@@ -802,36 +802,35 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
         // A 3D image with no location/size (e.g. the GridLayer's cell image) covers
         // the whole environment, like ImageLayer in desktop GAMA.
+        // Use the FROZEN world envelope — the live sim.getEnvelope() grows every step as agents
+        // forage outward, which panned & re-zoomed the grid/ground continuously.
         if (size == null && loc == null) {
             try {
-                if (scope != null) {
-                    gama.api.kernel.agent.IMacroAgent sim = scope.getSimulation();
-                    if (sim != null) {
-                        IEnvelope env = sim.getEnvelope();
-                        if (env != null) {
-                            x = env.getMinX() + env.getWidth() / 2;
-                            y = env.getMinY() + env.getHeight() / 2;
-                            w = env.getWidth();
-                            h = env.getHeight();
-                        }
-                    }
+                // Use the FROZEN world envelope — the live sim.getEnvelope() grows every step as
+                // agents forage outward, which panned & re-zoomed the grid/ground continuously.
+                com.gama.nativeapp.display.AndroidDisplaySurface _s =
+                        getSurface() instanceof com.gama.nativeapp.display.AndroidDisplaySurface
+                                ? (com.gama.nativeapp.display.AndroidDisplaySurface) getSurface() : null;
+                IEnvelope fenv = _s != null ? _s.getFrozenEnvelope() : null;
+                if (fenv != null && fenv.getWidth() > 0 && fenv.getHeight() > 0) {
+                    x = fenv.getMinX() + fenv.getWidth() / 2;
+                    y = fenv.getMinY() + fenv.getHeight() / 2;
+                    w = fenv.getWidth();
+                    h = fenv.getHeight();
                 }
             } catch (Throwable t) {}
         }
 
         int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
 
-        // A display-layer background image (e.g. "image terrain") is placed at the
-        // environment centre with the full environment size (see ImageLayer.privateDraw).
-        // Such images must lie flat on the ground plane so they rotate with the world.
         boolean fullWorld = false;
         try {
-            gama.api.kernel.agent.IMacroAgent sim = scope != null ? scope.getSimulation() : null;
-            if (sim != null) {
-                IEnvelope env = sim.getEnvelope();
-                if (env != null) {
-                    fullWorld = w >= env.getWidth() * 0.9 && h >= env.getHeight() * 0.9;
-                }
+            com.gama.nativeapp.display.AndroidDisplaySurface _s =
+                    getSurface() instanceof com.gama.nativeapp.display.AndroidDisplaySurface
+                            ? (com.gama.nativeapp.display.AndroidDisplaySurface) getSurface() : null;
+            IEnvelope fenv = _s != null ? _s.getFrozenEnvelope() : null;
+            if (fenv != null) {
+                fullWorld = w >= fenv.getWidth() * 0.9 && h >= fenv.getHeight() * 0.9;
             }
         } catch (Throwable t) {}
 
@@ -1806,6 +1805,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             } catch (Throwable camErr) {
                 camPos = null;
             }
+            // The camera framing is frozen by AndroidScene3D itself on the first
+            // render (to the live prims bounds), so live agent movement outside
+            // the world never pans/re-scales the ground.
             if (camPos == null || camTarget == null) {
                 scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
                 return;

@@ -63,6 +63,15 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private boolean isLocked = false;
     private int frames = 0;
     private boolean rendered = false;
+    // Once the initial envelope frames the world, stop re-deriving the world->pixel ratio from the
+    // LIVE agent envelope every frame (the core updates selectionIn()/envelope each tick as agents
+    // move, which made the view zoom/pan continuously). Capture the first valid envelope and reuse it.
+    private boolean firstFitDone = false;
+    // The world envelope used to place/size full-world imagery (grid image, terrain) is captured
+    // ONCE and reused, instead of re-reading the LIVE sim.getEnvelope() every frame. The live
+    // agent envelope grows as agents forage outward, which panned & re-zoomed the ground
+    // ("recal everytime an ant is out bound"). Freeze it to the initial world framing.
+    private IEnvelope frozenEnv = null;
 
     private PointF mousePosition = new PointF(-1, -1);
     private final Set<IEventLayerListener> listeners = new HashSet<>();
@@ -205,7 +214,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     }
 
     @Override
-    protected void onDraw(Canvas canvas) {
+     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (disposed || output == null) return;
 
@@ -381,23 +390,11 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 return;
             }
 
-            try {
-                IEnvelope env = sim.getEnvelope();
-                if (env != null) {
-                    double realW = env.getWidth();
-                    double realH = env.getHeight();
-                    if (realW > 0 && realH > 0) {
-                        envW = realW;
-                        envH = realH;
-                        IDisplayData data = output.getData();
-                        if (data != null) {
-                            data.setEnvWidth(envW);
-                            data.setEnvHeight(envH);
-                        }
-                    }
-                }
-            } catch (Throwable t) { /* use fallback */ }
-
+            // IMPORTANT: do NOT override envW/envH with the live sim.getEnvelope() here. As agents
+            // spread (e.g. ants foraging outward) the agent envelope grows every step, which would
+            // recompute scale/offset below and make the whole view zoom out / re-center continuously
+            // ("rebound the ant"). The envelope must stay locked to the (frozen) world bounds so the
+            // camera is stable.
             double dispW = getDisplayWidth();
             double dispH = getDisplayHeight();
             double scale = Math.min(dispW / envW, dispH / envH);
@@ -423,7 +420,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 if (frames < 5) android.util.Log.w("DispDraw", "drawAgentsManually: no species names cached");
                 return;
             }
-            if (frames < 3) android.util.Log.w("DispDraw", "drawAgentsManually: species=" + cachedSpeciesNames + " envW=" + envW + " envH=" + envH);
 
             int totalDrawn = 0;
             Paint cellPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -773,34 +769,39 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         invalidateSafe();
     }
 
-    @Override
-    public double getEnvWidth() {
+    private IEnvelope getOrFreezeEnvelope() {
+        if (frozenEnv != null) return frozenEnv;
         try {
             gama.api.runtime.scope.IScope s = output.getScope();
             if (s != null) {
                 gama.api.kernel.agent.IMacroAgent sim = s.getSimulation();
                 if (sim != null) {
                     IEnvelope env = sim.getEnvelope();
-                    if (env != null && env.getWidth() > 0) return env.getWidth();
+                    if (env != null && env.getWidth() > 0 && env.getHeight() > 0) {
+                        frozenEnv = env;
+                        return frozenEnv;
+                    }
                 }
             }
         } catch (Throwable t) {}
-        return output.getData().getEnvWidth();
+        return null;
+    }
+
+    @Override
+    public double getEnvWidth() {
+        IEnvelope env = getOrFreezeEnvelope();
+        return env != null ? env.getWidth() : output.getData().getEnvWidth();
     }
 
     @Override
     public double getEnvHeight() {
-        try {
-            gama.api.runtime.scope.IScope s = output.getScope();
-            if (s != null) {
-                gama.api.kernel.agent.IMacroAgent sim = s.getSimulation();
-                if (sim != null) {
-                    IEnvelope env = sim.getEnvelope();
-                    if (env != null && env.getHeight() > 0) return env.getHeight();
-                }
-            }
-        } catch (Throwable t) {}
-        return output.getData().getEnvHeight();
+        IEnvelope env = getOrFreezeEnvelope();
+        return env != null ? env.getHeight() : output.getData().getEnvHeight();
+    }
+
+    /** The stable, frozen world envelope (for full-world imagery). Never re-reads the live agent envelope. */
+    public IEnvelope getFrozenEnvelope() {
+        return getOrFreezeEnvelope();
     }
 
     @Override
@@ -974,22 +975,27 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     @Override
     public void selectionIn(IEnvelope env) {
         if (env == null || disposed) return;
-        int w = getWidth();
-        int h = getHeight();
+        final int w = getWidth();
+        final int h = getHeight();
         if (w <= 0 || h <= 0) return;
-        double eW = env.getWidth();
-        double eH = env.getHeight();
-        if (eW <= 0 || eH <= 0) return;
-        double scale = Math.min(w / eW, h / eH);
-        int newW = Math.max(1, (int) Math.round(eW * scale));
-        int newH = Math.max(1, (int) Math.round(eH * scale));
-        int left = (int) Math.round(env.getMinX() * scale);
-        int top = (int) Math.round(env.getMinY() * scale);
-        displayWidth = newW;
-        displayHeight = newH;
-        viewPort.set(left, top, left + newW, top + newH);
-        zoomFit = false;
-        updateZoomLevel();
+        // One-time initial framing; afterwards keep the current view and just redraw.
+        if (!firstFitDone) {
+            final double eW = env.getWidth();
+            final double eH = env.getHeight();
+            if (eW > 0 && eH > 0) {
+                double scale = Math.min(w / eW, h / eH);
+                int newW = Math.max(1, (int) Math.round(eW * scale));
+                int newH = Math.max(1, (int) Math.round(eH * scale));
+                int left = (int) Math.round(env.getMinX() * scale);
+                int top = (int) Math.round(env.getMinY() * scale);
+                displayWidth = newW;
+                displayHeight = newH;
+                viewPort.set(left, top, left + newW, top + newH);
+                zoomFit = false;
+                updateZoomLevel();
+            }
+            firstFitDone = true;
+        }
         invalidateSafe();
     }
 
