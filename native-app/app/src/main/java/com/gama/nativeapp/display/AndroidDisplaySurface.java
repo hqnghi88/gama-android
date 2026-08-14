@@ -942,7 +942,13 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     @Override
     public void changed(LayeredDisplayData.Changes property, Object value) {
         if (property == LayeredDisplayData.Changes.BACKGROUND) {
-            bgPaint.setColor(((java.awt.Color) value).getRGB() | 0xFF000000);
+            int rgb = 0xFF000000;
+            if (value instanceof gama.api.types.color.IColor ic) {
+                rgb = ic.getRGB();
+            } else if (value instanceof java.awt.Color c) {
+                rgb = c.getRGB();
+            }
+            bgPaint.setColor(rgb | 0xFF000000);
         }
     }
 

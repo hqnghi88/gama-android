@@ -891,13 +891,21 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 // getRGB below reads the chart, and never write the stale data[] back over it.
                 img.syncBitmapToData();
             } else {
-                // Image is data[]-backed (e.g. grid cell buffers written via the raster);
-                // push data[] -> androidBitmap so getRGB reflects the current pixels.
+                // Image is data[]-backed (e.g. grid cell buffers written via the raster).
+                // Sync data[] -> androidBitmap too, so getRGB() and any other consumers agree.
                 syncRasterDataToBitmap(img);
             }
         }
         int[] pixels = new int[w * h];
-        img.getRGB(0, 0, w, h, pixels, 0, w);
+        if (!cache && !img.isGraphicsDrawn()) {
+            // Read the authoritative raster data[] directly. Going through androidBitmap first
+            // is lossy: ARGB_8888 premultiplies, so alpha==0 pixels (as produced by our
+            // Color.getRGB(), which drops the alpha byte) are flattened to 0x00000000 and their
+            // RGB is unrecoverable — which is what made the grid texture fully transparent.
+            readRasterData(img, pixels);
+        } else {
+            img.getRGB(0, 0, w, h, pixels, 0, w);
+        }
         int type = img.getType();
 
         int nonWhite = 0;
@@ -933,7 +941,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 + " owner=" + System.identityHashCode(img));
 
         if (type == BufferedImage.TYPE_INT_ARGB || type == BufferedImage.TYPE_INT_ARGB_PRE) {
-            // Pixels already contain alpha in the high byte from getRGB(). Just use as-is.
+            // Pixels usually carry real alpha from getRGB(). But images backed by Color.getRGB()
+            // (e.g. grid cell buffers) store opaque colors as 0x00RRGGBB with a dropped alpha byte;
+            // recover those as opaque so they are not rendered fully transparent.
+            for (int i = 0; i < pixels.length; i++) {
+                if (((pixels[i] >>> 24) & 0xFF) == 0 && pixels[i] != 0) {
+                    pixels[i] = pixels[i] | 0xFF000000;
+                }
+            }
         } else if (type == BufferedImage.TYPE_INT_RGB || type == BufferedImage.TYPE_3BYTE_BGR) {
             int tl = pixels[0];
             int tr = pixels[w - 1];
@@ -974,6 +989,21 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return bmp;
     }
 
+    private static void readRasterData(java.awt.image.BufferedImage img, int[] out) {
+        try {
+            java.awt.image.DataBuffer db = img.getRaster().getDataBuffer();
+            if (db instanceof java.awt.image.DataBufferInt) {
+                int[] buf = ((java.awt.image.DataBufferInt) db).getData();
+                if (buf != null && buf.length > 0) {
+                    System.arraycopy(buf, 0, out, 0, Math.min(buf.length, out.length));
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        img.getRGB(0, 0, img.getWidth(), img.getHeight(), out, 0, img.getWidth());
+    }
+
     private static void syncRasterDataToBitmap(java.awt.image.BufferedImage img) {
         try {
             java.awt.image.DataBuffer db = img.getRaster().getDataBuffer();
@@ -1003,15 +1033,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         if (w <= 0 || h <= 0) return null;
         int[] pixels = new int[w * h];
         img.getRGB(0, 0, w, h, pixels, 0, w);
-        int type = img.getType();
-        if (type != BufferedImage.TYPE_INT_ARGB && type != BufferedImage.TYPE_INT_ARGB_PRE) {
-            boolean hasAlpha = img.getColorModel() != null && img.getColorModel().hasAlpha();
-            for (int i = 0; i < pixels.length; i++) {
-                if (!hasAlpha) {
-                    pixels[i] = pixels[i] | 0xFF000000;
-                } else if (((pixels[i] >>> 24) & 0xFF) == 0 && pixels[i] != 0) {
-                    pixels[i] = pixels[i] | 0xFF000000;
-                }
+        boolean hasAlpha = img.getColorModel() != null && img.getColorModel().hasAlpha();
+        for (int i = 0; i < pixels.length; i++) {
+            if (!hasAlpha) {
+                pixels[i] = pixels[i] | 0xFF000000;
+            } else if (((pixels[i] >>> 24) & 0xFF) == 0 && pixels[i] != 0) {
+                pixels[i] = pixels[i] | 0xFF000000;
             }
         }
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
