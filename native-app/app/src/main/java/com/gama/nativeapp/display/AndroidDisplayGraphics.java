@@ -443,8 +443,13 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             return;
         }
         try {
+            boolean isLine = geometry instanceof org.locationtech.jts.geom.Lineal
+                    || geometry instanceof org.locationtech.jts.geom.Puntal;
             IColor color = attributes.getColor();
-            IColor borderColor = attributes.getBorder();
+            // Line-like geometries carry their color in getColor() (fill); the border (stroke)
+            // is what actually renders them. Mirror the 2D path so lines aren't stroked with
+            // transparent black (which made tree trunk/branch lines invisible).
+            IColor borderColor = isLine ? color : attributes.getBorder();
             if (borderColor == null && attributes.isEmpty()) borderColor = color;
             if (highlight && borderColor != null) borderColor = color;
             int fill = colorWithAlpha(color, currentAlpha);
