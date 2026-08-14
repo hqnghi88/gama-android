@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.gama.nativeapp">
 
+    <!-- Required for json_file(http://...) and other URL fetching via the Webb client. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Required so the workspace can be moved to a folder on shared (primary)
          storage on Android 11+ (targetSdk 30+), where scoped storage otherwise
          blocks java.io.File access to /storage/emulated/0/. The GAMA engine

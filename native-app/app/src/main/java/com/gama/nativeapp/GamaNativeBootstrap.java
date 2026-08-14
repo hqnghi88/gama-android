@@ -36,6 +36,9 @@ public class GamaNativeBootstrap {
         Log.i(TAG, "=== Bootstrap started ===");
         callback.onProgress("Setting up GAMA plugin bundles...");
 
+        WorkspaceManager.setEngineWorkspacePath(WorkspaceManager.workspaceRoot(context).getAbsolutePath());
+        Log.i(TAG, "Engine workspace root: " + WorkspaceManager.engineWorkspacePath());
+
         ClassLoader appClassLoader = context.getClassLoader();
 
         List<String> pluginNames = Arrays.asList(
@@ -242,6 +245,21 @@ public class GamaNativeBootstrap {
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register agent base classes", e);
             callback.onProgress("Agent base registration error: " + e.getMessage());
+        }
+
+        // Register the JSON encoder/parser. Desktop does this in
+        // gama.core.CoreActivator.initialize() (Json.getNew() -> GAMA.setJsonEncoder());
+        // without it json_file(http://...) and json() fail with a null encoder.
+        try {
+            Object json = Class.forName("gama.core.util.json.Json").getMethod("getNew").invoke(null);
+            Class.forName("gama.api.GAMA")
+                .getMethod("setJsonEncoder", Class.forName("gama.api.utils.json.IJson"))
+                .invoke(null, json);
+            Log.i(TAG, "JSON encoder registered");
+            callback.onProgress("JSON encoder registered");
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to register JSON encoder", e);
+            callback.onProgress("JSON encoder registration error: " + e.getMessage());
         }
 
         // Register event layer delegates (normally loaded via Eclipse extension points)

@@ -83,13 +83,14 @@ public class EclipseCorePatcher {
         init.maxStack = 1;
         cn.methods.add(init);
 
-        // getLocation(): IPath
+        // getLocation(): IPath -> real Android workspace root (com.gama.nativeapp.WorkspaceManager)
         MethodNode getLocation = new MethodNode(Opcodes.ACC_PUBLIC, "getLocation",
             "()Lorg/eclipse/core/runtime/IPath;", null, null);
         InsnList locIl = new InsnList();
         locIl.add(new TypeInsnNode(Opcodes.NEW, "org/eclipse/core/runtime/Path"));
         locIl.add(new InsnNode(Opcodes.DUP));
-        locIl.add(new LdcInsnNode("/"));
+        locIl.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
+            "com/gama/nativeapp/WorkspaceManager", "engineWorkspacePath", "()Ljava/lang/String;", false));
         locIl.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
             "org/eclipse/core/runtime/Path", "<init>", "(Ljava/lang/String;)V", false));
         locIl.add(new InsnNode(Opcodes.ARETURN));
@@ -101,12 +102,17 @@ public class EclipseCorePatcher {
         MethodNode getLocationURI = new MethodNode(Opcodes.ACC_PUBLIC, "getLocationURI",
             "()Ljava/net/URI;", null, null);
         InsnList uriIl = new InsnList();
-        uriIl.add(new LdcInsnNode("file:///"));
+        uriIl.add(new TypeInsnNode(Opcodes.NEW, "java/io/File"));
+        uriIl.add(new InsnNode(Opcodes.DUP));
         uriIl.add(new MethodInsnNode(Opcodes.INVOKESTATIC,
-            "java/net/URI", "create", "(Ljava/lang/String;)Ljava/net/URI;", false));
+            "com/gama/nativeapp/WorkspaceManager", "engineWorkspacePath", "()Ljava/lang/String;", false));
+        uriIl.add(new MethodInsnNode(Opcodes.INVOKESPECIAL,
+            "java/io/File", "<init>", "(Ljava/lang/String;)V", false));
+        uriIl.add(new MethodInsnNode(Opcodes.INVOKEVIRTUAL,
+            "java/io/File", "toURI", "()Ljava/net/URI;", false));
         uriIl.add(new InsnNode(Opcodes.ARETURN));
         getLocationURI.instructions = uriIl;
-        getLocationURI.maxStack = 1;
+        getLocationURI.maxStack = 3;
         cn.methods.add(getLocationURI);
 
         // getPathVariableManager(): IPathVariableManager
@@ -388,10 +394,12 @@ public class EclipseCorePatcher {
         ZipOutputStream zipOut = new ZipOutputStream(new FileOutputStream(tmpJar));
 
         Set<String> existingEntries = new HashSet<>();
-        // Copy all existing entries
+        // Copy all existing entries (WorkspaceRoot is regenerated below so it is
+        // skipped here to guarantee it always reflects the current patcher output).
         Enumeration<? extends ZipEntry> entries = zipIn.entries();
         while (entries.hasMoreElements()) {
             ZipEntry entry = entries.nextElement();
+            if (entry.getName().equals("org/eclipse/core/resources/WorkspaceRoot.class")) continue;
             existingEntries.add(entry.getName());
             byte[] data;
             try (InputStream is = zipIn.getInputStream(entry)) {

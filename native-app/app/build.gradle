@@ -203,7 +203,8 @@ tasks.register('patchGamaJars') {
             ['ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
             ['WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
             ['GridColorPatcher', 'GridColorPatcher', [gamaCoreJar]],
-            ['GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]]
+            ['GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]],
+            ['VarValidatorNullGuardPatcher', 'VarValidatorNullGuardPatcher', [gamaApiJar]]
         ]
         patchers.each { name, cls, args ->
             def outDir = file("$buildDir/tmp/patch_$name")

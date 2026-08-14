@@ -40,6 +40,23 @@ public final class WorkspaceManager {
 
     private WorkspaceManager() {}
 
+    private static volatile String engineWorkspacePath;
+
+    /** Points the GAMA engine's workspace root (used e.g. for the download cache)
+     *  at the real Android workspace folder. Set during engine bootstrap. */
+    public static void setEngineWorkspacePath(String path) {
+        engineWorkspacePath = path;
+    }
+
+    /** Absolute path the engine should treat as the workspace root. Falls back to
+     *  the default app-private workspace when bootstrap has not run yet. */
+    public static String engineWorkspacePath() {
+        if (engineWorkspacePath != null) return engineWorkspacePath;
+        Context ctx = GamaApplication.getAppContext();
+        if (ctx != null) return defaultRootPath(ctx);
+        return new File(System.getProperty("user.home", "/"), DIR_NAME).getAbsolutePath();
+    }
+
     private static SharedPreferences getPrefs(Context context) {
         return context.getApplicationContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
