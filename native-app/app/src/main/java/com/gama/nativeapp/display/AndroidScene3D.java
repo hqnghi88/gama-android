@@ -39,6 +39,15 @@ public class AndroidScene3D {
     private float sunX = 0, sunY = 0, sunZ = 1;
     private int sunColor = 0xFFFFFFFF;
 
+    // The 3D frame is rasterized at this fraction of the view resolution and then
+    // upscaled to the canvas. A software rasterizer's cost is fill-rate bound, so
+    // rendering at ~0.6x resolution cuts pixel work ~2.8x with only a mild blur.
+    private float renderScale = 0.6f;
+
+    public void setRenderScale(float scale) {
+        renderScale = Math.max(0.25f, Math.min(1f, scale));
+    }
+
     public void setAmbientLight(int argb) {
         this.ambientLight = argb;
     }
@@ -138,6 +147,12 @@ public class AndroidScene3D {
     private Canvas frameCanvas;
     private int[] regionBuf;
     private final Map<Bitmap, int[]> texCache = new HashMap<>();
+    private final Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final float[] scratch3 = new float[3];
+    private final List<Prim> visibleBuf = new ArrayList<>();
+    private static final Comparator<Prim> depthSorter =
+            (a, b) -> Float.compare(a.depth, b.depth);
+    private final float[] boundsOut = new float[6];
 
     public AndroidScene3D() {
         fillPaint.setStyle(Paint.Style.FILL);
@@ -380,7 +395,12 @@ public class AndroidScene3D {
 
     public void rotateBy(float dyawDeg, float dpitchDeg) {
         rotYawDeg += dyawDeg;
-        rotPitchDeg = Math.max(-89f, Math.min(89f, rotPitchDeg + dpitchDeg));
+        // rotPitchDeg is added to the scene's base camera elevation (which is
+        // ~55 deg for auto-elevated flat scenes), so it must range wider than
+        // +/-90 to let the effective elevation span the full [-89.5, 89.5]
+        // range and reach the bottom of the scene. The effective elevation is
+        // clamped to +/-89.5 in render().
+        rotPitchDeg = Math.max(-179f, Math.min(179f, rotPitchDeg + dpitchDeg));
     }
 
     public void resetRotation() {
@@ -392,6 +412,10 @@ public class AndroidScene3D {
                        double tarX, double tarY, double tarZ, double fovDeg,
                        int viewW, int viewH) {
         if (canvas == null || prims.isEmpty() || viewW <= 0 || viewH <= 0) return;
+
+        // Rasterize at reduced resolution, then upscale when blitting.
+        int rw = Math.max(2, Math.round(viewW * renderScale));
+        int rh = Math.max(2, Math.round(viewH * renderScale));
 
         float[] b = sceneBounds();
         if (b == null) return;
@@ -466,7 +490,7 @@ public class AndroidScene3D {
         // settle period and then locked, so transient per-frame changes of the
         // scene bounds do not make the camera zoom in and out continuously.
         double halfV = Math.toRadians(fovy) / 2;
-        double halfH = Math.atan(Math.tan(halfV) * (double) viewW / viewH);
+        double halfH = Math.atan(Math.tan(halfV) * (double) rw / rh);
         // Frame the scene's 2D footprint projected onto the camera's view plane,
         // instead of the 3D bounding radius. Desktop GAMA frames the environment
         // bounds so the world fills the viewport on both axes; the radius-based
@@ -614,36 +638,32 @@ public class AndroidScene3D {
         lookAt(view, camX, camY, camZ, tarX, tarY, tarZ, 0, 0, 1);
         double near = Math.max(dist * 0.001, 0.01);
         double far = Math.max(dist + 2 * r, 2 * dist);
-        perspective(proj, Math.toRadians(fovy), (double) viewW / viewH, near, far);
-        this.viewW = viewW;
-        this.viewH = viewH;
+        perspective(proj, Math.toRadians(fovy), (double) rw / rh, near, far);
+        this.viewW = rw;
+        this.viewH = rh;
         this.nearPlane = (float) near;
         this.farPlane = (float) far;
 
-        if (frameBmp == null || frameBmp.getWidth() != viewW || frameBmp.getHeight() != viewH) {
-            frameBmp = Bitmap.createBitmap(viewW, viewH, Bitmap.Config.ARGB_8888);
+        if (frameBmp == null || frameBmp.getWidth() != rw || frameBmp.getHeight() != rh) {
+            frameBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888);
             frameCanvas = new Canvas(frameBmp);
         }
         frameCanvas.drawColor(0, PorterDuff.Mode.CLEAR);
 
         if (sx == null || sx.length < 256) { sx = new float[256]; sy = new float[256]; }
 
-        List<Prim> visible = new ArrayList<>();
+        List<Prim> visible = visibleBuf;
+        visible.clear();
         for (Prim p : prims) {
             if (p.cull && !visibleFromOutside(p, (float) camX, (float) camY, (float) camZ)) continue;
             p.depth = viewZ(p, cx, cy, cz);
             visible.add(p);
         }
-        Collections.sort(visible, new Comparator<Prim>() {
-            @Override
-            public int compare(Prim a, Prim b) {
-                return Float.compare(a.depth, b.depth);
-            }
-        });
+        Collections.sort(visible, depthSorter);
 
         for (Prim p : visible) {
             try {
-                drawPrim(frameCanvas, p, viewW, viewH);
+                drawPrim(frameCanvas, p, rw, rh);
             } catch (Throwable t) {
                 Log.w(TAG, "drawPrim failed: " + t);
             }
@@ -717,7 +737,7 @@ public class AndroidScene3D {
                     + " first=" + samples);
         }
 
-        canvas.drawBitmap(frameBmp, 0, 0, null);
+        canvas.drawBitmap(frameBmp, null, new android.graphics.RectF(0, 0, viewW, viewH), blitPaint);
     }
 
     /** Distance needed to frame the scene's 2D footprint from a view direction. */
@@ -777,7 +797,9 @@ public class AndroidScene3D {
         }
         if (!Float.isFinite(minX) || !Float.isFinite(minY) || !Float.isFinite(minZ)
                 || !Float.isFinite(maxX) || !Float.isFinite(maxY) || !Float.isFinite(maxZ)) return null;
-        return new float[]{minX, minY, minZ, maxX, maxY, maxZ};
+        boundsOut[0] = minX; boundsOut[1] = minY; boundsOut[2] = minZ;
+        boundsOut[3] = maxX; boundsOut[4] = maxY; boundsOut[5] = maxZ;
+        return boundsOut;
     }
 
     private void logPrimHistogram() {
@@ -1016,10 +1038,9 @@ public class AndroidScene3D {
         if (n < 3) return;
         if (n > vvx.length) growClipBuffers(n);
         boolean textured = p.texture != null && p.uv != null;
-        float[] tmp = new float[3];
         for (int i = 0; i < n; i++) {
-            toView(p.v[i * 3], p.v[i * 3 + 1], p.v[i * 3 + 2], tmp);
-            vvx[i] = tmp[0]; vvy[i] = tmp[1]; vvz[i] = tmp[2];
+            toView(p.v[i * 3], p.v[i * 3 + 1], p.v[i * 3 + 2], scratch3);
+            vvx[i] = scratch3[0]; vvy[i] = scratch3[1]; vvz[i] = scratch3[2];
             if (textured) {
                 vvU[i] = p.uv[i * 2];
                 vvV[i] = p.uv[i * 2 + 1];
@@ -1183,6 +1204,22 @@ public class AndroidScene3D {
         int ta = (tint >>> 24) & 0xFF;
         int tr = (tint >>> 16) & 0xFF, tg = (tint >>> 8) & 0xFF, tb = tint & 0xFF;
 
+        // Lighting factors depend only on the prim's face normal and the light
+        // setup, so they are constant for every pixel of this triangle. Computing
+        // them here (instead of inside the pixel loop) removes two float divides
+        // per pixel from the hottest path.
+        float ndotl = curNx * sunX + curNy * sunY + curNz * sunZ;
+        float nd = ndotl > 0 ? ndotl : 0f;
+        int ar = (ambientLight >>> 16) & 0xFF;
+        int ag = (ambientLight >>> 8) & 0xFF;
+        int ab = ambientLight & 0xFF;
+        int sr255 = (sunColor >>> 16) & 0xFF;
+        int sg255 = (sunColor >>> 8) & 0xFF;
+        int sb255 = sunColor & 0xFF;
+        float fr = Math.min(1f, ar / 255f + (sr255 / 255f) * nd);
+        float fg = Math.min(1f, ag / 255f + (sg255 / 255f) * nd);
+        float fb = Math.min(1f, ab / 255f + (sb255 / 255f) * nd);
+
         for (int py = miny; py <= maxy; py++) {
             float fy = py;
             float w0b = (x1 - x0) * (fy - y0) - (y1 - y0) * (minx - x0);
@@ -1234,19 +1271,6 @@ public class AndroidScene3D {
 
                 int a = (sa * ta) >> 8;
                 if (a <= 0) continue;
-                // Lighting: ambient + directional diffuse (max(N.L,0)), matching GAMA's
-                // fixed-function lighting (ambient light + the "default" directional light).
-                float ndotl = curNx * sunX + curNy * sunY + curNz * sunZ;
-                float nd = ndotl > 0 ? ndotl : 0f;
-                int ar = (ambientLight >>> 16) & 0xFF;
-                int ag = (ambientLight >>> 8) & 0xFF;
-                int ab = ambientLight & 0xFF;
-                int sr255 = (sunColor >>> 16) & 0xFF;
-                int sg255 = (sunColor >>> 8) & 0xFF;
-                int sb255 = sunColor & 0xFF;
-                float fr = Math.min(1f, ar / 255f + (sr255 / 255f) * nd);
-                float fg = Math.min(1f, ag / 255f + (sg255 / 255f) * nd);
-                float fb = Math.min(1f, ab / 255f + (sb255 / 255f) * nd);
                 float r = (sr * tr >> 8) * fr;
                 float g = (sg * tg >> 8) * fg;
                 float b = (sb * tb >> 8) * fb;
@@ -1269,11 +1293,10 @@ public class AndroidScene3D {
     }
 
     private void drawLineClipped(Canvas canvas, Prim p) {
-        float[] tmp = new float[3];
-        toView(p.v[0], p.v[1], p.v[2], tmp);
-        float ax = tmp[0], ay = tmp[1], az = tmp[2];
-        toView(p.v[3], p.v[4], p.v[5], tmp);
-        float bx = tmp[0], by = tmp[1], bz = tmp[2];
+        toView(p.v[0], p.v[1], p.v[2], scratch3);
+        float ax = scratch3[0], ay = scratch3[1], az = scratch3[2];
+        toView(p.v[3], p.v[4], p.v[5], scratch3);
+        float bx = scratch3[0], by = scratch3[1], bz = scratch3[2];
         float d1 = az - (-nearPlane), d2 = bz - (-nearPlane);
         if (d1 > 0 && d2 > 0) return;
         if (d1 > 0 != d2 > 0) {

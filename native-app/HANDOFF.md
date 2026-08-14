@@ -659,3 +659,50 @@ Two independent problems, fixed in order:
 - **Verified on device:** model compiles, downloads the image, shuffles the matrix, and
   writes `files/images/local_copy.png`; both displays (`Original`, `Shuffled_copy`) render
   (`updateDisplays: 2 output(s)`), zero runtime errors.
+
+## Session 7 (2026-08-14) — Builtin 3D shapes render correctly (sphere/cone/pyramid)
+
+### Problem
+In 3D displays, `sphere(r)` drew as a **cylinder** (vertical extrusion of the circle
+footprint). Root cause: `AndroidDisplayGraphics.drawShape3DRec()` only special-cased
+`CUBE`/`BOX`; every other polygon with `depth > 0` fell through to `addPrism3D`.
+
+### Fix (native-app app code only, no jar patches)
+- `AndroidDisplayGraphics.drawShape3DRec()`: new branch for `depth > 0` and
+  `type ∈ {SPHERE, CONE, PYRAMID}`:
+  - **SPHERE** → `addSphereMesh(...)` — 16-ring × 24-seg lat/long UV sphere
+    (optional spherical UV texture), radius = `max(footprintR, depth/2)`, resting on z0
+    (center z = z0 + r). Footprint radius/centroid are computed from the transformed
+    shell (`transformShell(shell, center, k, rot)` + ox/oy), matching `addPrism3D`.
+  - **CONE / PYRAMID** → `addTaperedMesh(...)` — base polygon at z0 (from shell) +
+    side triangles up to the apex at the shell centroid at z0+depth. Handles the
+    square 5-pt pyramid footprint and the ~33-pt circle cone footprint (nth side tri
+    is degenerate for the closing vertex, harmless).
+  - CYLINDER stays a prism (already correct), CUBE/BOX unchanged.
+- Debug: the `SHAPE3D` dedup key now includes `attributes.getType()` + `depth`, so each
+  distinct shape logs once (`ishape=... depth=...`), and the log line prints them too.
+
+### Verified on device (Shape3DTest.gaml, camera {155,50,60} → {90,50,0})
+- Logs: `ishape=SPHERE depth=3.0`, `CONE 6.0`, `CYLINDER 6.0`, `PYRAMID 6.0`, `CUBE 6.0`;
+  `prims=464` = sphere 384 + cone 34 + cyl 34 + pyramid 6 + cube 6 (exact).
+- Screenshot silhouettes: sphere = circle, cone3D = apex-to-wide taper, cylinder = constant
+  width, pyramid = taper widest at base, cube = square. Two shaded faces visible on the
+  pyramid (per-face flat lighting).
+
+### Gotcha: legacy `cone(r,h)` is a 2D triangle, not a 3D cone
+- `cone(3,6)` (Integer,Integer operator) builds `polygon(loc, loc+cos(r)*worldMax,
+  loc+cos(h)*worldMax)` — args are treated as **headings/angles**, radius = max(topology
+  w/h). So it renders as a huge flat triangle (matches desktop GAMA). The 3D cone is
+  **`cone3D(radius, height)`** → `buildCone3D` = circle + `setDepth(h)` + type CONE.
+- Note: `buildTeapot` also exists (circle + setDepth + type TEAPOT); still falls through
+  to the prism path (acceptable stand-in, no teapot mesh implemented).
+
+### Reusable device test loop
+- Push model: `adb push <m>.gaml /sdcard/` then
+  `adb shell 'cat /sdcard/<m>.gaml | run-as com.gama.nativeapp sh -c "cat > files/models/<m>.gaml"'`.
+- Launch: `adb shell am force-stop com.gama.nativeapp; adb logcat -c;
+  adb shell am start -n com.gama.nativeapp/.ExperimentActivity
+  --es file_path /data/data/com.gama.nativeapp/files/models/<m>.gaml`.
+- Verify: `adb shell logcat -d | grep SHAPE3D` (ishape/depth lines, SCENEBOUNDS, PRIMHIST)
+  and `adb exec-out screencap -p > shot.png` (pixel/connected-component analysis in Python).
+

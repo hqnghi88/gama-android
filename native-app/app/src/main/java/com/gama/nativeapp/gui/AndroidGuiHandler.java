@@ -281,9 +281,44 @@ public class AndroidGuiHandler implements IGui {
         deliver(msg, true, true);
     }
 
+    /** Builds a readable description of an exception plus its cause chain, so
+     *  failures whose message is just a wrapper (e.g. "Java error: WebbException")
+     *  still expose the real underlying reason (DNS, TLS, timeout, HTTP status...). */
+    static String describe(Throwable t) {
+        if (t == null) return "unknown";
+        StringBuilder sb = new StringBuilder();
+        Throwable cur = t;
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        while (cur != null) {
+            String cls = cur.getClass().getSimpleName();
+            String msg = cur.getMessage();
+            if (msg != null) msg = msg.trim();
+            String extra = "";
+            // WebbException carries the HTTP response; include its status when present.
+            if ("WebbException".equals(cls)) {
+                try {
+                    Object resp = cur.getClass().getMethod("getResponse").invoke(cur);
+                    if (resp != null) {
+                        Object status = resp.getClass().getMethod("getStatusCode").invoke(resp);
+                        if (status != null) extra = " [HTTP " + status + "]";
+                    }
+                } catch (Throwable ignored) {}
+            }
+            String line = (msg == null || msg.isEmpty())
+                    ? cls + extra
+                    : cls + extra + ": " + msg;
+            if (seen.add(line)) {
+                if (sb.length() > 0) sb.append(" -> ");
+                sb.append(line);
+            }
+            cur = cur.getCause();
+        }
+        return sb.toString();
+    }
+
     @Override
     public void runtimeError(IScope scope, GamaRuntimeException g) {
-        String msg = "Runtime error: " + (g != null ? g.getMessage() : "unknown");
+        String msg = "Runtime error: " + describe(g);
         Log.e(TAG, msg, g);
         deliver(msg, true, true);
     }
@@ -292,7 +327,7 @@ public class AndroidGuiHandler implements IGui {
     public void displayErrors(IScope scope, List<GamaRuntimeException> errors, boolean show) {
         if (errors == null) return;
         for (GamaRuntimeException g : errors) {
-            String msg = "Runtime error: " + (g != null ? g.getMessage() : "unknown");
+            String msg = "Runtime error: " + describe(g);
             deliver(msg, true, true);
         }
     }

@@ -322,7 +322,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         if (geometry == null) return;
         if (shape3dDiagCount < 40) {
             org.locationtech.jts.geom.Envelope env = geometry.getEnvelopeInternal();
-            String key = Math.round(env.getMinX() / 1000) + ":" + Math.round(env.getMaxX() / 1000)
+            String key = attributes.getType() + ":" + attributes.getDepth()
+                    + ":" + Math.round(env.getMinX() / 1000) + ":" + Math.round(env.getMaxX() / 1000)
                     + ":" + Math.round(env.getMinY() / 1000) + ":" + Math.round(env.getMaxY() / 1000);
             if (shape3dDiagRegions.add(key)) {
                 shape3dDiagCount++;
@@ -349,6 +350,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         + " agClass=" + (ag != null ? ag.getClass().getSimpleName() : "null")
                         + " npts=" + geometry.getNumPoints()
                         + " fill=" + attributes.getColor()
+                        + " ishape=" + attributes.getType()
+                        + " depth=" + attributes.getDepth()
                         + " wkt=" + wktS);
                 dumpFarGeometry(geometry, ag, aloc);
             }
@@ -503,6 +506,31 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         } else {
                             scene3d.addBox(cx, cy, cz, w, h, d, fill, border, 1f);
                         }
+                    }
+                } else if (depth > 0 && (type == IShape.Type.SPHERE || type == IShape.Type.CONE
+                        || type == IShape.Type.PYRAMID)) {
+                    double ox = 0, oy = 0;
+                    if (loc != null) {
+                        double lift = terrainLift(loc.getX(), loc.getY());
+                        ox = loc.getX() - center[0];
+                        oy = loc.getY() - center[1];
+                    }
+                    double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
+                    z0 += terrainLift(cx, cy);
+                    AxisAngle rot = attributes.getRotation();
+                    Coordinate[] ts = transformShell(shell, center, k, rot);
+                    if (type == IShape.Type.SPHERE) {
+                        double tcx = 0, tcy = 0, fpR = 0;
+                        for (Coordinate c : ts) { tcx += c.x; tcy += c.y; }
+                        tcx /= ts.length; tcy /= ts.length;
+                        for (Coordinate c : ts) {
+                            double r = Math.hypot(c.x - tcx, c.y - tcy);
+                            if (r > fpR) fpR = r;
+                        }
+                        double r = Math.max(fpR, depth / 2);
+                        addSphereMesh(tcx + ox, tcy + oy, z0 + r, r, fill, border, tex, tint);
+                    } else {
+                        addTaperedMesh(ts, z0, z0 + depth, ox, oy, fill, border, tex, tint);
                     }
                 } else {
                     double ox = 0, oy = 0, oz = 0;
@@ -719,6 +747,76 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             uv[i * 2 + 1] = h > 0 ? (y - minY) / h : 0f;
         }
         return uv;
+    }
+
+    private static void setV(float[] m, int i, double x, double y, double z) {
+        m[i * 3] = (float) x;
+        m[i * 3 + 1] = (float) y;
+        m[i * 3 + 2] = (float) z;
+    }
+
+    /** Lat/long UV-sphere centered at (cx, cy, cz) with radius r. */
+    private void addSphereMesh(double cx, double cy, double cz, double r, int fill, int border, Object tex, int tint) {
+        int rings = 16, segs = 24;
+        float[] model = new float[12];
+        float[] uv = new float[8];
+        for (int i = 0; i < rings; i++) {
+            double p0 = Math.PI * i / rings, p1 = Math.PI * (i + 1) / rings;
+            double s0 = Math.sin(p0), c0 = Math.cos(p0), s1 = Math.sin(p1), c1 = Math.cos(p1);
+            for (int j = 0; j < segs; j++) {
+                double t0 = 2 * Math.PI * j / segs, t1 = 2 * Math.PI * (j + 1) / segs;
+                double ct0 = Math.cos(t0), st0 = Math.sin(t0), ct1 = Math.cos(t1), st1 = Math.sin(t1);
+                setV(model, 0, cx + r * s0 * ct0, cy + r * s0 * st0, cz + r * c0);
+                setV(model, 1, cx + r * s0 * ct1, cy + r * s0 * st1, cz + r * c0);
+                setV(model, 2, cx + r * s1 * ct1, cy + r * s1 * st1, cz + r * c1);
+                setV(model, 3, cx + r * s1 * ct0, cy + r * s1 * st0, cz + r * c1);
+                if (tex != null) {
+                    float u0 = (float) j / segs, u1 = (float) (j + 1) / segs;
+                    float v0 = (float) i / rings, v1 = (float) (i + 1) / rings;
+                    uv[0] = u0; uv[1] = 1f - v1;
+                    uv[2] = u1; uv[3] = 1f - v1;
+                    uv[4] = u1; uv[5] = 1f - v0;
+                    uv[6] = u0; uv[7] = 1f - v0;
+                    scene3d.addTexturedPoly(model, 4, uv, tex, tint, 0, 0);
+                } else {
+                    scene3d.addPoly(model, 4, fill, border, 1f, false);
+                }
+            }
+        }
+    }
+
+    /** Cone or square pyramid: base polygon (from shell) at z0, apex at the shell centroid at z1. */
+    private void addTaperedMesh(Coordinate[] base, double z0, double z1, double ox, double oy,
+                                int fill, int border, Object tex, int tint) {
+        int n = base.length;
+        float[] bm = new float[n * 3];
+        double acx = 0, acy = 0;
+        for (int i = 0; i < n; i++) {
+            bm[i * 3] = (float) (base[i].x + ox);
+            bm[i * 3 + 1] = (float) (base[i].y + oy);
+            bm[i * 3 + 2] = (float) z0;
+            acx += base[i].x;
+            acy += base[i].y;
+        }
+        acx = acx / n + ox;
+        acy = acy / n + oy;
+        if (tex != null) {
+            scene3d.addTexturedPoly(bm, n, envelopeUvs(bm, n), tex, tint, 0, 0);
+        } else {
+            scene3d.addPoly(bm, n, fill, border, 1f, false);
+        }
+        float[] tri = new float[9];
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            tri[0] = bm[i * 3]; tri[1] = bm[i * 3 + 1]; tri[2] = bm[i * 3 + 2];
+            tri[3] = bm[j * 3]; tri[4] = bm[j * 3 + 1]; tri[5] = bm[j * 3 + 2];
+            tri[6] = (float) acx; tri[7] = (float) acy; tri[8] = (float) z1;
+            if (tex != null) {
+                scene3d.addTexturedPoly(tri, 3, envelopeUvs(tri, 3), tex, tint, 0, 0);
+            } else {
+                scene3d.addPoly(tri, 3, fill, border, 1f, false);
+            }
+        }
     }
 
     private void addLine3D(LineString ls, int color, float stroke) {
