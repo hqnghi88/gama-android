@@ -583,9 +583,31 @@ public class AndroidScene3D {
                         Math.min(Math.toRadians(89.5), elev + Math.toRadians(rotPitchDeg)));
                 double horiz = orbitDist * Math.cos(elev);
                 double nvz = orbitDist * Math.sin(elev);
-                camX = tarX + horiz * Math.cos(az);
-                camY = tarY + horiz * Math.sin(az);
-                camZ = tarZ + nvz;
+                double ncx = tarX + horiz * Math.cos(az);
+                double ncy = tarY + horiz * Math.sin(az);
+                double ncz = tarZ + nvz;
+                // Re-frame from the rotated view direction so the whole scene
+                // footprint stays visible. The camera was framed for the original
+                // view axis only; rotating to a steeper/more oblique angle makes
+                // parts of the scene fall outside the viewport.
+                double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
+                double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
+                if (fl > 1e-9) {
+                    double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
+                            cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
+                    if (need > orbitDist) {
+                        orbitDist = need;
+                        horiz = orbitDist * Math.cos(elev);
+                        nvz = orbitDist * Math.sin(elev);
+                        ncx = tarX + horiz * Math.cos(az);
+                        ncy = tarY + horiz * Math.sin(az);
+                        ncz = tarZ + nvz;
+                    }
+                }
+                camX = ncx;
+                camY = ncy;
+                camZ = ncz;
+                dist = orbitDist;
             }
         }
 
@@ -703,6 +725,14 @@ public class AndroidScene3D {
                                  float cx, float cy, float cz,
                                  float minX, float minY, float minZ,
                                  float maxX, float maxY, float maxZ) {
+        return frameDistance(fvx, fvy, fvz, halfV, halfH, cx, cy, cz,
+                minX, minY, minZ, maxX, maxY, maxZ, coverFit);
+    }
+
+    private double frameDistance(double fvx, double fvy, double fvz, double halfV, double halfH,
+                                 float cx, float cy, float cz,
+                                 float minX, float minY, float minZ,
+                                 float maxX, float maxY, float maxZ, boolean cover) {
         double rvx = -fvz, rvy = 0, rvz = fvx; // cross(f, worldUp(0,0,1))
         double rl = Math.sqrt(rvx * rvx + rvy * rvy + rvz * rvz);
         if (rl < 1e-9) { rvx = 1; rvy = 0; rvz = 0; rl = 1; }
@@ -728,7 +758,7 @@ public class AndroidScene3D {
         // so the scene fills the viewport on the tighter axis, cropping the rest.
         double dRight = maxRight / Math.tan(halfH);
         double dUp = maxUp / Math.tan(halfV);
-        double needed = coverFit ? Math.min(dRight, dUp) : Math.max(dRight, dUp);
+        double needed = cover ? Math.min(dRight, dUp) : Math.max(dRight, dUp);
         return needed * 1.05;
     }
 
