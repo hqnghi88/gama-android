@@ -43,7 +43,8 @@
             android:windowSoftInputMode="adjustResize" />
         <activity
             android:name=".ExperimentActivity"
-            android:exported="true" />
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
     </application>
 
 </manifest>

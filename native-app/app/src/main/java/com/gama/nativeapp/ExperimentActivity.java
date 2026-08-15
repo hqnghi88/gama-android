@@ -99,6 +99,8 @@ public class ExperimentActivity extends Activity {
 
     // Fullscreen
     private boolean isFullscreen = false;
+    // The display/console split ratio before entering fullscreen, restored on exit
+    private float savedDisplayWeight = 3f;
     private LinearLayout fabContainer;
     private TextView fullscreenBtn;
     private int displayTabScrollVisibility = View.GONE;
@@ -839,8 +841,13 @@ public class ExperimentActivity extends Activity {
         } else {
             displayTabScroll.setVisibility(displayTabScrollVisibility);
         }
-        displayWrapperLp.weight = 1f;
         displayWrapperLp.height = 0;
+        if (isFullscreen) {
+            savedDisplayWeight = displayWrapperLp.weight;
+            displayWrapperLp.weight = 1f;
+        } else {
+            displayWrapperLp.weight = savedDisplayWeight;
+        }
         displayWrapper.requestLayout();
 
         View decor = getWindow().getDecorView();
