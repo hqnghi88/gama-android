@@ -163,10 +163,13 @@ echo "sdk.dir=$SDK_DIR" > "$APP_DIR/local.properties"
 # 3. GAMA jars (app/libs) — either provided, fetched, or assumed complete
 # --------------------------------------------------------------------------
 restore_from_dir() {
+  # Bundle layout: libs/{pristine/*.jar, *.jar} and optionally assets/*.
   local src="$1"
+  local LB="$src/libs"
+  [[ -d "$LB" ]] || LB="$src"
   mkdir -p "$LIBS_DIR"
-  if [[ -d "$src/pristine" ]]; then
-    cp -R "$src"/pristine "$LIBS_DIR/" 2>/dev/null || true
+  if [[ -d "$LB/pristine" ]]; then
+    cp -R "$LB"/pristine "$LIBS_DIR/" 2>/dev/null || true
     # pristine gama jars are also copied to the top level so build_extension.sh
     # (which compiles before Gradle's pristine restore) can resolve the GAMA
     # API/annotations. Gradle's patchGamaJars restore is then idempotent.
@@ -174,7 +177,7 @@ restore_from_dir() {
       [[ -e "$j" ]] && cp "$j" "$LIBS_DIR/"
     done
   fi
-  for j in "$src"/*.jar; do
+  for j in "$LB"/*.jar; do
     [[ -e "$j" ]] && cp "$j" "$LIBS_DIR/"
   done
   # pristine copies must exist for patchGamaJars to restore pristine state
@@ -183,15 +186,17 @@ restore_from_dir() {
     echo "ERROR: deps bundle at $src is incomplete (pristine jars: $n < 30)" >&2
     exit 1
   fi
+  if [[ -d "$src/assets" ]]; then
+    mkdir -p "$APP_DIR/app/src/main/assets"
+    cp -R "$src"/assets/. "$APP_DIR/app/src/main/assets/" 2>/dev/null || true
+    echo "   assets: restored $src/assets/*"
+  fi
   echo "   jars:   restored $(ls "$LIBS_DIR"/*.jar | wc -l | tr -d ' ') jars from $src"
 }
 
 if [[ "$SKIP_DEPS" -eq 1 ]]; then
   echo "   jars:   using existing $LIBS_DIR (--skip-deps)"
 elif [[ -n "$DEPS_DIR" ]]; then
-  # Accept both an extracted bundle dir (contains libs/) and a dir whose
-  # children are the libs contents (contains pristine/ + jars).
-  [[ -d "$DEPS_DIR/libs" ]] && DEPS_DIR="$DEPS_DIR/libs"
   restore_from_dir "$DEPS_DIR"
 else
   PRISTINE_COUNT="$(ls "$LIBS_DIR/pristine"/*.jar 2>/dev/null | wc -l | tr -d ' ')"
@@ -209,7 +214,7 @@ else
     curl -fL --retry 3 "$url" -o "$OUT"
     mkdir -p "$TOOLS_DIR/deps-x"
     tar -xzf "$OUT" -C "$TOOLS_DIR/deps-x"
-    restore_from_dir "$TOOLS_DIR/deps-x/libs"
+    restore_from_dir "$TOOLS_DIR/deps-x"
     rm -rf "$TOOLS_DIR/deps-x"
   fi
 fi
@@ -217,6 +222,17 @@ fi
 # --------------------------------------------------------------------------
 # 4. Build
 # --------------------------------------------------------------------------
+# First patch the GAMA jars so the extension compiles against the same
+# (downgraded/patched) jars the app itself is built from. On the developer
+# machine the top-level jars are already patched from a previous build; a
+# fresh machine restores raw jars, so the patch must run first.
+echo "== Running Gradle patchGamaJars =="
+cd "$APP_DIR"
+./gradlew "${GRADLE_ARGS[@]}" app:patchGamaJars || {
+  echo "ERROR: app:patchGamaJars failed (see output above)" >&2
+  exit 1
+}
+
 EXT_BIN="$SCRIPT_DIR/build_extension.sh"
 if [[ -x "$EXT_BIN" ]]; then
   echo "== Building GAMA extension jar =="
@@ -226,7 +242,6 @@ else
 fi
 
 echo "== Running Gradle assembleDebug =="
-cd "$APP_DIR"
 ./gradlew "${GRADLE_ARGS[@]}" app:assembleDebug
 
 APK="$APP_DIR/app/build/outputs/apk/debug/app-debug.apk"
