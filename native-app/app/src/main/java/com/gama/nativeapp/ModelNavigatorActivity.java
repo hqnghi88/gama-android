@@ -115,8 +115,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         root.setFitsSystemWindows(true);
 
         toolbar = new MaterialToolbar(this);
-        toolbar.setBackgroundTintList(ColorStateList.valueOf(
-                ContextCompat.getColor(this, R.color.toolbar_background)));
+        toolbar.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
         toolbar.setTitle("GAMA Models");
         toolbar.setTitleTextColor(0xFFFFFFFF);
         toolbar.setSubtitleTextColor(0xB3FFFFFF);

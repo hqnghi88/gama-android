@@ -159,7 +159,7 @@ public class ModelEditorActivity extends AppCompatActivity {
         root.setFitsSystemWindows(true);
 
         toolbar = new MaterialToolbar(this);
-        toolbar.setBackgroundTintList(ColorStateList.valueOf(COLOR_TOOLBAR_BG));
+        toolbar.setBackgroundColor(COLOR_TOOLBAR_BG);
         toolbar.setTitleTextColor(COLOR_TOOLBAR_TEXT);
         toolbar.setSubtitleTextColor(0xB3FFFFFF);
         toolbar.setNavigationIcon(null);

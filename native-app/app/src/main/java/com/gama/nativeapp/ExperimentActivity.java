@@ -212,8 +212,7 @@ public class ExperimentActivity extends Activity {
 
     private void buildToolbar(LinearLayout root) {
         toolbar = new MaterialToolbar(this);
-        toolbar.setBackgroundTintList(ColorStateList.valueOf(
-                ContextCompat.getColor(this, R.color.toolbar_background)));
+        toolbar.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
         toolbar.setNavigationIcon(null);
 
         LinearLayout toolbarContent = new LinearLayout(this);
