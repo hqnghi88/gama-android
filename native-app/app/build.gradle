@@ -87,7 +87,8 @@ tasks.register('patchGamaJars') {
             'java/awt/geom/Line2D.class',
             'java/awt/geom/Line2D$Double.class',
             'java/awt/geom/Line2D$Float.class',
-            'java/awt/geom/GeneralPath.class']
+            'java/awt/geom/GeneralPath.class',
+            'java/awt/geom/Area.class']
         fileTree(libsDir).matching { include '*.jar' }.each { jarFile ->
             def tmpDir = file("$buildDir/tmp/jar_patch/${jarFile.name}")
             tmpDir.mkdirs()
