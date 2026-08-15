@@ -621,18 +621,18 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                         computeFocal(event);
                         float dx = focalX - lastFocalX;
                         float dy = focalY - lastFocalY;
-                        viewPort.offset(-(int) dx, -(int) dy);
+                        if (output != null && output.getData().is3D()) {
+                            androidGraphics.rotateCamera3D(-dx * 0.3f, -dy * 0.3f);
+                        } else {
+                            viewPort.offset(-(int) dx, -(int) dy);
+                        }
                         lastFocalX = focalX;
                         lastFocalY = focalY;
                         invalidateSafe();
                     } else {
                         float dx = x - lastTouchX;
                         float dy = y - lastTouchY;
-                        if (output != null && output.getData().is3D()) {
-                            androidGraphics.rotateCamera3D(-dx * 0.3f, -dy * 0.3f);
-                        } else {
-                            viewPort.offset(-(int) dx, -(int) dy);
-                        }
+                        viewPort.offset(-(int) dx, -(int) dy);
                         invalidateSafe();
                     }
                 }
@@ -1019,7 +1019,14 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         if (w <= 0 || h <= 0) return;
         // One-time initial framing; afterwards keep the current view and just redraw.
         if (!firstFitDone) {
-            if (fillScreen) {
+            boolean is3d = output != null && output.getData().is3D();
+            if (is3d) {
+                displayWidth = w;
+                displayHeight = h;
+                viewPort.set(0, 0, w, h);
+                zoomFit = true;
+                updateZoomLevel();
+            } else if (fillScreen) {
                 displayWidth = w;
                 displayHeight = h;
                 viewPort.set(0, 0, w, h);
