@@ -286,11 +286,12 @@ public class ModelNavigatorActivity extends AppCompatActivity {
 
     private void filterModels(String query) {
         filteredList.clear();
+        ModelTreeItem root = currentSource == SOURCE_WORKSPACE ? workspaceRootItem : libraryRoot;
         if (query.isEmpty()) {
             filteredList.addAll(flatList);
         } else {
             String lower = query.toLowerCase();
-            collectMatching(libraryRoot, lower, filteredList);
+            collectMatching(root, lower, filteredList);
         }
         adapter.notifyDataSetChanged();
         emptyState.setVisibility(filteredList.isEmpty() && !flatList.isEmpty() ? View.VISIBLE : View.GONE);
@@ -871,39 +872,40 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 return;
             }
 
-            File cacheDir = getCacheDir();
-            File cacheJar = new File(cacheDir, LibraryJarUtil.JAR_NAME);
-            int[] counts = {0};
-            long[] bytes = {0};
+            if (!LibraryJarUtil.isExtractionStale(this)) {
+                jarFile.close();
+                jarFile = null;
+            } else {
+                File cacheDir = getCacheDir();
+                File cacheJar = new File(cacheDir, LibraryJarUtil.JAR_NAME);
 
-            boolean force = LibraryJarUtil.isExtractionStale(this);
-            Enumeration<? extends JarEntry> entries = jarFile.entries();
-            while (entries.hasMoreElements()) {
-                JarEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (name.startsWith("META-INF")) continue;
-                if (entry.isDirectory()) continue;
+                boolean force = true;
+                Enumeration<? extends JarEntry> entries = jarFile.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    String name = entry.getName();
+                    if (name.startsWith("META-INF")) continue;
+                    if (entry.isDirectory()) continue;
 
-                File outFile = new File(cacheDir, name);
-                if (outFile.exists()) {
-                    if (!force) continue;
-                    if (outFile.lastModified() > cacheJar.lastModified()) continue;
-                }
-                outFile.getParentFile().mkdirs();
+                    File outFile = new File(cacheDir, name);
+                    if (outFile.exists()) {
+                        if (!force) continue;
+                        if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                    }
+                    outFile.getParentFile().mkdirs();
 
-                try (InputStream is = jarFile.getInputStream(entry);
-                     FileOutputStream fos = new FileOutputStream(outFile)) {
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = is.read(buf)) > 0) {
-                        fos.write(buf, 0, n);
-                        bytes[0] += n;
+                    try (InputStream is = jarFile.getInputStream(entry);
+                         FileOutputStream fos = new FileOutputStream(outFile)) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = is.read(buf)) > 0) {
+                            fos.write(buf, 0, n);
+                        }
                     }
                 }
-                counts[0]++;
+                LibraryJarUtil.markExtracted(this);
             }
-            LibraryJarUtil.markExtracted(this);
-            jarFile.close();
+            if (jarFile != null) jarFile.close();
         } catch (Exception e) {
             Log.e(TAG, "Extraction failed", e);
         } finally {

@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
@@ -275,7 +276,11 @@ public class ModelEditorActivity extends AppCompatActivity {
         codeEditor.setHorizontallyScrolling(false);
         codeEditor.setVerticalScrollBarEnabled(true);
         codeEditor.setHorizontalScrollBarEnabled(true);
-        codeEditor.setRawInputType(0xF001);
+        // Normal text keyboard for code: no CAP_CHARACTERS (that makes the IME
+        // stay in caps lock), no auto-correct/suggestions that would mangle GAML.
+        codeEditor.setRawInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         codeEditor.setTextIsSelectable(true);
 
         editorArea.addView(codeEditor, new LinearLayout.LayoutParams(

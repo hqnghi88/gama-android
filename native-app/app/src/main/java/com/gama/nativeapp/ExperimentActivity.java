@@ -1135,27 +1135,32 @@ public class ExperimentActivity extends Activity {
                         parentPath.substring(0, parentPath.length() - "models/".length()) : "";
 
                 boolean force = LibraryJarUtil.isExtractionStale(this);
-                java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
-                while (entries.hasMoreElements()) {
-                    JarEntry e = entries.nextElement();
-                    String eName = e.getName();
-                    if (e.isDirectory() || !eName.startsWith(projectRoot)) continue;
-                    String relativePath = eName.substring(projectRoot.length());
-                    if (relativePath.isEmpty()) continue;
-                    File outFile = new File(cacheDir, projectRoot + relativePath);
-                    if (outFile.exists()) {
-                        if (!force) continue;
-                        if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                if (!force) {
+                    jarFile.close();
+                } else {
+                    java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
+                    while (entries.hasMoreElements()) {
+                        JarEntry e = entries.nextElement();
+                        String eName = e.getName();
+                        if (e.isDirectory() || !eName.startsWith(projectRoot)) continue;
+                        String relativePath = eName.substring(projectRoot.length());
+                        if (relativePath.isEmpty()) continue;
+                        File outFile = new File(cacheDir, projectRoot + relativePath);
+                        if (outFile.exists()) {
+                            if (outFile.lastModified() > cacheJar.lastModified()) continue;
+                        }
+                        outFile.getParentFile().mkdirs();
+                        try (InputStream is = jarFile.getInputStream(e);
+                             FileOutputStream fos = new FileOutputStream(outFile)) {
+                            byte[] buf = new byte[4096]; int n;
+                            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                        }
                     }
-                    outFile.getParentFile().mkdirs();
-                    try (InputStream is = jarFile.getInputStream(e);
-                         FileOutputStream fos = new FileOutputStream(outFile)) {
-                        byte[] buf = new byte[4096]; int n;
-                        while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
-                    }
+                    // Do NOT markExtracted here: only the full library extraction
+                    // (ModelNavigatorActivity) marks completion, otherwise a partial
+                    // extraction could cause the full one to be skipped.
+                    jarFile.close();
                 }
-                LibraryJarUtil.markExtracted(this);
-                jarFile.close();
 
                 File modelFile = new File(cacheDir, jarEntryPath);
                 Object model = compileFile(modelFile);
@@ -1219,9 +1224,10 @@ public class ExperimentActivity extends Activity {
         try {
             File cacheJar = LibraryJarUtil.ensureCached(this);
             if (cacheJar == null) return;
+            if (!LibraryJarUtil.isExtractionStale(this)) return;
             JarFile jarFile = new JarFile(cacheJar);
             String modelFileName = assetPath.substring(assetPath.lastIndexOf('/') + 1);
-            boolean force = LibraryJarUtil.isExtractionStale(this);
+            boolean force = true;
             java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
             while (entries.hasMoreElements()) {
                 JarEntry e = entries.nextElement();
@@ -1240,7 +1246,8 @@ public class ExperimentActivity extends Activity {
                     while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
                 }
             }
-            LibraryJarUtil.markExtracted(this);
+            // Do NOT markExtracted here: only the full library extraction
+            // (ModelNavigatorActivity) marks completion.
             jarFile.close();
         } catch (Exception e) { log("Includes: " + e.getMessage()); }
     }
