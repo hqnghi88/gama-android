@@ -58,10 +58,6 @@ public class CanvasGraphics2D extends Graphics2D {
 
     private int toArgb(Color c) {
         int a = c.getAlpha();
-        // GAMA rgb colors (e.g. BoxWhisker default `ffffff`, brewer_colors) carry alpha 0,
-        // which renders as transparent/invisible fills & strokes on this alpha-backed canvas.
-        // For chart painting, opaque is the desired default.
-        if (a == 0) a = 255;
         return android.graphics.Color.argb(a, c.getRed(), c.getGreen(), c.getBlue());
     }
 
@@ -186,6 +182,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void fill(Shape s) {
         if (s == null) return;
+        if (((fillPaint.getColor() >>> 24) & 0xFF) == 0) return;
         markDrawn();
         trace("fill:" + s.getClass().getSimpleName());
         if (callCount < 60) android.util.Log.w("AWT_CHART", "  fillColor=" + hex(fillPaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
@@ -208,6 +205,7 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void draw(Shape s) {
         if (s == null) return;
+        if (((strokePaint.getColor() >>> 24) & 0xFF) == 0) return;
         markDrawn();
         trace("draw:" + s.getClass().getSimpleName());
         if (callCount < 60) android.util.Log.w("AWT_CHART", "  drawColor=" + hex(strokePaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
@@ -542,12 +540,27 @@ public class CanvasGraphics2D extends Graphics2D {
         int w = bi.getWidth();
         int h = bi.getHeight();
         if (w <= 0 || h <= 0) return null;
+        if (w == 250 && h == 217 && BIRDPROBE < 4) {
+            BIRDPROBE++;
+            int[] d = null;
+            try {
+                java.awt.image.DataBuffer db = bi.getRaster().getDataBuffer();
+                if (db instanceof java.awt.image.DataBufferInt) d = ((java.awt.image.DataBufferInt) db).getData();
+            } catch (Throwable t) {}
+            String d0 = d != null ? Integer.toHexString(d[0]) : "null";
+            String dc = d != null ? Integer.toHexString(d[w / 2 * h + h / 2]) : "null";
+            android.util.Log.i("DEBUG_BIRD", "toBitmap source gd=" + bi.isGraphicsDrawn()
+                    + " type=" + bi.getType() + " owner=" + System.identityHashCode(bi)
+                    + " data[0]=" + d0 + " data[c]=" + dc);
+        }
         int[] pixels = new int[w * h];
         bi.getRGB(0, 0, w, h, pixels, 0, w);
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         bmp.setPixels(pixels, 0, w, 0, 0, w, h);
         return bmp;
     }
+
+    private static int BIRDPROBE = 0;
 
     public Bitmap getBitmap() { return bitmap; }
 

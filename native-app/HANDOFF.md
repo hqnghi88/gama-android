@@ -706,3 +706,48 @@ footprint). Root cause: `AndroidDisplayGraphics.drawShape3DRec()` only special-c
 - Verify: `adb shell logcat -d | grep SHAPE3D` (ishape/depth lines, SCENEBOUNDS, PRIMHIST)
   and `adb exec-out screencap -p > shot.png` (pixel/connected-component analysis in Python).
 
+
+## Session 8 (2026-08-14) — Boids 3D Motion works: AlphaComposite.Src NoSuchFieldError fixed
+
+### Problem
+In the library model `Toy Models/Boids/models/Boids 3D Motion.gaml`, only the red goal
+sphere rendered; the 100 boids (drawn as `bird.gif` icons) never appeared and nothing
+moved. logcat (reproduced live on the installed build) showed, per display frame:
+`java.lang.NoSuchFieldError: No field Src of type Ljava/awt/AlphaComposite; in class
+Ljava/awt/AlphaComposite; ... (declaration ... appears in base.apk!classes16.dex)`
+thrown from `gama.extension.image.ImageCache.getImageFromFile` (loading the GIF).
+
+### Root cause
+`java.awt.AlphaComposite` shipped only as a class inside `app/libs/awt-stubs.jar` and its
+API was incomplete: it had the UPPERCASE int rule constants (CLEAR, SRC, SRC_OVER, ...)
+but **not** the OpenJDK mixed-case static AlphaComposite-typed fields (`Src`, `SrcOver`,
+`SrcAtop`, `SrcIn`, `SrcOut`, `Dst*`, `Clear`, `Xor`). GAMA + jsvg compiled against the
+real JDK and do `getstatic AlphaComposite.Src` etc. (confirmed via javap across all jars:
+needs `Src`, `SrcOver`, `SrcAtop`, `SrcIn`, `SrcOut`, `Xor` plus `getInstance(int[,float])`,
+`derive(int/float)`, `getAlpha()`, `getRule()`).
+
+### Fix (app code + jar cleanup)
+- **New** `app/src/main/java/java/awt/AlphaComposite.java` — full OpenJDK-compatible stub:
+  all 18 int rule constants + the 11 mixed-case singleton fields (Clear, Src, Dst, SrcOver,
+  DstOver, SrcIn, DstIn, SrcOut, DstOut, SrcAtop, DstAtop, Xor) + getInstance/derive
+  (returns `this` when args match, else new), getAlpha/getRule/getTransparency.
+- **Removed** `java/awt/AlphaComposite.class` from `app/libs/awt-stubs.jar` (`zip -d`)
+  so D8 doesn't see a duplicate class. awt-stubs.jar has NO pristine copy (it's not in
+  `app/libs/pristine/`), so this removal persists across `patchGamaJars` runs (its two
+  in-place patchers only touch FontRenderContext/AwtFontMetrics).
+
+### Verified on device (launch command for library models)
+```
+adb shell am force-stop com.gama.nativeapp; adb logcat -c
+adb shell "am start -n com.gama.nativeapp/.ExperimentActivity \
+  --es model_name 'models/Toy Models/Boids/models/Boids 3D Motion.gaml' \
+  --es jar_path  'models/Toy Models/Boids/models/Boids 3D Motion.gaml' \
+  --es experiment_name '3D' --ez from_library true"
+```
+(NOTE: the `models/` prefix IS required in jar_path — compileModelFromLibrary looks the
+entry up directly in the cached `gama.library.jar`, whose entries are `models/...`.)
+- Logs: `Auto-starting experiment: 3D`; ZERO `NoSuchFieldError`/`AlphaComposite` and ZERO
+  `Error when drawing in a display` (only benign `AWT_CHART: setComposite:AlphaComposite`).
+- Screenshots 4-5 s apart: 74k-104k pixels changed in the viewport (boids flock moving);
+  connected components show a dense swarm blob (~486x368 px) plus ~20 smaller boid
+  clusters. New AlphaComposite confirmed in classes12.dex with both int + mixed-case fields.

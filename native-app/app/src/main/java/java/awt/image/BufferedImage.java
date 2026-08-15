@@ -124,7 +124,11 @@ public class BufferedImage extends Image implements Transparency, RenderedImage 
 
     public int getRGB(int x, int y) {
         if (x >= 0 && x < width && y >= 0 && y < height) {
-            if (androidBitmap != null && !androidBitmap.isRecycled()) {
+            // For images whose pixels were written to the data[] raster (GIF frames, grid cell
+            // buffers, BufferedImage.setRGB), data[] is authoritative and androidBitmap is a stale,
+            // empty copy — reading it would turn real content transparent. Only trust androidBitmap
+            // when a CanvasGraphics2D has actually drawn onto it (graphicsDrawn).
+            if (graphicsDrawn && androidBitmap != null && !androidBitmap.isRecycled()) {
                 return androidBitmap.getPixel(x, y);
             }
             return data[y * width + x];

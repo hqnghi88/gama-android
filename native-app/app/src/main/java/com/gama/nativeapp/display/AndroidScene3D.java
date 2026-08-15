@@ -74,6 +74,7 @@ public class AndroidScene3D {
         float stroke;
         boolean cull;       // backface cull (only safe for faces with known outward winding)
         float depth;        // view-space z used for painter's algorithm sorting
+        boolean background; // drawn first (behind everything), e.g. a ground/picture plane
         String text;
         float textSize;
         float ax, ay;
@@ -309,6 +310,16 @@ public class AndroidScene3D {
         prims.add(p);
     }
 
+    /**
+     * Tags the last prim as a ground/background plane so it sorts and draws
+     * behind all other geometry (picture layers and terrain that share the same
+     * z plane as flat decals/agents would otherwise cover them via the painter's
+     * centroid sort).
+     */
+    public void markLastPrimBackground() {
+        if (!prims.isEmpty()) prims.get(prims.size() - 1).background = true;
+    }
+
     private static void multiplyMM(float[] r, float[] a, float[] b) {
         for (int col = 0; col < 4; col++) {
             float b0 = b[col * 4], b1 = b[col * 4 + 1], b2 = b[col * 4 + 2], b3 = b[col * 4 + 3];
@@ -342,8 +353,6 @@ public class AndroidScene3D {
     }
 
     private boolean fitLocked = false;
-    private int diagCount = 0;
-    private int diagBoundsCount = 0;
     private float fitNeed = -1f;
     private double fitDist = -1;
     private double fitCamX, fitCamY, fitCamZ;
@@ -373,6 +382,7 @@ public class AndroidScene3D {
     // shift the bounds centre, so the ground stops panning/re-scaling every step.
     private boolean frameBoundsSet = false;
     private float frameMinX, frameMinY, frameMaxX, frameMaxY;
+    private float frameMinZ, frameMaxZ;
 
     /** Locks the camera framing to the given world rectangle. Pass NaN to unlock. */
     public void setFrameBounds(float minX, float minY, float maxX, float maxY) {
@@ -411,18 +421,17 @@ public class AndroidScene3D {
     public void render(Canvas canvas, double camX, double camY, double camZ,
                        double tarX, double tarY, double tarZ, double fovDeg,
                        int viewW, int viewH) {
-        if (canvas == null || prims.isEmpty() || viewW <= 0 || viewH <= 0) return;
+        if (canvas == null || prims.isEmpty() || viewW <= 0 || viewH <= 0) {
+            return;
+        }
 
         // Rasterize at reduced resolution, then upscale when blitting.
         int rw = Math.max(2, Math.round(viewW * renderScale));
         int rh = Math.max(2, Math.round(viewH * renderScale));
 
         float[] b = sceneBounds();
-        if (b == null) return;
-        if (diagBoundsCount < 3) {
-            diagBoundsCount++;
-            android.util.Log.i("SHAPE3D", "SCENEBOUNDS [x:" + b[0] + ".." + b[3] + " y:" + b[1] + ".." + b[4] + " z:" + b[2] + ".." + b[5] + "] prims=" + prims.size());
-            logPrimHistogram();
+        if (b == null) {
+            return;
         }
         float minX = b[0], minY = b[1], minZ = b[2];
         float maxX = b[3], maxY = b[4], maxZ = b[5];
@@ -439,22 +448,40 @@ public class AndroidScene3D {
             frameMinY = minY;
             frameMaxX = maxX;
             frameMaxY = maxY;
+            frameMinZ = minZ;
+            frameMaxZ = maxZ;
             frameBoundsSet = true;
         } else {
+            // Re-capture only when the live world box substantially ENLARGES the
+            // frozen frame (a new simulation with a bigger world) or stops
+            // overlapping it entirely (a completely different coordinate space).
+            // Do NOT re-capture when agents merely cluster together: that shrinks
+            // the frame, the auto-fit then zooms the camera into the tight cluster
+            // and the moving agents oscillate out of the frustum, which flickers.
             float overlapX = Math.max(0f, Math.min(maxX, frameMaxX) - Math.max(minX, frameMinX));
             float overlapY = Math.max(0f, Math.min(maxY, frameMaxY) - Math.max(minY, frameMinY));
             float frameW = frameMaxX - frameMinX, frameH = frameMaxY - frameMinY;
-            if (overlapX < frameW * 0.3f || overlapY < frameH * 0.3f) {
+            float newW = maxX - minX, newH = maxY - minY;
+            boolean enlarged = newW > frameW * 1.25f || newH > frameH * 1.25f;
+            boolean displaced = overlapX <= 0f || overlapY <= 0f;
+            if (enlarged || displaced) {
                 frameMinX = minX;
                 frameMinY = minY;
                 frameMaxX = maxX;
                 frameMaxY = maxY;
+                frameMinZ = minZ;
+                frameMaxZ = maxZ;
             }
         }
         minX = frameMinX;
         minY = frameMinY;
         maxX = frameMaxX;
         maxY = frameMaxY;
+        // Freeze the Z extents too: the auto-fit's framing distance and the
+        // re-aiming both use the Z bounds, so live agent movement in Z made the
+        // camera drift and periodically swing the flock out of the frustum.
+        minZ = frameMinZ;
+        maxZ = frameMaxZ;
         float cx = (minX + maxX) / 2f, cy = (minY + maxY) / 2f, cz = (minZ + maxZ) / 2f;
         double r2 = 0;
         if (frameBoundsSet) {
@@ -478,7 +505,9 @@ public class AndroidScene3D {
             }
         }
         double r = Math.sqrt(r2);
-        if (r < 1e-6) return;
+        if (r < 1e-6) {
+            return;
+        }
 
         double fovy = fovDeg > 1 && fovDeg < 179 ? fovDeg : 45;
         double dxc = camX - tarX, dyc = camY - tarY, dzc = camZ - tarZ;
@@ -603,8 +632,8 @@ public class AndroidScene3D {
                 double az = Math.atan2(vy, vx);
                 double elev = Math.atan2(vz, Math.hypot(vx, vy));
                 az += Math.toRadians(rotYawDeg);
-                elev = Math.max(Math.toRadians(-89.5),
-                        Math.min(Math.toRadians(89.5), elev + Math.toRadians(rotPitchDeg)));
+                elev = Math.max(Math.toRadians(25),
+                        Math.min(Math.toRadians(80), elev + Math.toRadians(rotPitchDeg)));
                 double horiz = orbitDist * Math.cos(elev);
                 double nvz = orbitDist * Math.sin(elev);
                 double ncx = tarX + horiz * Math.cos(az);
@@ -639,6 +668,7 @@ public class AndroidScene3D {
         double near = Math.max(dist * 0.001, 0.01);
         double far = Math.max(dist + 2 * r, 2 * dist);
         perspective(proj, Math.toRadians(fovy), (double) rw / rh, near, far);
+
         this.viewW = rw;
         this.viewH = rh;
         this.nearPlane = (float) near;
@@ -656,7 +686,7 @@ public class AndroidScene3D {
         visible.clear();
         for (Prim p : prims) {
             if (p.cull && !visibleFromOutside(p, (float) camX, (float) camY, (float) camZ)) continue;
-            p.depth = viewZ(p, cx, cy, cz);
+            p.depth = p.background ? Float.NEGATIVE_INFINITY : viewZ(p, cx, cy, cz);
             visible.add(p);
         }
         Collections.sort(visible, depthSorter);
@@ -667,74 +697,6 @@ public class AndroidScene3D {
             } catch (Throwable t) {
                 Log.w(TAG, "drawPrim failed: " + t);
             }
-        }
-
-        diagCount++;
-        if (diagCount == 2) {
-            try {
-                java.io.File dir = new java.io.File("/data/data/com.gama.nativeapp/files");
-                dir.mkdirs();
-                java.io.File f = new java.io.File(dir, "frame3d.png");
-                java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
-                frameBmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fos);
-                fos.close();
-                Log.i(TAG, "WROTE " + f.getAbsolutePath() + " " + viewW + "x" + viewH);
-            } catch (Throwable t) {
-                Log.w(TAG, "frame dump failed: " + t);
-            }
-        }
-        if ((diagCount & 3) == 1 && diagCount < 40) {
-            int opaque = 0, total = 0;
-            try {
-                int w = frameBmp.getWidth(), h = frameBmp.getHeight();
-                int[] px = new int[w * h];
-                frameBmp.getPixels(px, 0, w, 0, 0, w, h);
-                for (int i = 0; i < px.length; i += 97) {
-                    total++;
-                    if (((px[i] >>> 24) & 0xFF) > 0) opaque++;
-                }
-            } catch (Throwable t) {}
-            int nPoly = 0, nText = 0, nLine = 0, nBill = 0, fillZero = 0, cullTrue = 0;
-            int projOk = 0, onScreen = 0;
-            for (Prim p : visible) {
-                boolean ok = true, vis = false;
-                for (int i = 0; i < p.v.length; i += 3) {
-                    float[] out = p0;
-                    if (!project(p.v[i], p.v[i + 1], p.v[i + 2], out)) { ok = false; continue; }
-                    if (out[0] >= -4 && out[0] <= viewW + 4 && out[1] >= -4 && out[1] <= viewH + 4) vis = true;
-                }
-                if (ok) projOk++;
-                if (vis) onScreen++;
-            }
-            StringBuilder samples = new StringBuilder();
-            int si = 0;
-            for (Prim p : prims) {
-                switch (p.kind) {
-                    case TEXT: nText++; break;
-                    case LINE: nLine++; break;
-                    case BILLBOARD: nBill++; break;
-                    default: nPoly++; if (p.fill == 0) fillZero++; break;
-                }
-                if (p.cull) cullTrue++;
-                if (si < 6 && p.v != null && p.v.length >= 3) {
-                    String kn = p.kind == TEXT ? "TEXT" : p.kind == LINE ? "LINE" : p.kind == BILLBOARD ? "BILLBOARD" : "POLY";
-                    samples.append("[").append(kn).append(" fill=0x")
-                            .append(Integer.toHexString(p.fill)).append(" cull=").append(p.cull)
-                            .append(" v=(").append(p.v[0]).append(",").append(p.v[1]).append(",").append(p.v[2])
-                            .append(")] ");
-                    si++;
-                }
-            }
-            Log.i(TAG, "renderdiag cam=(" + camX + "," + camY + "," + camZ
-                    + ") target=(" + tarX + "," + tarY + "," + tarZ
-                    + ") visible=" + visible.size() + "/" + prims.size()
-                    + " projOk=" + projOk + " onScreen=" + onScreen
-                    + " poly=" + nPoly + " text=" + nText + " line=" + nLine + " bill=" + nBill
-                    + " fillZero=" + fillZero + " cullTrue=" + cullTrue
-                    + " r=" + r + " dist=" + dist + " near=" + nearPlane + " far=" + farPlane
-                    + " opaqueSamples=" + opaque + "/" + total
-                    + " bounds=[" + minX + "," + minY + "," + minZ + "]-[" + maxX + "," + maxY + "," + maxZ + "]"
-                    + " first=" + samples);
         }
 
         canvas.drawBitmap(frameBmp, null, new android.graphics.RectF(0, 0, viewW, viewH), blitPaint);
@@ -800,24 +762,6 @@ public class AndroidScene3D {
         boundsOut[0] = minX; boundsOut[1] = minY; boundsOut[2] = minZ;
         boundsOut[3] = maxX; boundsOut[4] = maxY; boundsOut[5] = maxZ;
         return boundsOut;
-    }
-
-    private void logPrimHistogram() {
-        try {
-            java.util.TreeMap<String, Integer> counts = new java.util.TreeMap<>();
-            for (Prim p : prims) {
-                for (int i = 0; i < p.v.length; i += 3) {
-                    String key = Math.round(p.v[i] / 1000f) + "k," + Math.round(p.v[i + 1] / 1000f) + "k";
-                    Integer c = counts.get(key);
-                    counts.put(key, c == null ? 1 : c + 1);
-                }
-            }
-            StringBuilder sb = new StringBuilder("PRIMHIST total=" + prims.size() + " ");
-            for (java.util.Map.Entry<String, Integer> e : counts.entrySet()) {
-                sb.append(e.getKey()).append("=").append(e.getValue()).append(" ");
-            }
-            android.util.Log.i("SHAPE3D", sb.toString());
-        } catch (Throwable t) {}
     }
 
     /**
@@ -1032,7 +976,6 @@ public class AndroidScene3D {
         return m;
     }
 
-    private int polyClipDiag = 0;
     private void drawPolyClipped(Canvas canvas, Prim p) {
         int n = p.v.length / 3;
         if (n < 3) return;
@@ -1058,18 +1001,6 @@ public class AndroidScene3D {
             sy[i] = p0[1];
             q[i] = -dz[i];
         }
-        if (polyClipDiag < 4 && Math.abs(p.v[0]) > 1e6f) {
-            polyClipDiag++;
-            StringBuilder sb = new StringBuilder();
-            sb.append("clipDiag n=").append(n).append(" clipped=").append(clipped)
-                    .append(" firstV=(").append(p.v[0]).append(",").append(p.v[1]).append(",").append(p.v[2]).append(")");
-            for (int i = 0; i < clipped && i < 8; i++) {
-                sb.append(" sx").append(i).append("=").append(sx[i]).append(" sy").append(i).append("=").append(sy[i])
-                        .append(" q").append(i).append("=").append(q[i]);
-            }
-            sb.append(" camZ=").append(p.v[2]);
-            Log.i(TAG, sb.toString());
-        }
         if (textured) {
             fillTexturedPoly(canvas, p, clipped);
         } else {
@@ -1077,10 +1008,11 @@ public class AndroidScene3D {
             workPath.moveTo(sx[0], sy[0]);
             for (int i = 1; i < clipped; i++) workPath.lineTo(sx[i], sy[i]);
             workPath.close();
-            if (p.fill != 0) {
-                fillPaint.setColor(litColor(p.fill, p.lnx, p.lny, p.lnz));
-                canvas.drawPath(workPath, fillPaint);
-            }
+        if (p.fill != 0) {
+            int lit = litColor(p.fill, p.lnx, p.lny, p.lnz);
+            fillPaint.setColor(lit);
+            canvas.drawPath(workPath, fillPaint);
+        }
         }
         if (p.border != 0 && p.border != p.fill) {
             strokePaint.setColor(p.border);

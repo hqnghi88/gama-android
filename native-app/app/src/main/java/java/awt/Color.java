@@ -32,7 +32,7 @@ public class Color implements Paint {
     private final int value;
 
     public Color(int r, int g, int b) {
-        value = ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+        value = 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
     }
 
     public Color(int rgb, boolean hasalpha) {
@@ -96,6 +96,61 @@ public class Color implements Paint {
 
     public Color darker() {
         return new Color(Math.max((int)(getRed() * 0.7), 0), Math.max((int)(getGreen() * 0.7), 0), Math.max((int)(getBlue() * 0.7), 0));
+    }
+
+    public static int HSBtoRGB(float hue, float saturation, float brightness) {
+        int r = 0, g = 0, b = 0;
+        if (saturation == 0) {
+            r = g = b = (int) (brightness * 255f + 0.5f);
+        } else {
+            float h = (hue - (float) Math.floor(hue)) * 6f;
+            int i = (int) h;
+            float f = h - i;
+            float p = brightness * (1f - saturation);
+            float q = brightness * (1f - saturation * f);
+            float t = brightness * (1f - saturation * (1f - f));
+            float rv = 0, gv = 0, bv = 0;
+            switch (i) {
+                case 0: rv = brightness; gv = t; bv = p; break;
+                case 1: rv = q; gv = brightness; bv = p; break;
+                case 2: rv = p; gv = brightness; bv = t; break;
+                case 3: rv = p; gv = q; bv = brightness; break;
+                case 4: rv = t; gv = p; bv = brightness; break;
+                default: rv = brightness; gv = p; bv = q; break;
+            }
+            r = (int) (rv * 255f + 0.5f);
+            g = (int) (gv * 255f + 0.5f);
+            b = (int) (bv * 255f + 0.5f);
+        }
+        return 0xFF000000 | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+    }
+
+    public static float[] RGBtoHSB(int r, int g, int b, float[] hsbvals) {
+        float hue, sat, bri;
+        float[] hs = hsbvals == null ? new float[3] : hsbvals;
+        int cmax = Math.max(r, Math.max(g, b));
+        int cmin = Math.min(r, Math.min(g, b));
+        bri = cmax / 255f;
+        float delta = cmax - cmin;
+        if (cmax != 0) sat = delta / cmax; else sat = 0;
+        if (sat == 0) {
+            hue = 0;
+        } else {
+            float dr = ((cmax - r) / 6f + delta / 2f) / delta;
+            float dg = ((cmax - g) / 6f + delta / 2f) / delta;
+            float db = ((cmax - b) / 6f + delta / 2f) / delta;
+            if (r == cmax) hue = db - dg;
+            else if (g == cmax) hue = (1f / 3f) + dr - db;
+            else hue = (2f / 3f) + dg - dr;
+            if (hue < 0) hue += 1f;
+            if (hue > 1f) hue -= 1f;
+        }
+        hs[0] = hue; hs[1] = sat; hs[2] = bri;
+        return hs;
+    }
+
+    public static Color getHSBColor(float h, float s, float b) {
+        return new Color(HSBtoRGB(h, s, b));
     }
 
     public float[] getRGBComponents(float[] componentArray) {

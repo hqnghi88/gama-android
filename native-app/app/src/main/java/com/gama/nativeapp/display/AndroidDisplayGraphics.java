@@ -73,9 +73,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private float currentAlpha = 1f;
     private Rectangle2D.Double rect = new Rectangle2D.Double();
     private int drawnShapesCount = 0;
-    private int shape3dDiagCount = 0;
-    private final java.util.HashSet<String> shape3dDiagRegions = new java.util.HashSet<>();
-    private int farDumpCount = 0;
 
     private final AndroidScene3D scene3d = new AndroidScene3D();
 
@@ -320,80 +317,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     private void drawShape3D(Geometry geometry, IDrawingAttributes attributes) {
         if (geometry == null) return;
-        if (shape3dDiagCount < 40) {
-            org.locationtech.jts.geom.Envelope env = geometry.getEnvelopeInternal();
-            String key = attributes.getType() + ":" + attributes.getDepth()
-                    + ":" + Math.round(env.getMinX() / 1000) + ":" + Math.round(env.getMaxX() / 1000)
-                    + ":" + Math.round(env.getMinY() / 1000) + ":" + Math.round(env.getMaxY() / 1000);
-            if (shape3dDiagRegions.add(key)) {
-                shape3dDiagCount++;
-                IPoint loc = attributes.getLocation();
-                String sp = "null", aloc = "null";
-                gama.api.kernel.agent.IAgent ag = null;
-                try {
-                    sp = attributes.getSpeciesName();
-                    ag = attributes.getAgentIdentifier();
-                    if (ag != null) {
-                        IPoint p = ag.getLocation();
-                        aloc = p == null ? "null" : p.getX() + "," + p.getY();
-                    }
-                } catch (Throwable t) {}
-                String wktS = "empty";
-                try {
-                    String w = geometry.toText();
-                    wktS = w.length() > 400 ? w.substring(0, 400) : w;
-                } catch (Throwable t) {}
-                android.util.Log.i("SHAPE3D", "type=" + geometry.getGeometryType()
-                        + " sp=" + sp + " env=[x:" + env.getMinX() + ".." + env.getMaxX() + " y:" + env.getMinY() + ".." + env.getMaxY() + "]"
-                        + " attLoc=" + (loc != null ? loc.getX() + "," + loc.getY() : "null")
-                        + " agLoc=" + aloc
-                        + " agClass=" + (ag != null ? ag.getClass().getSimpleName() : "null")
-                        + " npts=" + geometry.getNumPoints()
-                        + " fill=" + attributes.getColor()
-                        + " ishape=" + attributes.getType()
-                        + " depth=" + attributes.getDepth()
-                        + " wkt=" + wktS);
-                dumpFarGeometry(geometry, ag, aloc);
-            }
-        }
         double[] center = bboxCenter3D(geometry);
         double k = modelScale(geometry, attributes.getSize());
         drawShape3DRec(geometry, attributes, center, k);
-    }
-
-    private void dumpFarGeometry(org.locationtech.jts.geom.Geometry geometry, gama.api.kernel.agent.IAgent ag, String aloc) {
-        if (farDumpCount >= 5) return;
-        org.locationtech.jts.geom.Envelope env = geometry.getEnvelopeInternal();
-        if (Math.abs(env.getMinX()) < 1e6 && Math.abs(env.getMinY()) < 1e6) return;
-        farDumpCount++;
-        StringBuilder sb = new StringBuilder("FARGEOM env=[x:").append(env.getMinX()).append("..").append(env.getMaxX())
-                .append(" y:").append(env.getMinY()).append("..").append(env.getMaxY()).append("]");
-        if (ag != null) {
-            try {
-                sb.append(" agLoc=").append(aloc);
-                gama.api.kernel.agent.IMacroAgent host = ag.getHost();
-                if (host != null) {
-                    org.locationtech.jts.geom.Geometry hg = host.getGeometry().getInnerGeometry();
-                    org.locationtech.jts.geom.Envelope he = hg.getEnvelopeInternal();
-                    sb.append(" host=").append(host.getClass().getSimpleName()).append("/").append(host.getSpeciesName())
-                            .append(" env=[x:").append(he.getMinX()).append("..").append(he.getMaxX())
-                            .append(" y:").append(he.getMinY()).append("..").append(he.getMaxY()).append("]")
-                            .append(" loc=").append(host.getLocation());
-                }
-                gama.api.kernel.agent.IMacroAgent top = ag.getTopLevelHost();
-                if (top != null) {
-                    org.locationtech.jts.geom.Geometry tg = top.getGeometry().getInnerGeometry();
-                    org.locationtech.jts.geom.Envelope te = tg.getEnvelopeInternal();
-                    sb.append(" top=").append(top.getSpeciesName())
-                            .append(" env=[x:").append(te.getMinX()).append("..").append(te.getMaxX())
-                            .append(" y:").append(te.getMinY()).append("..").append(te.getMaxY()).append("]")
-                            .append(" loc=").append(top.getLocation());
-                }
-            } catch (Throwable t) {
-                sb.append(" hostErr=").append(t);
-            }
-        }
-        android.util.Log.i("SHAPE3D", sb.toString());
     }
 
     /** 3D bounding-box center of a geometry (z = 0 when a vertex has no z). */
@@ -446,6 +372,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             return;
         }
         try {
+            IPoint loc = attributes.getLocation();
             boolean isLine = geometry instanceof org.locationtech.jts.geom.Lineal
                     || geometry instanceof org.locationtech.jts.geom.Puntal;
             IColor color = attributes.getColor();
@@ -457,7 +384,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             if (highlight && borderColor != null) borderColor = color;
             int fill = colorWithAlpha(color, currentAlpha);
             int border = borderColor != null ? colorWithAlpha(borderColor, currentAlpha) : 0;
-            IPoint loc = attributes.getLocation();
+            // Mirror the 2D path: an "empty" drawing (wireframe) has no fill, only its
+            // border renders. Ignoring this filled the wireframe circle in the boids
+            // goal aspect with the species color (black), which darkened the red goal
+            // circle drawn underneath it.
+            boolean wireframe = attributes.isEmpty();
+            if (wireframe) fill = 0;
             Double depthD = attributes.getDepth();
             double depth = depthD != null ? depthD : 0.0;
             IShape.Type type = attributes.getType();
@@ -487,9 +419,17 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 double cy = loc != null ? loc.getY() : (minY + maxY) / 2;
 
                 if (type == IShape.Type.CUBE || type == IShape.Type.BOX) {
-                    double lift = loc != null ? terrainLift(loc.getX(), loc.getY()) : 0;
-                    double cz = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : (depth > 0 ? depth / 2 : 0);
-                    cz += lift;
+                    double shellZ0 = minZ > maxZ ? 0 : minZ;
+                    double lift = loc != null ? terrainLift(loc.getX(), loc.getY()) : terrainLift(cx, cy);
+                    double cz;
+                    if (loc != null) {
+                        cz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift;
+                    } else {
+                        // The geometry's own ring already carries the base z (the cell height).
+                        // Use it instead of dropping the layer to z=0.
+                        double d = depth > 0 ? depth : Math.max(w, h);
+                        cz = shellZ0 + d / 2 + lift;
+                    }
                     double d = depth > 0 ? depth : Math.max(w, h);
                     if (tex != null) {
                         Object wallTex = resolveTexture(texAttrs, 1, getSurface().getScope());
@@ -515,7 +455,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         ox = loc.getX() - center[0];
                         oy = loc.getY() - center[1];
                     }
-                    double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
+                    double shellZ0 = minZ > maxZ ? 0 : minZ;
+                    double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : shellZ0;
                     z0 += terrainLift(cx, cy);
                     AxisAngle rot = attributes.getRotation();
                     Coordinate[] ts = transformShell(shell, center, k, rot);
@@ -542,7 +483,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     }
                     AxisAngle rot = attributes.getRotation();
                     if (depth > 0) {
-                        double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : 0;
+                        double shellZ0 = minZ > maxZ ? 0 : minZ;
+                        double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : shellZ0;
                         z0 += terrainLift(cx, cy);
                         Coordinate[] ts = transformShell(shell, center, k, rot);
                         addPrism3D(ts, z0, z0 + depth, ox, oy, fill, border, tex, tex, tint);
@@ -944,6 +886,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                     (float) (x + w / 2), (float) (y + h / 2), (float) z,
                     (float) (x - w / 2), (float) (y + h / 2), (float) z
             }, 4, new float[]{0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f}, bitmap, tint, 0, 0f);
+            scene3d.markLastPrimBackground();
         } else {
             // Agent sprite: a flat quad lying in the XY (ground) plane at height z,
             // rotated by the agent's heading (DrawingAttributes.getRotation()) around
@@ -980,8 +923,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public static Bitmap bufferedImageToBitmap(BufferedImage img, boolean cache) {
         if (img == null) return null;
         if (img.getWidth() <= 0 || img.getHeight() <= 0) return null;
-        android.util.Log.i("DEBUG_CHART", "bufferedImageToBitmap w=" + img.getWidth() + " h=" + img.getHeight()
-                + " cache=" + cache + " graphicsDrawn=" + img.isGraphicsDrawn());
         Bitmap cached = cache ? IMAGE_TO_BITMAP.get(img) : null;
         if (cached != null) return cached;
         int w = img.getWidth();
@@ -1010,38 +951,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             img.getRGB(0, 0, w, h, pixels, 0, w);
         }
         int type = img.getType();
-
-        int nonWhite = 0;
-        int sample = Math.min(pixels.length, 100);
-        for (int i = 0; i < sample; i++) {
-            if (pixels[i] != 0 && pixels[i] != -1 && pixels[i] != (int)0xFFFFFFFF) nonWhite++;
-        }
-        int centerY = h / 2;
-        int centerX = w / 2;
-        int centerPx = pixels[centerY * w + centerX];
-        int belowPx = pixels[(centerY + h/6) * w + centerX];
-        int leftPx = pixels[centerY * w + (centerX - w/6)];
-        int rightPx = pixels[(centerY + w/6) * w + centerX];
-        int topPx = pixels[(centerY - h/6) * w + centerX];
-        int colored = 0, white = 0, black = 0, gray = 0;
-        for (int i = 0; i < pixels.length; i++) {
-            int argb = pixels[i];
-            int a = (argb >> 24) & 0xFF;
-            int r = (argb >> 16) & 0xFF;
-            int g = (argb >> 8) & 0xFF;
-            int b = argb & 0xFF;
-            if (r == 255 && g == 255 && b == 255) { white++; }
-            else if (r < 45 && g < 45 && b < 45) black++;
-            else {
-                boolean isGray = Math.abs(r - g) < 10 && Math.abs(g - b) < 10;
-                if (isGray) gray++;
-                else if (a > 0) colored++;
-            }
-        }
-        android.util.Log.i("DEBUG_SYNC", "nonWhite100=" + nonWhite + " W=" + white + " B=" + black
-                + " G=" + gray + " C=" + colored + " cx=" + (centerX) + "," + centerY
-                + " center=" + Integer.toHexString(centerPx) + " below=" + Integer.toHexString(belowPx)
-                + " owner=" + System.identityHashCode(img));
 
         if (type == BufferedImage.TYPE_INT_ARGB || type == BufferedImage.TYPE_INT_ARGB_PRE) {
             // Pixels usually carry real alpha from getRGB(). But images backed by Color.getRGB()
@@ -1124,7 +1033,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         }
     }
 
-    /** Caches the Bitmap conversion per source BufferedImage (GAMA reuses image objects per frame). */
     private static final java.util.IdentityHashMap<BufferedImage, Bitmap> IMAGE_TO_BITMAP =
             new java.util.IdentityHashMap<>();
 
@@ -1390,27 +1298,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     @Override
     public Rectangle2D drawChart(BufferedImage chart) {
         if (chart == null || canvas == null) return null;
-        int w = chart.getWidth(), h = chart.getHeight();
-        int cx = w/2, cy = h/2;
-        int px = chart.getRGB(cx, cy);
-        int corner = chart.getRGB(0,0);
-        // coarse content sampling (every step px); count non-background pixels
-        int nonBg = 0, total = 0; int step = 9;
-        for (int yy = 0; yy < h; yy += step) for (int xx = 0; xx < w; xx += step) {
-            total++;
-            if (chart.getRGB(xx, yy) != corner) nonBg++;
-        }
-        float ratio = total > 0 ? (nonBg * 100f / total) : 0f;
-        android.util.Log.i("DEBUG_CHART", "drawChart chart=" + w + "x" + h
-                + " type=" + chart.getType() + " graphicsDrawn=" + chart.isGraphicsDrawn()
-                + " layerW=" + getLayerWidth() + " layerH=" + getLayerHeight()
-                + " offset=" + getXOffsetInPixels() + "," + getYOffsetInPixels()
-                + " dispW=" + getDisplayWidth() + " dispH=" + getDisplayHeight()
-                + " centerRGB=" + px + " cornerRGB=" + corner + " contentRatio=" + (int)ratio + "%");
         try {
             drawImage(chart, new DrawingAttributes(null, null, null, null, null, null));
-            android.util.Log.i("DEBUG_CHART", "  drawImage ok -> rect=" + rect.width + "x" + rect.height
-                    + " at (" + rect.x + "," + rect.y + ")");
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DRAW", "drawChart error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
             StackTraceElement[] stack = t.getStackTrace();
@@ -1964,31 +1853,40 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     private int layerCount = 0;
     private int layerPrimStart = -1;
-    private int layerDiagCount = 0;
 
     @Override
     public void beginDrawingLayer(final ILayer layer) {
         currentLayer = layer;
         layerCount++;
         if (is3dMode()) layerPrimStart = scene3d.size();
+        applyLayerTransparency(layer);
+    }
+
+    /** Applies the GAML layer transparency (0 = opaque, 1 = invisible) as an
+     *  opacity factor so translucent layers composite through the painter's
+     *  algorithm instead of being drawn fully opaque. */
+    private void applyLayerTransparency(ILayer layer) {
+        double alpha = 1.0;
+        try {
+            if (layer != null && layer.getData() != null) {
+                Double t = layer.getData().getTransparency(getSurface().getScope());
+                if (t != null) alpha = Math.max(0.0, Math.min(1.0, 1.0 - t));
+            }
+        } catch (Throwable ignored) {
+        }
+        setAlpha(alpha);
     }
 
     @Override
     public void endDrawingLayer(ILayer layer) {
         super.endDrawingLayer(layer);
         if (is3dMode() && layerPrimStart >= 0) {
-            if (layerDiagCount < 20) {
-                layerDiagCount++;
-                try {
-                    android.util.Log.i("SHAPE3D", "LAYERPRIMS layer=" + layer.getName()
-                            + " added=" + (scene3d.size() - layerPrimStart));
-                } catch (Throwable t) {}
-            }
             if (!layer.getData().isDynamic()) {
                 scene3d.captureStaticPrims(layer, layerPrimStart);
             }
         }
         layerPrimStart = -1;
+        setAlpha(1);
     }
 
     public void manuallyDrawAgents(IAgent[] agents) {
