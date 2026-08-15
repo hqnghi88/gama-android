@@ -16,6 +16,7 @@ captures/
 *.aab
 *.apk
 *.jar
+!native-app/gradle/wrapper/gradle-wrapper.jar
 output-metadata.json
 
 # IntelliJ
