@@ -3,7 +3,6 @@ package com.gama.nativeapp;
 import static android.view.ViewGroup.LayoutParams.MATCH_PARENT;
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
-import android.animation.LayoutTransition;
 import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -39,7 +38,6 @@ import com.gama.nativeapp.display.AndroidDisplaySurface;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
-import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.android.material.slider.Slider;
 import com.google.android.material.tabs.TabLayout;
 
@@ -77,31 +75,38 @@ public class ExperimentActivity extends Activity {
     private TextView logView;
     private ScrollView logScroll;
     private TextView cycleText;
+    private LinearLayout rootLayout;
     private ViewGroup contentArea;
 
-    // Control FABs
-    private FloatingActionButton playPauseFab;
-    private FloatingActionButton stepFab;
-    private FloatingActionButton stopFab;
-    private FloatingActionButton layersFab;
+    // Transport control bar (play/pause, step, stop) replacing the floating FABs
+    private LinearLayout transportBar;
+    private ImageView playPauseBtn;
+    private ImageView stepBtn;
+    private ImageView stopBtn;
 
     // Display tabs
     private HorizontalScrollView displayTabScroll;
     private LinearLayout displayTabBar;
     private String activeDisplayName;
 
-    // Drag handle for resizing
+    // The display column holds the transport bar, display tabs/toolbar and the
+    // surface container. It is stacked with the bottom panel in portrait and
+    // placed next to a side column (tabs + panel) in landscape.
+    private LinearLayout displayColumn;
+    private LinearLayout.LayoutParams displayColumnLp;
+    private LinearLayout mainRow;
+    private LinearLayout rightCol;
+
+    // Drag handle for resizing (portrait only)
     private View dragHandle;
-    private LinearLayout displayWrapper;
     private LinearLayout bottomPanel;
-    private LinearLayout.LayoutParams displayWrapperLp;
     private LinearLayout.LayoutParams bottomPanelLp;
+    private boolean isLandscape = false;
 
     // Fullscreen
     private boolean isFullscreen = false;
     // The display/console split ratio before entering fullscreen, restored on exit
     private float savedDisplayWeight = 3f;
-    private LinearLayout fabContainer;
     private TextView fullscreenBtn;
     private int displayTabScrollVisibility = View.GONE;
 
@@ -129,14 +134,11 @@ public class ExperimentActivity extends Activity {
     private SensorBridge sensorBridge;
 
     // Cached reflection
-    private java.lang.reflect.Field pausedField;
     private java.lang.reflect.Field aliveField;
     private java.lang.reflect.Field scopeField;
     private java.lang.reflect.Field execThreadField;
-    private java.lang.reflect.Field lockField;
     private java.lang.reflect.Method getClockMethod;
     private java.lang.reflect.Method getCycleMethod;
-    private java.lang.reflect.Method releaseLockMethod;
 
     // Layer state
     private final List<LayerInfo> layerInfos = new ArrayList<>();
@@ -159,15 +161,14 @@ public class ExperimentActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFitsSystemWindows(true);
         root.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
-        root.setLayoutTransition(new LayoutTransition());
+        rootLayout = root;
 
         buildToolbar(root);
 
         tabLayout = new TabLayout(this);
         tabLayout.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         tabLayout.setSelectedTabIndicatorColor(ContextCompat.getColor(this, R.color.primary));
-        tabLayout.setTabTextColors(ColorStateList.valueOf(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999))));
-        tabLayout.setTabTextColors(thc(0xFF888888, thc(0xFFAAAAAA, 0xFF999999)), ContextCompat.getColor(this, R.color.primary));
+        tabLayout.setTabTextColors(thc(0xFF888888, 0xFF999999), ContextCompat.getColor(this, R.color.primary));
         tabLayout.addTab(tabLayout.newTab().setText("Display").setIcon(
                 ContextCompat.getDrawable(this, R.drawable.ic_fit)));
         tabLayout.addTab(tabLayout.newTab().setText("Console").setIcon(
@@ -178,10 +179,10 @@ public class ExperimentActivity extends Activity {
         tabLayout.setTabGravity(TabLayout.GRAVITY_FILL);
         tabLayout.setTabMode(TabLayout.MODE_FIXED);
         tabLayout.setElevation(dp(4));
-        root.addView(tabLayout, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         contentArea = new FrameLayout(this);
 
+        buildTransportBar();
         buildDisplayArea();
         buildConsolePanel();
         buildLayersPanel();
@@ -192,7 +193,9 @@ public class ExperimentActivity extends Activity {
         contentFrame.addView(contentArea, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         root.addView(contentFrame);
 
-        buildFabs(contentFrame);
+        isLandscape = getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        applyOrientation();
 
         setContentView(root);
 
@@ -208,6 +211,23 @@ public class ExperimentActivity extends Activity {
         });
 
         startEngine();
+    }
+
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        isLandscape = newConfig.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        // The layout is rebuilt with the new orientation; leave fullscreen so the
+        // system bars/layout don't fight the re-arrangement.
+        if (isFullscreen) {
+            isFullscreen = false;
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(0);
+            if (fullscreenBtn != null) {
+                fullscreenBtn.setTextColor(thc(0xFFAAAAAA, 0xFF999999));
+            }
+        }
+        applyOrientation();
     }
 
     private void buildToolbar(LinearLayout root) {
@@ -269,13 +289,62 @@ public class ExperimentActivity extends Activity {
         root.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
     }
 
-    private void buildDisplayArea() {
-        LinearLayout displayLayout = new LinearLayout(this);
-        displayLayout.setOrientation(LinearLayout.VERTICAL);
-        displayLayout.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+    /** Builds the transport control bar (play/pause, step, stop) shown above the
+     *  display. The floating FABs were removed: these buttons stay in a fixed,
+     *  relevant position next to the display in every orientation. */
+    private void buildTransportBar() {
+        transportBar = new LinearLayout(this);
+        transportBar.setOrientation(LinearLayout.HORIZONTAL);
+        transportBar.setGravity(Gravity.CENTER_VERTICAL);
+        transportBar.setPadding(dp(6), dp(2), dp(6), dp(2));
+        transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
 
-        displayWrapper = new LinearLayout(this);
-        displayWrapper.setOrientation(LinearLayout.VERTICAL);
+        playPauseBtn = makeTransportButton(R.drawable.ic_play, "Play/Pause",
+                thc(0xFF006847, 0xFF2E7D32), v -> togglePlayPause());
+        stepBtn = makeTransportButton(R.drawable.ic_step, "Step",
+                thc(0xFFFF8F00, 0xFFE65100), v -> stepSimulation());
+        stopBtn = makeTransportButton(R.drawable.ic_stop, "Stop",
+                thc(0xFFE53935, 0xFFCF6679), v -> stopSimulation());
+        transportBar.addView(playPauseBtn);
+        transportBar.addView(stepBtn);
+        transportBar.addView(stopBtn);
+
+        View spacer = new View(this);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 0, 1f));
+        transportBar.addView(spacer);
+
+        TextView hint = new TextView(this);
+        hint.setText("1 finger: pan  |  2 fingers: rotate  |  pinch: zoom");
+        hint.setTextSize(10);
+        hint.setTextColor(thc(0xFF888888, 0xFF777777));
+        hint.setPadding(dp(4), 0, dp(4), 0);
+        transportBar.addView(hint);
+    }
+
+    private ImageView makeTransportButton(int drawableRes, String desc, int bgColor,
+                                          View.OnClickListener listener) {
+        ImageView b = new ImageView(this);
+        b.setImageResource(drawableRes);
+        b.setContentDescription(desc);
+        b.setPadding(dp(8), dp(8), dp(8), dp(8));
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        bg.setColor(bgColor);
+        b.setBackground(bg);
+        DrawableCompat.setTint(b.getDrawable(), Color.WHITE);
+        b.setOnClickListener(listener);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(40), dp(40));
+        lp.setMargins(dp(4), dp(2), dp(4), dp(2));
+        b.setLayoutParams(lp);
+        return b;
+    }
+
+    private void buildDisplayArea() {
+        displayColumn = new LinearLayout(this);
+        displayColumn.setOrientation(LinearLayout.VERTICAL);
+        displayColumn.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+        displayColumn.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         displayTabScroll = new HorizontalScrollView(this);
         displayTabScroll.setHorizontalScrollBarEnabled(false);
@@ -285,7 +354,7 @@ public class ExperimentActivity extends Activity {
         displayTabBar.setOrientation(LinearLayout.HORIZONTAL);
         displayTabBar.setPadding(dp(8), dp(4), dp(8), dp(4));
         displayTabScroll.addView(displayTabBar);
-        displayWrapper.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        displayColumn.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         LinearLayout displayToolbar = new LinearLayout(this);
         displayToolbar.setOrientation(LinearLayout.HORIZONTAL);
@@ -309,41 +378,99 @@ public class ExperimentActivity extends Activity {
             displayToolbar.addView(btn);
         }
         displayToolbar.setTag("displayToolbar");
-        displayWrapper.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        displayColumn.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
         displayContainer = new FrameLayout(this);
         displayContainer.setBackgroundColor(thc(0xFFE8E8E8, thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242))));
         displayContainer.setLayoutParams(new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-        displayWrapper.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
-
-        displayWrapperLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 3f);
-        displayLayout.addView(displayWrapper, displayWrapperLp);
+        displayColumn.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
         dragHandle = new View(this);
         dragHandle.setBackgroundColor(thc(0xFFDDDDDD, 0xFF424242));
         dragHandle.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, dp(4)));
         setupDragHandle();
-        displayLayout.addView(dragHandle);
 
         bottomPanel = new LinearLayout(this);
         bottomPanel.setOrientation(LinearLayout.VERTICAL);
         bottomPanelLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f);
-        displayLayout.addView(bottomPanel, bottomPanelLp);
+    }
 
-        contentArea.addView(displayLayout);
+    /** Arranges the shared views for the current orientation. Portrait stacks the
+     *  display above the bottom panel (with a drag handle); landscape places the
+     *  display next to a side column holding the tabs and the bottom panel so the
+     *  display keeps as much space as possible. */
+    private void applyOrientation() {
+        contentArea.removeAllViews();
+
+        if (isLandscape) {
+            mainRow = new LinearLayout(this);
+            mainRow.setOrientation(LinearLayout.HORIZONTAL);
+            mainRow.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+            displayColumnLp = new LinearLayout.LayoutParams(0, MATCH_PARENT, 2f);
+            detachFromParent(displayColumn);
+            mainRow.addView(displayColumn, displayColumnLp);
+
+            rightCol = new LinearLayout(this);
+            rightCol.setOrientation(LinearLayout.VERTICAL);
+            rightCol.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+            LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f);
+            mainRow.addView(rightCol, rightLp);
+
+            detachFromParent(tabLayout);
+            rightCol.addView(tabLayout, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            bottomPanelLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f);
+            detachFromParent(bottomPanel);
+            rightCol.addView(bottomPanel, bottomPanelLp);
+
+            contentArea.addView(mainRow, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        } else {
+            LinearLayout displayLayout = new LinearLayout(this);
+            displayLayout.setOrientation(LinearLayout.VERTICAL);
+            displayLayout.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+
+            displayColumnLp = new LinearLayout.LayoutParams(MATCH_PARENT, 0, 3f);
+            detachFromParent(displayColumn);
+            displayLayout.addView(displayColumn, displayColumnLp);
+            detachFromParent(dragHandle);
+            displayLayout.addView(dragHandle);
+            detachFromParent(bottomPanel);
+            displayLayout.addView(bottomPanel, bottomPanelLp);
+
+            contentArea.addView(displayLayout, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+
+            // Move the tabs back under the toolbar in portrait
+            detachFromParent(tabLayout);
+            int toolbarIndex = 0;
+            for (int i = 0; i < rootLayout.getChildCount(); i++) {
+                if (rootLayout.getChildAt(i) == toolbar) { toolbarIndex = i + 1; break; }
+            }
+            rootLayout.addView(tabLayout, toolbarIndex, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        }
+
+        // Restore the panel visibility state for the currently selected tab
+        int pos = tabLayout.getSelectedTabPosition();
+        if (pos < 0) pos = 0;
+        showPanel(pos);
+        displayColumn.requestLayout();
+    }
+
+    private void detachFromParent(View v) {
+        ViewGroup parent = (ViewGroup) v.getParent();
+        if (parent != null) parent.removeView(v);
     }
 
     private void setupDragHandle() {
         final float[] startY = new float[1];
-        final int[] startDisplayWeight = new int[1];
-        final int[] startBottomWeight = new int[1];
+        final float[] startDisplayWeight = new float[1];
+        final float[] startBottomWeight = new float[1];
 
         dragHandle.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
                     startY[0] = event.getRawY();
-                    startDisplayWeight[0] = (int) displayWrapperLp.weight;
-                    startBottomWeight[0] = (int) bottomPanelLp.weight;
+                    startDisplayWeight[0] = displayColumnLp.weight;
+                    startBottomWeight[0] = bottomPanelLp.weight;
                     v.setBackgroundColor(thc(0xFF006847, 0xFF2E7D32));
                     return true;
                 case MotionEvent.ACTION_MOVE:
@@ -353,7 +480,7 @@ public class ExperimentActivity extends Activity {
                     float deltaWeight = (dy / totalHeight) * 6f;
                     float newDisplay = Math.max(0.5f, startDisplayWeight[0] + deltaWeight);
                     float newBottom = Math.max(0.5f, startBottomWeight[0] - deltaWeight);
-                    displayWrapperLp.weight = newDisplay;
+                    displayColumnLp.weight = newDisplay;
                     bottomPanelLp.weight = newBottom;
                     ((View) v.getParent()).requestLayout();
                     return true;
@@ -536,77 +663,27 @@ public class ExperimentActivity extends Activity {
         bottomPanel.addView(paramsPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
     }
 
-    private void buildFabs(ViewGroup root) {
-        fabContainer = new LinearLayout(this);
-        fabContainer.setOrientation(LinearLayout.VERTICAL);
-        fabContainer.setGravity(Gravity.END | Gravity.BOTTOM);
-        fabContainer.setPadding(0, 0, dp(16), dp(16));
-
-        layersFab = new FloatingActionButton(this);
-        layersFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_layers));
-        layersFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.secondary)));
-        layersFab.setSize(FloatingActionButton.SIZE_MINI);
-        layersFab.setContentDescription("Toggle Layers");
-        layersFab.hide();
-        LinearLayout.LayoutParams layersLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        layersLp.setMargins(0, 0, 0, dp(8));
-        layersFab.setLayoutParams(layersLp);
-        layersFab.setOnClickListener(v -> toggleLayersSheet());
-        fabContainer.addView(layersFab);
-
-        stopFab = new FloatingActionButton(this);
-        stopFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_stop));
-        stopFab.setBackgroundTintList(ColorStateList.valueOf(thc(0xFFE53935, 0xFFCF6679)));
-        stopFab.setSize(FloatingActionButton.SIZE_MINI);
-        stopFab.setContentDescription("Stop");
-        stopFab.hide();
-        LinearLayout.LayoutParams stopLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        stopLp.setMargins(0, 0, 0, dp(8));
-        stopFab.setLayoutParams(stopLp);
-        stopFab.setOnClickListener(v -> stopSimulation());
-        fabContainer.addView(stopFab);
-
-        stepFab = new FloatingActionButton(this);
-        stepFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_step));
-        stepFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.tertiary)));
-        stepFab.setSize(FloatingActionButton.SIZE_MINI);
-        stepFab.setContentDescription("Step");
-        stepFab.hide();
-        LinearLayout.LayoutParams stepLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        stepLp.setMargins(0, 0, 0, dp(8));
-        stepFab.setLayoutParams(stepLp);
-        stepFab.setOnClickListener(v -> stepSimulation());
-        fabContainer.addView(stepFab);
-
-        playPauseFab = new FloatingActionButton(this);
-        playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
-        playPauseFab.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.primary)));
-        playPauseFab.setSize(FloatingActionButton.SIZE_NORMAL);
-        playPauseFab.setContentDescription("Play/Pause");
-        playPauseFab.hide();
-        playPauseFab.setOnClickListener(v -> togglePlayPause());
-        fabContainer.addView(playPauseFab);
-
-        root.addView(fabContainer, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-    }
-
     private void showPanel(int position) {
-        displayWrapper.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
-        dragHandle.setVisibility(position == 0 ? View.VISIBLE : View.GONE);
+        boolean displayTab = position == 0;
+        if (isLandscape) {
+            // Keep the tabs reachable in the side column; only the panel itself
+            // collapses so the display can use the extra space.
+            if (rightCol != null) rightCol.setVisibility(View.VISIBLE);
+            bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
+            if (displayColumnLp != null) displayColumnLp.weight = displayTab ? 3f : 2f;
+        } else {
+            dragHandle.setVisibility(displayTab ? View.GONE : View.VISIBLE);
+            bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
+            if (displayColumnLp != null) displayColumnLp.weight = displayTab ? 1f : 3f;
+        }
+        if (bottomPanelLp != null) bottomPanelLp.weight = 1f;
         consolePanel.setVisibility(position == 1 ? View.VISIBLE : View.GONE);
         layersPanel.setVisibility(position == 2 ? View.VISIBLE : View.GONE);
         paramsPanel.setVisibility(position == 3 ? View.VISIBLE : View.GONE);
+        displayColumn.setVisibility(View.VISIBLE);
 
         if (position == 2) refreshLayerList();
-    }
-
-    private void toggleLayersSheet() {
-        int idx = tabLayout.getSelectedTabPosition();
-        if (idx == 2) {
-            tabLayout.selectTab(tabLayout.getTabAt(0));
-        } else {
-            tabLayout.selectTab(tabLayout.getTabAt(2));
-        }
+        displayColumn.requestLayout();
     }
 
     private void refreshLayerList() {
@@ -755,9 +832,8 @@ public class ExperimentActivity extends Activity {
         if (displayTabBar.getChildCount() > 1) {
             displayTabScroll.setVisibility(View.VISIBLE);
         }
-        View dt = displayWrapper.findViewWithTag("displayToolbar");
+        View dt = displayColumn.findViewWithTag("displayToolbar");
         if (dt != null) dt.setVisibility(View.VISIBLE);
-        showFabs(true);
     }
 
     private void selectDisplay(String displayName) {
@@ -783,20 +859,6 @@ public class ExperimentActivity extends Activity {
         if (activeSurface != null) {
             activeSurface.setVisibility(View.VISIBLE);
             activeSurface.invalidate();
-        }
-    }
-
-    private void showFabs(boolean show) {
-        if (show) {
-            playPauseFab.show();
-            stepFab.show();
-            stopFab.show();
-            layersFab.show();
-        } else {
-            playPauseFab.hide();
-            stepFab.hide();
-            stopFab.hide();
-            layersFab.hide();
         }
     }
 
@@ -833,21 +895,22 @@ public class ExperimentActivity extends Activity {
         tabLayout.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
         dragHandle.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
         bottomPanel.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
-        if (fabContainer != null) fabContainer.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
+        transportBar.setVisibility(isFullscreen ? View.GONE : View.VISIBLE);
         if (isFullscreen) {
             displayTabScrollVisibility = displayTabScroll.getVisibility();
             displayTabScroll.setVisibility(View.GONE);
         } else {
             displayTabScroll.setVisibility(displayTabScrollVisibility);
         }
-        displayWrapperLp.height = 0;
         if (isFullscreen) {
-            savedDisplayWeight = displayWrapperLp.weight;
-            displayWrapperLp.weight = 1f;
+            savedDisplayWeight = displayColumnLp.weight;
+            displayColumnLp.height = 0;
+            displayColumnLp.weight = 1f;
         } else {
-            displayWrapperLp.weight = savedDisplayWeight;
+            displayColumnLp.weight = savedDisplayWeight;
+            showPanel(tabLayout.getSelectedTabPosition());
         }
-        displayWrapper.requestLayout();
+        displayColumn.requestLayout();
 
         View decor = getWindow().getDecorView();
         if (isFullscreen) {
@@ -905,35 +968,42 @@ public class ExperimentActivity extends Activity {
 
     private void togglePlayPause() {
         if (!isRunning || currentController == null) return;
-        isPaused = !isPaused;
-        handler.post(() -> {
-            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this,
-                    isPaused ? R.drawable.ic_play : R.drawable.ic_pause));
-        });
         try {
-            if (pausedField != null) {
-                pausedField.setBoolean(currentController, isPaused);
+            Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+            if (!isPaused) {
+                ctrlInterface.getMethod("processPause", boolean.class).invoke(currentController, true);
+                isPaused = true;
+                setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                stepBtn.setAlpha(1f);
+                log("Paused");
+            } else {
+                ctrlInterface.getMethod("processStart", boolean.class).invoke(currentController, true);
+                isPaused = false;
+                setTransportIcon(playPauseBtn, R.drawable.ic_pause);
+                stepBtn.setAlpha(0.45f);
+                log("Resumed");
             }
-            if (lockField != null && releaseLockMethod != null && !isPaused) {
-                Object lock = lockField.get(currentController);
-                if (lock != null) releaseLockMethod.invoke(lock);
-            }
-            log("Paused=" + isPaused);
         } catch (Exception e) {
             Log.w(TAG, "Toggle pause error", e);
         }
     }
 
+    /** Runs exactly one simulation cycle while staying paused, using the
+     *  controller's synchronous step command (the old code just un-paused and
+     *  let the simulation run on, so stepping never advanced a single cycle). */
     private void stepSimulation() {
         if (!isRunning || !isPaused || currentController == null) return;
         try {
-            if (pausedField != null) pausedField.setBoolean(currentController, false);
-            if (lockField != null && releaseLockMethod != null) {
-                Object lock = lockField.get(currentController);
-                if (lock != null) releaseLockMethod.invoke(lock);
-            }
+            Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+            ctrlInterface.getMethod("processStep", int.class, boolean.class)
+                    .invoke(currentController, 1, true);
             log("Step executed");
         } catch (Exception e) { Log.w(TAG, "Step error", e); }
+    }
+
+    private void setTransportIcon(ImageView btn, int res) {
+        btn.setImageResource(res);
+        DrawableCompat.setTint(btn.getDrawable(), Color.WHITE);
     }
 
     private void stopSimulation() {
@@ -945,6 +1015,9 @@ public class ExperimentActivity extends Activity {
         try {
             if (currentController != null) {
                 Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                // Resume a paused experiment first so close() is not issued while
+                // the execution thread is blocked on the pause lock.
+                ctrlInterface.getMethod("processStart", boolean.class).invoke(currentController, false);
                 ctrlInterface.getMethod("close").invoke(currentController);
                 // The desktop path removes the controller from the static GAMA.controllers
                 // list (see GAMA.closeController). Calling close() directly leaks the whole
@@ -961,7 +1034,8 @@ public class ExperimentActivity extends Activity {
         handler.post(() -> {
             toolbarTitle.setText(modelName + " (stopped)");
             cycleText.setText("Stopped");
-            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
+            setTransportIcon(playPauseBtn, R.drawable.ic_play);
+            stepBtn.setAlpha(0.45f);
         });
     }
 
@@ -1442,7 +1516,8 @@ public class ExperimentActivity extends Activity {
                         handler.post(() -> {
                             toolbarTitle.setText(modelName + " (finished)");
                             cycleText.setText("Completed");
-                            playPauseFab.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_play));
+                            setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                            stepBtn.setAlpha(0.45f);
                         });
                         isRunning = false;
                         return;
@@ -1502,7 +1577,7 @@ public class ExperimentActivity extends Activity {
             if (pop == null) {
                 try { pop = findMicroPopulationReflect(sim, "ant", 0); } catch (Exception e) {}
             }
-            if (pop == null) { Log.i(TAG, "DIAG: ant population not found"); return; }
+            if (pop == null) { Log.i(TAG, "DIAG: ant population not found (cycle=" + cycle + ")"); return; }
             java.lang.reflect.Method sizeM = pop.getClass().getMethod("size");
             int size = (int) sizeM.invoke(pop);
             if (size == 0) { Log.i(TAG, "DIAG: ant population empty"); return; }
@@ -1606,14 +1681,10 @@ public class ExperimentActivity extends Activity {
         try {
             Class<?> ctrlClass = controller.getClass();
             Class<?> absClass = ctrlClass.getSuperclass();
-            try { pausedField = absClass.getDeclaredField("paused"); pausedField.setAccessible(true); } catch (Exception e) {}
             try { aliveField = absClass.getDeclaredField("experimentAlive"); aliveField.setAccessible(true); } catch (Exception e) {}
             try { scopeField = absClass.getDeclaredField("scope"); scopeField.setAccessible(true); } catch (Exception e) {}
-            try { lockField = absClass.getDeclaredField("lock"); lockField.setAccessible(true); } catch (Exception e) {}
             try { getClockMethod = Class.forName("gama.api.runtime.scope.IScope").getMethod("getClock"); } catch (Exception e) {}
             try { getCycleMethod = Class.forName("gama.core.simulation.SimulationClock").getMethod("getCycle"); } catch (Exception e) {}
-            try { Object lockObj = lockField != null ? lockField.get(controller) : null;
-                if (lockObj != null) releaseLockMethod = lockObj.getClass().getMethod("release"); } catch (Exception e) {}
         } catch (Exception e) { Log.e(TAG, "Cache fields error", e); }
     }
 
