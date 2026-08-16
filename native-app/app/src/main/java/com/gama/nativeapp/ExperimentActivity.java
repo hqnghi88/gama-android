@@ -1041,7 +1041,7 @@ public class ExperimentActivity extends Activity {
      *  and landscape since the button lives in the shared toolbar content. */
     private void showMenu(View anchor) {
         PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, panelsOpen ? "Hide panels" : "Show panels");
+        menu.getMenu().add(0, 1, 0, panelsOpen ? "Show panels" : "Hide panels");
         menu.getMenu().add(0, 2, 1, isDarkTheme ? "Light theme" : "Dark theme");
         menu.getMenu().add(0, 3, 2, isFullscreen ? "Exit fullscreen" : "Fullscreen");
         menu.getMenu().add(0, 4, 3, "Back to models");
