@@ -632,7 +632,11 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                     } else {
                         float dx = x - lastTouchX;
                         float dy = y - lastTouchY;
-                        viewPort.offset(-(int) dx, -(int) dy);
+                        if (output != null && output.getData().is3D()) {
+                            androidGraphics.panCamera3D(dx, dy);
+                        } else {
+                            viewPort.offset(-(int) dx, -(int) dy);
+                        }
                         invalidateSafe();
                     }
                 }
@@ -940,7 +944,11 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         if (!isLocked) {
             float dx = x - mousePosition.x;
             float dy = y - mousePosition.y;
-            viewPort.offset(-(int) dx, -(int) dy);
+            if (output != null && output.getData().is3D()) {
+                androidGraphics.panCamera3D(dx, dy);
+            } else {
+                viewPort.offset(-(int) dx, -(int) dy);
+            }
             invalidateSafe();
         }
         mousePosition.set(x, y);

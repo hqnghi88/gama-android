@@ -389,6 +389,7 @@ public class AndroidScene3D {
         if (Float.isNaN(minX) || Float.isNaN(minY) || Float.isNaN(maxX) || Float.isNaN(maxY)
                 || !(maxX > minX) || !(maxY > minY)) {
             frameBoundsSet = false;
+            resetPan();
             return;
         }
         frameMinX = minX;
@@ -403,6 +404,23 @@ public class AndroidScene3D {
     private float rotYawDeg = 0f;
     private float rotPitchDeg = 0f;
 
+    // 3D pan: the camera target (and camera) are shifted in the view plane by this
+    // world-space offset each frame, so a single-finger drag pans the scene instead
+    // of offsetting the blit viewport (which cannot reveal more of the world).
+    private float panX = 0f, panY = 0f;
+    private float panScaleX = 0f, panScaleY = 0f;
+
+    /** Pans the 3D camera so screen content follows the finger. dx/dy are in surface pixels. */
+    public void panBy(float dxPx, float dyPx) {
+        panX -= dxPx * panScaleX;
+        panY += dyPx * panScaleY;
+    }
+
+    private void resetPan() {
+        panX = 0f;
+        panY = 0f;
+    }
+
     public void rotateBy(float dyawDeg, float dpitchDeg) {
         rotYawDeg += dyawDeg;
         // rotPitchDeg is added to the scene's base camera elevation (which is
@@ -416,6 +434,7 @@ public class AndroidScene3D {
     public void resetRotation() {
         rotYawDeg = 0f;
         rotPitchDeg = 0f;
+        resetPan();
     }
 
     public void render(Canvas canvas, double camX, double camY, double camZ,
@@ -665,6 +684,22 @@ public class AndroidScene3D {
         }
 
         lookAt(view, camX, camY, camZ, tarX, tarY, tarZ, 0, 0, 1);
+
+        // Screen-space pan scale: world units per surface pixel at the target depth.
+        panScaleX = (float) (2 * dist * Math.tan(halfH) / viewW);
+        panScaleY = (float) (2 * dist * Math.tan(halfV) / viewH);
+        if (panX != 0f || panY != 0f) {
+            // Shift target and camera together along the view-plane right/up axes,
+            // so the orientation is unchanged but the framed region moves.
+            float rx = view[0], ry = view[4], rz = view[8];
+            float ux = view[1], uy = view[5], uz = view[9];
+            double ox = rx * panX + ux * panY;
+            double oy = ry * panX + uy * panY;
+            double oz = rz * panX + uz * panY;
+            tarX += ox; tarY += oy; tarZ += oz;
+            camX += ox; camY += oy; camZ += oz;
+        }
+
         double near = Math.max(dist * 0.001, 0.01);
         double far = Math.max(dist + 2 * r, 2 * dist);
         perspective(proj, Math.toRadians(fovy), (double) rw / rh, near, far);

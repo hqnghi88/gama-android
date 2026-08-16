@@ -118,6 +118,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         scene3d.rotateBy(dyawDeg, dpitchDeg);
     }
 
+    void panCamera3D(float dxPx, float dyPx) {
+        scene3d.panBy(dxPx, dyPx);
+    }
+
     void resetCamera3D() {
         scene3d.resetRotation();
     }
