@@ -103,6 +103,11 @@ public class ExperimentActivity extends Activity {
     private LinearLayout.LayoutParams bottomPanelLp;
     private boolean isLandscape = false;
 
+    // Landscape side panel (tabs + bottom panel). Collapsed by default so the
+    // display fills the width; a "☰ Panels" button in the display toolbar toggles it.
+    private boolean sidePanelOpen = false;
+    private TextView sidePanelBtn;
+
     // Fullscreen
     private boolean isFullscreen = false;
     // The display/console split ratio before entering fullscreen, restored on exit
@@ -364,7 +369,7 @@ public class ExperimentActivity extends Activity {
         displayToolbar.setVisibility(View.GONE);
 
         String[][] tools = {
-            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
+            {"☰ Panels", "☰"}, {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
         };
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
@@ -375,6 +380,7 @@ public class ExperimentActivity extends Activity {
             btn.setGravity(Gravity.CENTER);
             btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
             if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
+            if ("☰".equals(tool[1])) sidePanelBtn = btn;
             displayToolbar.addView(btn);
         }
         displayToolbar.setTag("displayToolbar");
@@ -666,11 +672,16 @@ public class ExperimentActivity extends Activity {
     private void showPanel(int position) {
         boolean displayTab = position == 0;
         if (isLandscape) {
-            // Keep the tabs reachable in the side column; only the panel itself
-            // collapses so the display can use the extra space.
-            if (rightCol != null) rightCol.setVisibility(View.VISIBLE);
+            // Collapsible side column: the display fills the whole width on the
+            // Display tab unless the user opened the side panel, and always shares
+            // the row with a panel tab (Console/Layers/Params) so it stays usable.
+            boolean openPanel = !displayTab || sidePanelOpen;
+            if (rightCol != null) rightCol.setVisibility(openPanel ? View.VISIBLE : View.GONE);
             bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
-            if (displayColumnLp != null) displayColumnLp.weight = displayTab ? 3f : 2f;
+            if (displayColumnLp != null) displayColumnLp.weight = displayTab ? (openPanel ? 3f : 1f) : 2f;
+            if (sidePanelBtn != null) {
+                sidePanelBtn.setTextColor(openPanel ? thc(0xFFFFFFFF, 0xFF006847) : thc(0xFFAAAAAA, 0xFF999999));
+            }
         } else {
             dragHandle.setVisibility(displayTab ? View.GONE : View.VISIBLE);
             bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
@@ -684,6 +695,11 @@ public class ExperimentActivity extends Activity {
 
         if (position == 2) refreshLayerList();
         displayColumn.requestLayout();
+    }
+
+    private void toggleSidePanel() {
+        sidePanelOpen = !sidePanelOpen;
+        showPanel(tabLayout.getSelectedTabPosition());
     }
 
     private void refreshLayerList() {
@@ -865,6 +881,10 @@ public class ExperimentActivity extends Activity {
     private void handleDisplayAction(String action) {
         if ("\u26F6".equals(action)) {
             toggleFullscreen();
+            return;
+        }
+        if ("☰".equals(action)) {
+            toggleSidePanel();
             return;
         }
         View target = getActiveDisplayView();
