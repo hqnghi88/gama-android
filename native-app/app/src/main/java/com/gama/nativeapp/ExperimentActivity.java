@@ -84,6 +84,7 @@ public class ExperimentActivity extends Activity {
     private ImageView playPauseBtn;
     private ImageView stepBtn;
     private ImageView stopBtn;
+    private int playBtnColor, stepBtnColor, stopBtnColor;
 
     // Display tabs
     private HorizontalScrollView displayTabScroll;
@@ -313,12 +314,15 @@ public class ExperimentActivity extends Activity {
         transportBar.setPadding(dp(6), dp(2), dp(6), dp(2));
         transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
 
+        playBtnColor = thc(0xFF006847, 0xFF2E7D32);
         playPauseBtn = makeTransportButton(R.drawable.ic_play, "Play/Pause",
-                thc(0xFF006847, 0xFF2E7D32), v -> togglePlayPause());
+                playBtnColor, v -> togglePlayPause());
+        stepBtnColor = thc(0xFFFF8F00, 0xFFE65100);
         stepBtn = makeTransportButton(R.drawable.ic_step, "Step",
-                thc(0xFFFF8F00, 0xFFE65100), v -> stepSimulation());
+                stepBtnColor, v -> stepSimulation());
+        stopBtnColor = thc(0xFFE53935, 0xFFCF6679);
         stopBtn = makeTransportButton(R.drawable.ic_stop, "Stop",
-                thc(0xFFE53935, 0xFFCF6679), v -> stopSimulation());
+                stopBtnColor, v -> stopSimulation());
         transportBar.addView(playPauseBtn);
         transportBar.addView(stepBtn);
         transportBar.addView(stopBtn);
@@ -364,7 +368,7 @@ public class ExperimentActivity extends Activity {
 
         displayTabScroll = new HorizontalScrollView(this);
         displayTabScroll.setHorizontalScrollBarEnabled(false);
-        displayTabScroll.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
+        displayTabScroll.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         displayTabScroll.setVisibility(View.GONE);
         displayTabBar = new LinearLayout(this);
         displayTabBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -374,11 +378,14 @@ public class ExperimentActivity extends Activity {
 
         LinearLayout displayToolbar = new LinearLayout(this);
         displayToolbar.setOrientation(LinearLayout.HORIZONTAL);
-        displayToolbar.setPadding(dp(4), dp(2), dp(4), dp(2));
-        displayToolbar.setBackgroundColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
-        displayToolbar.setGravity(Gravity.CENTER);
+        displayToolbar.setGravity(Gravity.CENTER_VERTICAL);
+        displayToolbar.setPadding(dp(8), 0, dp(8), 0);
+        displayToolbar.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         displayToolbar.setVisibility(View.GONE);
         this.displayToolbar = displayToolbar;
+
+        View toolbarSpacer = new View(this);
+        displayToolbar.addView(toolbarSpacer, new LinearLayout.LayoutParams(0, 0, 1f));
 
         String[][] tools = {
             {"☰ Panels", "☰"}, {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
@@ -386,7 +393,7 @@ public class ExperimentActivity extends Activity {
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
             btn.setText(" " + tool[0] + " ");
-            btn.setTextColor(thc(0xFFAAAAAA, 0xFF999999));
+            btn.setTextColor(thc(0xFF555555, 0xFFAAAAAA));
             btn.setTextSize(11);
             btn.setPadding(dp(6), dp(4), dp(6), dp(4));
             btn.setGravity(Gravity.CENTER);
@@ -424,20 +431,30 @@ public class ExperimentActivity extends Activity {
 
         if (isLandscape) {
             // Restructure the display column first: the transport bar now lives in
-            // the left rail, so the column only wraps the display chrome + surface.
+            // the left sidebar, so the column only wraps a header row (display tabs
+            // left, action buttons right) above the surface.
             displayColumn.removeAllViews();
             displayColumn.setOrientation(LinearLayout.HORIZONTAL);
 
+            LinearLayout displayHeader = new LinearLayout(this);
+            displayHeader.setOrientation(LinearLayout.HORIZONTAL);
+            displayHeader.setGravity(Gravity.CENTER_VERTICAL);
+            displayHeader.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+            displayHeader.addView(displayTabScroll, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+            displayHeader.addView(displayToolbar, new LinearLayout.LayoutParams(WRAP_CONTENT, dp(44)));
+
             displayContent = new LinearLayout(this);
             displayContent.setOrientation(LinearLayout.VERTICAL);
-            displayContent.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-            displayContent.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayContent.addView(displayHeader, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            View displayDivider = new View(this);
+            displayDivider.setBackgroundColor(thc(0xFFE0E0E0, 0xFF333333));
+            displayContent.addView(displayDivider, new LinearLayout.LayoutParams(MATCH_PARENT, dp(1)));
             displayContent.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
             displayColumn.addView(displayContent, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
 
-            // Restructure the root into a horizontal layout: a narrow left rail
-            // holds the toolbar (back/title/cycles/theme) above the vertical
-            // transport bar, and the content frame takes the remaining space.
+            // Restructure the root into a horizontal layout: a clean green sidebar
+            // holds the toolbar header (back/title/cycles/theme) with the transport
+            // controls centered below it; the content frame takes the rest.
             while (rootLayout.getChildCount() > 0) rootLayout.removeViewAt(0);
             rootLayout.setOrientation(LinearLayout.HORIZONTAL);
 
@@ -445,9 +462,24 @@ public class ExperimentActivity extends Activity {
             leftRail.setOrientation(LinearLayout.VERTICAL);
             leftRail.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
             leftRail.addView(toolbar, new LinearLayout.LayoutParams(dp(180), WRAP_CONTENT));
+
+            View railDivider = new View(this);
+            railDivider.setBackgroundColor(thc(0x33FFFFFF, 0x33FFFFFF));
+            leftRail.addView(railDivider, new LinearLayout.LayoutParams(MATCH_PARENT, dp(1)));
+
+            View railTopSpace = new View(this);
+            leftRail.addView(railTopSpace, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
             reorientTransportBar(true);
             leftRail.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-            rootLayout.addView(leftRail, new LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT));
+
+            View railBottomSpace = new View(this);
+            leftRail.addView(railBottomSpace, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
+            rootLayout.addView(leftRail, new LinearLayout.LayoutParams(dp(180), MATCH_PARENT));
+            View sideDivider = new View(this);
+            sideDivider.setBackgroundColor(thc(0xFFDDDDDD, 0xFF000000));
+            rootLayout.addView(sideDivider, new LinearLayout.LayoutParams(dp(1), MATCH_PARENT));
             rootLayout.addView(contentFrame, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
 
             mainRow = new LinearLayout(this);
@@ -487,6 +519,9 @@ public class ExperimentActivity extends Activity {
             displayColumn.setOrientation(LinearLayout.VERTICAL);
             if (displayContent != null) displayContent.removeAllViews();
             detachFromParent(transportBar);
+            detachFromParent(displayTabScroll);
+            detachFromParent(displayToolbar);
+            detachFromParent(displayContainer);
             reorientTransportBar(false);
             displayColumn.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayColumn.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
@@ -516,15 +551,44 @@ public class ExperimentActivity extends Activity {
     }
 
     /** Flips the transport bar between the horizontal (top, portrait) and the
-     *  vertical (left edge, landscape) forms. The hint and spacer only make sense
-     *  in the horizontal form. */
+     *  vertical (left sidebar, landscape) forms. In the vertical form the buttons
+     *  become light circles with colored icons so they stand out on the green
+     *  sidebar; the hint and spacer only make sense in the horizontal form. */
     private void reorientTransportBar(boolean vertical) {
         transportBar.setOrientation(vertical ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         transportBar.setGravity(vertical ? Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
-        transportBar.setPadding(dp(vertical ? 2 : 6), dp(vertical ? 6 : 2),
-                dp(vertical ? 2 : 6), dp(vertical ? 6 : 2));
+        if (vertical) {
+            transportBar.setBackgroundColor(Color.TRANSPARENT);
+            transportBar.setPadding(dp(6), dp(8), dp(6), dp(8));
+        } else {
+            transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
+            transportBar.setPadding(dp(6), dp(2), dp(6), dp(2));
+        }
+        styleTransportButton(playPauseBtn, playBtnColor, vertical);
+        styleTransportButton(stepBtn, stepBtnColor, vertical);
+        styleTransportButton(stopBtn, stopBtnColor, vertical);
         if (transportSpacer != null) transportSpacer.setVisibility(vertical ? View.GONE : View.VISIBLE);
         if (transportHint != null) transportHint.setVisibility(vertical ? View.GONE : View.VISIBLE);
+    }
+
+    private void styleTransportButton(ImageView b, int color, boolean vertical) {
+        if (b == null) return;
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        if (vertical) {
+            bg.setColor(thc(0xFFFFFFFF, 0xFF37474F));
+            DrawableCompat.setTint(b.getDrawable(), color);
+        } else {
+            bg.setColor(color);
+            DrawableCompat.setTint(b.getDrawable(), Color.WHITE);
+        }
+        b.setBackground(bg);
+        LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
+        if (lp != null) {
+            lp.setMargins(dp(4), dp(vertical ? 12 : 2), dp(4), dp(vertical ? 12 : 2));
+            b.setLayoutParams(lp);
+        }
     }
 
     private void detachFromParent(View v) {
@@ -746,7 +810,7 @@ public class ExperimentActivity extends Activity {
             bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
             if (displayColumnLp != null) displayColumnLp.weight = displayTab ? (openPanel ? 3f : 1f) : 2f;
             if (sidePanelBtn != null) {
-                sidePanelBtn.setTextColor(openPanel ? thc(0xFFFFFFFF, 0xFF006847) : thc(0xFFAAAAAA, 0xFF999999));
+                sidePanelBtn.setTextColor(openPanel ? thc(0xFF006847, 0xFF80CBC4) : thc(0xFF555555, 0xFFAAAAAA));
             }
         } else {
             dragHandle.setVisibility(displayTab ? View.GONE : View.VISIBLE);
