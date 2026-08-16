@@ -67,6 +67,7 @@ public class ExperimentActivity extends Activity {
     // UI components
     private MaterialToolbar toolbar;
     private TextView toolbarTitle;
+    private LinearLayout toolbarContent;
     private TabLayout tabLayout;
     private FrameLayout displayContainer;
     private LinearLayout consolePanel;
@@ -252,6 +253,7 @@ public class ExperimentActivity extends Activity {
         toolbarContent.setOrientation(LinearLayout.HORIZONTAL);
         toolbarContent.setGravity(Gravity.CENTER_VERTICAL);
         toolbarContent.setPadding(dp(4), 0, dp(8), 0);
+        this.toolbarContent = toolbarContent;
 
         TextView backBtn = new TextView(this);
         backBtn.setText("\u2190 Back");
@@ -421,18 +423,17 @@ public class ExperimentActivity extends Activity {
     }
 
     /** Arranges the shared views for the current orientation. Portrait stacks the
-     *  display above the bottom panel (with a drag handle); landscape places the
-     *  display next to a side column holding the tabs and the bottom panel so the
-     *  display keeps as much space as possible. In landscape the toolbar and the
-     *  transport bar (play/step/stop) are moved into a narrow rail on the left
-     *  edge so the display can use the whole height. */
+     *  display above the bottom panel (with a drag handle); landscape uses an
+     *  IDE-style layout: the green toolbar stays full-width at the top with the
+     *  transport controls (play/step/stop) on its right, and the display surface
+     *  sits next to a side column holding the tabs and the bottom panel so it can
+     *  use the whole height. */
     private void applyOrientation() {
         contentArea.removeAllViews();
 
         if (isLandscape) {
-            // Restructure the display column first: the transport bar now lives in
-            // the left sidebar, so the column only wraps a header row (display tabs
-            // left, action buttons right) above the surface.
+            // Restructure the display column into a viewport: a header row (display
+            // tabs left, action buttons right) above the surface.
             displayColumn.removeAllViews();
             displayColumn.setOrientation(LinearLayout.HORIZONTAL);
 
@@ -452,35 +453,18 @@ public class ExperimentActivity extends Activity {
             displayContent.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
             displayColumn.addView(displayContent, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
 
-            // Restructure the root into a horizontal layout: a clean green sidebar
-            // holds the toolbar header (back/title/cycles/theme) with the transport
-            // controls centered below it; the content frame takes the rest.
+            // Keep the root vertical: the full-width toolbar stays on top and the
+            // transport bar (play/step/stop) is appended to its right end.
             while (rootLayout.getChildCount() > 0) rootLayout.removeViewAt(0);
-            rootLayout.setOrientation(LinearLayout.HORIZONTAL);
+            rootLayout.setOrientation(LinearLayout.VERTICAL);
+            rootLayout.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            rootLayout.addView(contentFrame, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
-            LinearLayout leftRail = new LinearLayout(this);
-            leftRail.setOrientation(LinearLayout.VERTICAL);
-            leftRail.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
-            leftRail.addView(toolbar, new LinearLayout.LayoutParams(dp(180), WRAP_CONTENT));
-
-            View railDivider = new View(this);
-            railDivider.setBackgroundColor(thc(0x33FFFFFF, 0x33FFFFFF));
-            leftRail.addView(railDivider, new LinearLayout.LayoutParams(MATCH_PARENT, dp(1)));
-
-            View railTopSpace = new View(this);
-            leftRail.addView(railTopSpace, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
-
-            reorientTransportBar(true);
-            leftRail.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
-
-            View railBottomSpace = new View(this);
-            leftRail.addView(railBottomSpace, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
-
-            rootLayout.addView(leftRail, new LinearLayout.LayoutParams(dp(180), MATCH_PARENT));
-            View sideDivider = new View(this);
-            sideDivider.setBackgroundColor(thc(0xFFDDDDDD, 0xFF000000));
-            rootLayout.addView(sideDivider, new LinearLayout.LayoutParams(dp(1), MATCH_PARENT));
-            rootLayout.addView(contentFrame, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
+            detachFromParent(transportBar);
+            reorientTransportBar(false, true);
+            toolbarContent.addView(transportBar, new LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT));
+            toolbarContent.getLayoutParams().width = ViewGroup.LayoutParams.MATCH_PARENT;
+            toolbarContent.requestLayout();
 
             mainRow = new LinearLayout(this);
             mainRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -522,7 +506,7 @@ public class ExperimentActivity extends Activity {
             detachFromParent(displayTabScroll);
             detachFromParent(displayToolbar);
             detachFromParent(displayContainer);
-            reorientTransportBar(false);
+            reorientTransportBar(false, false);
             displayColumn.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayColumn.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayColumn.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
@@ -550,33 +534,38 @@ public class ExperimentActivity extends Activity {
         displayColumn.requestLayout();
     }
 
-    /** Flips the transport bar between the horizontal (top, portrait) and the
-     *  vertical (left sidebar, landscape) forms. In the vertical form the buttons
-     *  become light circles with colored icons so they stand out on the green
-     *  sidebar; the hint and spacer only make sense in the horizontal form. */
-    private void reorientTransportBar(boolean vertical) {
+    /** Styles the transport bar for its current host. In portrait it is a flat
+     *  strip above the display with colored circles; in landscape it is embedded
+     *  in the green toolbar as light circles with colored icons (and in a rail it
+     *  is vertical). The hint and spacer only make sense in the horizontal strip
+     *  form. */
+    private void reorientTransportBar(boolean vertical, boolean inToolbar) {
         transportBar.setOrientation(vertical ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         transportBar.setGravity(vertical ? Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
-        if (vertical) {
+        if (vertical || inToolbar) {
             transportBar.setBackgroundColor(Color.TRANSPARENT);
-            transportBar.setPadding(dp(6), dp(8), dp(6), dp(8));
+            transportBar.setPadding(dp(4), dp(2), dp(4), dp(2));
         } else {
             transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
             transportBar.setPadding(dp(6), dp(2), dp(6), dp(2));
         }
-        styleTransportButton(playPauseBtn, playBtnColor, vertical);
-        styleTransportButton(stepBtn, stepBtnColor, vertical);
-        styleTransportButton(stopBtn, stopBtnColor, vertical);
-        if (transportSpacer != null) transportSpacer.setVisibility(vertical ? View.GONE : View.VISIBLE);
-        if (transportHint != null) transportHint.setVisibility(vertical ? View.GONE : View.VISIBLE);
+        int marginV = vertical ? 12 : (inToolbar ? 0 : 2);
+        styleTransportButton(playPauseBtn, playBtnColor, vertical || inToolbar, marginV);
+        styleTransportButton(stepBtn, stepBtnColor, vertical || inToolbar, marginV);
+        styleTransportButton(stopBtn, stopBtnColor, vertical || inToolbar, marginV);
+        if (transportSpacer != null) transportSpacer.setVisibility(vertical || inToolbar ? View.GONE : View.VISIBLE);
+        if (transportHint != null) transportHint.setVisibility(vertical || inToolbar ? View.GONE : View.VISIBLE);
     }
 
-    private void styleTransportButton(ImageView b, int color, boolean vertical) {
+    /** Applies the light/dark circle style to one transport button. Light circles
+     *  (used on the green toolbar) carry a tinted icon; colored circles (the
+     *  portrait strip) carry a white icon. */
+    private void styleTransportButton(ImageView b, int color, boolean light, int marginV) {
         if (b == null) return;
         android.graphics.drawable.GradientDrawable bg =
                 new android.graphics.drawable.GradientDrawable();
         bg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        if (vertical) {
+        if (light) {
             bg.setColor(thc(0xFFFFFFFF, 0xFF37474F));
             DrawableCompat.setTint(b.getDrawable(), color);
         } else {
@@ -586,7 +575,7 @@ public class ExperimentActivity extends Activity {
         b.setBackground(bg);
         LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) b.getLayoutParams();
         if (lp != null) {
-            lp.setMargins(dp(4), dp(vertical ? 12 : 2), dp(4), dp(vertical ? 12 : 2));
+            lp.setMargins(dp(4), dp(marginV), dp(4), dp(marginV));
             b.setLayoutParams(lp);
         }
     }
