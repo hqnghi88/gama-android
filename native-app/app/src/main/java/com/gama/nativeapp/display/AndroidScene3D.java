@@ -393,6 +393,35 @@ public class AndroidScene3D {
         zoomDolly = 1.0;
     }
 
+    // GAMA world axes (the display's axes facet): three coloured lines along the
+    // world box from its min corner (X red, Y green, Z blue) with end labels,
+    // drawn into the scene every frame when enabled.
+    private boolean drawAxes = false;
+
+    public void setAxesEnabled(boolean on) {
+        drawAxes = on;
+    }
+
+    /**
+     * Emits the GAMA world axes into the scene: one line per axis along the
+     * world box from its min corner (X red, Y green, Z blue) plus a label at
+     * each far end. Uses the frozen frame bounds so the axes always span the
+     * framed world even while agents move, and runs after the bounds/fit logic
+     * so the lines never perturb the camera framing.
+     */
+    private void addAxesPrims(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
+        if (!drawAxes) return;
+        float dx = Math.max((maxX - minX) * 0.03f, 1e-3f);
+        float dy = Math.max((maxY - minY) * 0.03f, 1e-3f);
+        float dz = Math.max((maxZ - minZ) * 0.03f, 1e-3f);
+        addLine(new float[]{minX, minY, minZ, maxX, minY, minZ}, 0xFFFF0000, 3f);
+        addText(maxX + dx, minY, minZ, "x", 0xFFFF0000, 22f, 0f, 1f);
+        addLine(new float[]{minX, minY, minZ, minX, maxY, minZ}, 0xFF00B800, 3f);
+        addText(minX, maxY + dy, minZ, "y", 0xFF00B800, 22f, 0f, 1f);
+        addLine(new float[]{minX, minY, minZ, minX, minY, maxZ}, 0xFF0070FF, 3f);
+        addText(minX, minY, maxZ + dz, "z", 0xFF0070FF, 22f, 0f, 1f);
+    }
+
     // Frozen camera frame: when set, the camera always frames exactly this world
     // rectangle (in model units) instead of the live union of all prims. Agent
     // prims that leave the world (e.g. ants foraging past the border) no longer
@@ -761,6 +790,8 @@ public class AndroidScene3D {
         frameCanvas.drawColor(0, PorterDuff.Mode.CLEAR);
 
         if (sx == null || sx.length < 256) { sx = new float[256]; sy = new float[256]; }
+
+        addAxesPrims(minX, minY, minZ, maxX, maxY, maxZ);
 
         List<Prim> visible = visibleBuf;
         visible.clear();

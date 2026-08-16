@@ -54,6 +54,7 @@ import gama.api.ui.layers.IMeshColorProvider;
 import gama.gaml.statements.draw.MeshDrawingAttributes;
 import gama.gaml.statements.draw.ShapeDrawingAttributes;
 import gama.gaml.statements.draw.TextDrawingAttributes;
+import gama.core.outputs.LayeredDisplayOutput;
 
 public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
@@ -1842,6 +1843,20 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             }
             scene3d.setAmbientLight(ambientARGB);
             scene3d.setDirectionalLight(ldx, ldy, ldz, lightRGB);
+            // The display's axes/draw_env facet maps onto isDrawEnv() in this
+            // build, whose default comes from a preference (CORE_DRAW_ENV). Only
+            // honour it when the model explicitly wrote one of the two facets,
+            // otherwise every 3D display would suddenly show the world axes.
+            boolean axesOn = false;
+            try {
+                LayeredDisplayOutput out = getSurface() instanceof AndroidDisplaySurface
+                        ? ((AndroidDisplaySurface) getSurface()).getOutput() : null;
+                if (out != null && (out.hasFacet("axes") || out.hasFacet("draw_env"))) {
+                    axesOn = data.isDrawEnv();
+                }
+            } catch (Throwable ignored) {
+            }
+            scene3d.setAxesEnabled(axesOn);
 
             IPoint camPos = null, camTarget = null;
             Double camLens = null;
