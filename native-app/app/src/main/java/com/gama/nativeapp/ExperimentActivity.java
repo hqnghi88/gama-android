@@ -96,6 +96,12 @@ public class ExperimentActivity extends Activity {
     private LinearLayout.LayoutParams displayColumnLp;
     private LinearLayout mainRow;
     private LinearLayout rightCol;
+    // In landscape the transport bar is moved to the left edge of the display
+    // column and the remaining display chrome sits in this inner column.
+    private LinearLayout displayContent;
+    private LinearLayout displayToolbar;
+    private View transportSpacer;
+    private TextView transportHint;
 
     // Drag handle for resizing (portrait only)
     private View dragHandle;
@@ -317,6 +323,7 @@ public class ExperimentActivity extends Activity {
         View spacer = new View(this);
         spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 0, 1f));
         transportBar.addView(spacer);
+        transportSpacer = spacer;
 
         TextView hint = new TextView(this);
         hint.setText("1 finger: pan  |  2 fingers: rotate  |  pinch: zoom");
@@ -324,6 +331,7 @@ public class ExperimentActivity extends Activity {
         hint.setTextColor(thc(0xFF888888, 0xFF777777));
         hint.setPadding(dp(4), 0, dp(4), 0);
         transportBar.addView(hint);
+        transportHint = hint;
     }
 
     private ImageView makeTransportButton(int drawableRes, String desc, int bgColor,
@@ -367,6 +375,7 @@ public class ExperimentActivity extends Activity {
         displayToolbar.setBackgroundColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
         displayToolbar.setGravity(Gravity.CENTER);
         displayToolbar.setVisibility(View.GONE);
+        this.displayToolbar = displayToolbar;
 
         String[][] tools = {
             {"☰ Panels", "☰"}, {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
@@ -404,11 +413,28 @@ public class ExperimentActivity extends Activity {
     /** Arranges the shared views for the current orientation. Portrait stacks the
      *  display above the bottom panel (with a drag handle); landscape places the
      *  display next to a side column holding the tabs and the bottom panel so the
-     *  display keeps as much space as possible. */
+     *  display keeps as much space as possible. In landscape the transport bar
+     *  (play/step/stop) is moved to the left edge of the display. */
     private void applyOrientation() {
         contentArea.removeAllViews();
 
         if (isLandscape) {
+            // Restructure the display column: a vertical transport bar on the left
+            // edge, and the remaining display chrome (tabs, toolbar, surface) in an
+            // inner column next to it.
+            displayColumn.removeAllViews();
+            displayColumn.setOrientation(LinearLayout.HORIZONTAL);
+
+            displayContent = new LinearLayout(this);
+            displayContent.setOrientation(LinearLayout.VERTICAL);
+            displayContent.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayContent.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayContent.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
+            reorientTransportBar(true);
+            displayColumn.addView(transportBar, new LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT));
+            displayColumn.addView(displayContent, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
+
             mainRow = new LinearLayout(this);
             mainRow.setOrientation(LinearLayout.HORIZONTAL);
             mainRow.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
@@ -431,6 +457,17 @@ public class ExperimentActivity extends Activity {
 
             contentArea.addView(mainRow, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         } else {
+            // Restore the portrait structure: horizontal transport bar on top of
+            // the stacked display chrome.
+            displayColumn.removeAllViews();
+            displayColumn.setOrientation(LinearLayout.VERTICAL);
+            if (displayContent != null) displayContent.removeAllViews();
+            reorientTransportBar(false);
+            displayColumn.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayColumn.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayColumn.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            displayColumn.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
             LinearLayout displayLayout = new LinearLayout(this);
             displayLayout.setOrientation(LinearLayout.VERTICAL);
             displayLayout.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
@@ -459,6 +496,18 @@ public class ExperimentActivity extends Activity {
         if (pos < 0) pos = 0;
         showPanel(pos);
         displayColumn.requestLayout();
+    }
+
+    /** Flips the transport bar between the horizontal (top, portrait) and the
+     *  vertical (left edge, landscape) forms. The hint and spacer only make sense
+     *  in the horizontal form. */
+    private void reorientTransportBar(boolean vertical) {
+        transportBar.setOrientation(vertical ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        transportBar.setGravity(vertical ? Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
+        transportBar.setPadding(dp(vertical ? 2 : 6), dp(vertical ? 6 : 2),
+                dp(vertical ? 2 : 6), dp(vertical ? 6 : 2));
+        if (transportSpacer != null) transportSpacer.setVisibility(vertical ? View.GONE : View.VISIBLE);
+        if (transportHint != null) transportHint.setVisibility(vertical ? View.GONE : View.VISIBLE);
     }
 
     private void detachFromParent(View v) {
