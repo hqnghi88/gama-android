@@ -77,6 +77,7 @@ public class ExperimentActivity extends Activity {
     private TextView cycleText;
     private LinearLayout rootLayout;
     private ViewGroup contentArea;
+    private FrameLayout contentFrame;
 
     // Transport control bar (play/pause, step, stop) replacing the floating FABs
     private LinearLayout transportBar;
@@ -199,7 +200,7 @@ public class ExperimentActivity extends Activity {
         buildLayersPanel();
         buildParamsPanel();
 
-        FrameLayout contentFrame = new FrameLayout(this);
+        contentFrame = new FrameLayout(this);
         contentFrame.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
         contentFrame.addView(contentArea, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         root.addView(contentFrame);
@@ -274,6 +275,8 @@ public class ExperimentActivity extends Activity {
         toolbarTitle.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         toolbarTitle.setTypeface(null, Typeface.BOLD);
         toolbarTitle.setPadding(dp(8), 0, 0, 0);
+        toolbarTitle.setSingleLine(true);
+        toolbarTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
         toolbarTitle.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
         toolbarContent.addView(toolbarTitle);
 
@@ -413,15 +416,15 @@ public class ExperimentActivity extends Activity {
     /** Arranges the shared views for the current orientation. Portrait stacks the
      *  display above the bottom panel (with a drag handle); landscape places the
      *  display next to a side column holding the tabs and the bottom panel so the
-     *  display keeps as much space as possible. In landscape the transport bar
-     *  (play/step/stop) is moved to the left edge of the display. */
+     *  display keeps as much space as possible. In landscape the toolbar and the
+     *  transport bar (play/step/stop) are moved into a narrow rail on the left
+     *  edge so the display can use the whole height. */
     private void applyOrientation() {
         contentArea.removeAllViews();
 
         if (isLandscape) {
-            // Restructure the display column: a vertical transport bar on the left
-            // edge, and the remaining display chrome (tabs, toolbar, surface) in an
-            // inner column next to it.
+            // Restructure the display column first: the transport bar now lives in
+            // the left rail, so the column only wraps the display chrome + surface.
             displayColumn.removeAllViews();
             displayColumn.setOrientation(LinearLayout.HORIZONTAL);
 
@@ -430,10 +433,22 @@ public class ExperimentActivity extends Activity {
             displayContent.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayContent.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayContent.addView(displayContainer, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
-
-            reorientTransportBar(true);
-            displayColumn.addView(transportBar, new LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT));
             displayColumn.addView(displayContent, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
+
+            // Restructure the root into a horizontal layout: a narrow left rail
+            // holds the toolbar (back/title/cycles/theme) above the vertical
+            // transport bar, and the content frame takes the remaining space.
+            while (rootLayout.getChildCount() > 0) rootLayout.removeViewAt(0);
+            rootLayout.setOrientation(LinearLayout.HORIZONTAL);
+
+            LinearLayout leftRail = new LinearLayout(this);
+            leftRail.setOrientation(LinearLayout.VERTICAL);
+            leftRail.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
+            leftRail.addView(toolbar, new LinearLayout.LayoutParams(dp(180), WRAP_CONTENT));
+            reorientTransportBar(true);
+            leftRail.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            rootLayout.addView(leftRail, new LinearLayout.LayoutParams(WRAP_CONTENT, MATCH_PARENT));
+            rootLayout.addView(contentFrame, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
 
             mainRow = new LinearLayout(this);
             mainRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -457,11 +472,21 @@ public class ExperimentActivity extends Activity {
 
             contentArea.addView(mainRow, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         } else {
-            // Restore the portrait structure: horizontal transport bar on top of
-            // the stacked display chrome.
+            // Restore the portrait structure: toolbar + tabs on top, horizontal
+            // transport bar above the stacked display chrome. Any leftover rail
+            // from the landscape branch must be dropped from the root first.
+            while (rootLayout.getChildCount() > 0) rootLayout.removeViewAt(0);
+            rootLayout.setOrientation(LinearLayout.VERTICAL);
+            detachFromParent(toolbar);
+            detachFromParent(tabLayout);
+            rootLayout.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            rootLayout.addView(tabLayout, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            rootLayout.addView(contentFrame, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
+
             displayColumn.removeAllViews();
             displayColumn.setOrientation(LinearLayout.VERTICAL);
             if (displayContent != null) displayContent.removeAllViews();
+            detachFromParent(transportBar);
             reorientTransportBar(false);
             displayColumn.addView(transportBar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
             displayColumn.addView(displayTabScroll, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
@@ -481,14 +506,6 @@ public class ExperimentActivity extends Activity {
             displayLayout.addView(bottomPanel, bottomPanelLp);
 
             contentArea.addView(displayLayout, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-
-            // Move the tabs back under the toolbar in portrait
-            detachFromParent(tabLayout);
-            int toolbarIndex = 0;
-            for (int i = 0; i < rootLayout.getChildCount(); i++) {
-                if (rootLayout.getChildAt(i) == toolbar) { toolbarIndex = i + 1; break; }
-            }
-            rootLayout.addView(tabLayout, toolbarIndex, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
         }
 
         // Restore the panel visibility state for the currently selected tab
