@@ -376,6 +376,23 @@ public class AndroidScene3D {
         fitStartMs = -1;
     }
 
+    // User dolly zoom (1.0 = fit framing). The camera distance is scaled about
+    // the target so the viewport always fills the screen; zooming out reveals
+    // more of the world instead of shrinking the framed area.
+    private double zoomDolly = 1.0;
+
+    /** Zooms the camera in (factor > 1) or out (factor < 1) about the target. */
+    public void zoomBy(float factor) {
+        if (factor <= 0) return;
+        zoomDolly *= 1.0 / factor;
+        if (zoomDolly < 0.05) zoomDolly = 0.05;
+        if (zoomDolly > 100) zoomDolly = 100;
+    }
+
+    public void resetZoom() {
+        zoomDolly = 1.0;
+    }
+
     // Frozen camera frame: when set, the camera always frames exactly this world
     // rectangle (in model units) instead of the live union of all prims. Agent
     // prims that leave the world (e.g. ants foraging past the border) no longer
@@ -683,23 +700,51 @@ public class AndroidScene3D {
             }
         }
 
-        lookAt(view, camX, camY, camZ, tarX, tarY, tarZ, 0, 0, 1);
+        // User dolly zoom: scale the camera distance about the target so the
+        // viewport always fills the screen and zooming out reveals more of the
+        // world (agents beyond the world border become visible) instead of
+        // shrinking the framed area.
+        if (zoomDolly != 1.0) {
+            double vx = camX - tarX, vy = camY - tarY, vz = camZ - tarZ;
+            double cd = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (cd > 1e-9) {
+                double nd = cd * zoomDolly;
+                double s = nd / cd;
+                camX = tarX + vx * s;
+                camY = tarY + vy * s;
+                camZ = tarZ + vz * s;
+                dist = nd;
+            }
+        }
 
         // Screen-space pan scale: world units per surface pixel at the target depth.
         panScaleX = (float) (2 * dist * Math.tan(halfH) / viewW);
         panScaleY = (float) (2 * dist * Math.tan(halfV) / viewH);
         if (panX != 0f || panY != 0f) {
             // Shift target and camera together along the view-plane right/up axes,
-            // so the orientation is unchanged but the framed region moves.
-            float rx = view[0], ry = view[4], rz = view[8];
-            float ux = view[1], uy = view[5], uz = view[9];
-            double ox = rx * panX + ux * panY;
-            double oy = ry * panX + uy * panY;
-            double oz = rz * panX + uz * panY;
+            // so the orientation is unchanged but the framed region moves. This must
+            // run BEFORE lookAt, which derives the view matrix from cam/tar.
+            double fx = tarX - camX, fy = tarY - camY, fz = tarZ - camZ;
+            double fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
+            if (fl > 1e-12) { fx /= fl; fy /= fl; fz /= fl; }
+            double sx = fy, sy = -fx, sz = 0; // f x up(0,0,1), unnormalized
+            double sl = Math.sqrt(sx * sx + sy * sy + sz * sz);
+            double ux, uy, uz;
+            if (sl > 1e-12) {
+                sx /= sl; sy /= sl; sz /= sl;
+                ux = sy * fz - sz * fy; uy = sz * fx - sx * fz; uz = sx * fy - sy * fx;
+            } else {
+                sx = 1; sy = 0; sz = 0; // looking straight down/up: use fixed screen axes
+                ux = 0; uy = 1; uz = 0;
+            }
+            double ox = sx * panX + ux * panY;
+            double oy = sy * panX + uy * panY;
+            double oz = sz * panX + uz * panY;
             tarX += ox; tarY += oy; tarZ += oz;
             camX += ox; camY += oy; camZ += oz;
         }
 
+        lookAt(view, camX, camY, camZ, tarX, tarY, tarZ, 0, 0, 1);
         double near = Math.max(dist * 0.001, 0.01);
         double far = Math.max(dist + 2 * r, 2 * dist);
         perspective(proj, Math.toRadians(fovy), (double) rw / rh, near, far);
