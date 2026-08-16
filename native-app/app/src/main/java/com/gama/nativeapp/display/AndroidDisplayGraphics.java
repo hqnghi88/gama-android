@@ -126,6 +126,17 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         scene3d.resetRotation();
     }
 
+    /** Zooms the 3D camera in/out (dolly). factor > 1 zooms in. */
+    void zoomCamera3D(float factor) {
+        scene3d.zoomBy(factor);
+    }
+
+    /** Re-runs the 3D auto-fit and resets the dolly zoom on the next render. */
+    void resetCameraFit3D() {
+        scene3d.resetFit();
+        scene3d.resetZoom();
+    }
+
     private static class CachedLayerImage {
         final Bitmap bitmap;
         final float x, y;
@@ -1792,7 +1803,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /** Re-runs the 3D auto-fit on the next frame (e.g. after a fullscreen toggle). */
     public void resetSceneFit() {
-        if (scene3d != null) scene3d.resetFit();
+        if (scene3d != null) {
+            scene3d.resetFit();
+            scene3d.resetZoom();
+        }
     }
 
     private void renderScene3D() {

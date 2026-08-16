@@ -732,20 +732,28 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         int viewH = getHeight();
         if (viewW <= 0 || viewH <= 0) return;
 
+        if (androidGraphics != null && androidGraphics.is3dMode()) {
+            // 3D zoom dollies the camera so the viewport keeps filling the
+            // screen and zooming out reveals more of the world.
+            androidGraphics.zoomCamera3D(factor);
+            invalidateSafe();
+            return;
+        }
+
         float newW = (float) getDisplayWidth() * factor;
         float newH = (float) getDisplayHeight() * factor;
-        if (newW < viewW || newH < viewH) {
-            factor = Math.max(viewW / (float) getDisplayWidth(), viewH / (float) getDisplayHeight());
-            newW = (float) getDisplayWidth() * factor;
-            newH = (float) getDisplayHeight() * factor;
-        }
+        // Keep zoom bounded but allow zooming OUT below the default 1:1 fit
+        // (previously the display was clamped to at least the view size, so Zoom-
+        // did nothing from the initial fit).
+        float minW = Math.max(20f, viewW * 0.05f);
+        float minH = Math.max(20f, viewH * 0.05f);
         float maxW = viewW * 100f;
         float maxH = viewH * 100f;
-        if (newW > maxW || newH > maxH) {
-            factor = Math.min(maxW / (float) getDisplayWidth(), maxH / (float) getDisplayHeight());
-            newW = (float) getDisplayWidth() * factor;
-            newH = (float) getDisplayHeight() * factor;
-        }
+        float minFactor = Math.max(minW / (float) getDisplayWidth(), minH / (float) getDisplayHeight());
+        float maxFactor = Math.min(maxW / (float) getDisplayWidth(), maxH / (float) getDisplayHeight());
+        factor = Math.max(minFactor, Math.min(maxFactor, factor));
+        newW = (float) getDisplayWidth() * factor;
+        newH = (float) getDisplayHeight() * factor;
 
         int newLeft = (int) (focusX * (factor - 1) + viewPort.left * factor);
         int newTop = (int) (focusY * (factor - 1) + viewPort.top * factor);
@@ -768,6 +776,9 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             this.zoomLevel = 1.0;
             this.zoomFit = true;
             viewPort.set(0, 0, w, h);
+            if (androidGraphics != null && androidGraphics.is3dMode()) {
+                androidGraphics.resetCameraFit3D();
+            }
             invalidateSafe();
         }
     }
