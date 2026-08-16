@@ -29,6 +29,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.PopupMenu;
 
 import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
@@ -112,10 +113,10 @@ public class ExperimentActivity extends Activity {
     private LinearLayout.LayoutParams bottomPanelLp;
     private boolean isLandscape = false;
 
-    // Landscape side panel (tabs + bottom panel). Collapsed by default so the
-    // display fills the width; a "☰ Panels" button in the display toolbar toggles it.
-    private boolean sidePanelOpen = false;
-    private TextView sidePanelBtn;
+    // Collapsible side/bottom panel (tabs + panel). Collapsed by default so the
+    // display fills the screen; the toolbar hamburger menu toggles it in both
+    // orientations.
+    private boolean panelsOpen = false;
 
     // Fullscreen
     private boolean isFullscreen = false;
@@ -255,6 +256,17 @@ public class ExperimentActivity extends Activity {
         toolbarContent.setPadding(dp(4), 0, dp(8), 0);
         this.toolbarContent = toolbarContent;
 
+        TextView menuBtn = new TextView(this);
+        menuBtn.setText("\u2630");
+        menuBtn.setTextSize(20);
+        menuBtn.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        menuBtn.setGravity(Gravity.CENTER);
+        menuBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
+        menuBtn.setMinWidth(0);
+        menuBtn.setMinHeight(0);
+        menuBtn.setOnClickListener(this::showMenu);
+        toolbarContent.addView(menuBtn);
+
         TextView backBtn = new TextView(this);
         backBtn.setText("\u2190 Back");
         backBtn.setTextSize(14);
@@ -390,7 +402,7 @@ public class ExperimentActivity extends Activity {
         displayToolbar.addView(toolbarSpacer, new LinearLayout.LayoutParams(0, 0, 1f));
 
         String[][] tools = {
-            {"☰ Panels", "☰"}, {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
+            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
         };
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
@@ -401,7 +413,6 @@ public class ExperimentActivity extends Activity {
             btn.setGravity(Gravity.CENTER);
             btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
             if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
-            if ("☰".equals(tool[1])) sidePanelBtn = btn;
             displayToolbar.addView(btn);
         }
         displayToolbar.setTag("displayToolbar");
@@ -792,18 +803,18 @@ public class ExperimentActivity extends Activity {
         boolean displayTab = position == 0;
         if (isLandscape) {
             // Collapsible side column: the display fills the whole width on the
-            // Display tab unless the user opened the side panel, and always shares
+            // Display tab unless the user opened the panels, and always shares
             // the row with a panel tab (Console/Layers/Params) so it stays usable.
-            boolean openPanel = !displayTab || sidePanelOpen;
+            boolean openPanel = !displayTab || panelsOpen;
             if (rightCol != null) rightCol.setVisibility(openPanel ? View.VISIBLE : View.GONE);
             bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
             if (displayColumnLp != null) displayColumnLp.weight = displayTab ? (openPanel ? 3f : 1f) : 2f;
-            if (sidePanelBtn != null) {
-                sidePanelBtn.setTextColor(openPanel ? thc(0xFF006847, 0xFF80CBC4) : thc(0xFF555555, 0xFFAAAAAA));
-            }
         } else {
-            dragHandle.setVisibility(displayTab ? View.GONE : View.VISIBLE);
-            bottomPanel.setVisibility(displayTab ? View.GONE : View.VISIBLE);
+            // Portrait: the panels follow the selected tab unless the user hid them
+            // via the hamburger menu (panelsOpen), which lets the display fill up.
+            boolean showBottom = !panelsOpen && !displayTab;
+            dragHandle.setVisibility(showBottom ? View.VISIBLE : View.GONE);
+            bottomPanel.setVisibility(showBottom ? View.VISIBLE : View.GONE);
             if (displayColumnLp != null) displayColumnLp.weight = displayTab ? 1f : 3f;
         }
         if (bottomPanelLp != null) bottomPanelLp.weight = 1f;
@@ -816,8 +827,10 @@ public class ExperimentActivity extends Activity {
         displayColumn.requestLayout();
     }
 
-    private void toggleSidePanel() {
-        sidePanelOpen = !sidePanelOpen;
+    /** Toggles the panels (side column in landscape, bottom panel in portrait).
+     *  Works from the toolbar hamburger menu in both orientations. */
+    private void togglePanels() {
+        panelsOpen = !panelsOpen;
         showPanel(tabLayout.getSelectedTabPosition());
     }
 
@@ -1002,10 +1015,6 @@ public class ExperimentActivity extends Activity {
             toggleFullscreen();
             return;
         }
-        if ("☰".equals(action)) {
-            toggleSidePanel();
-            return;
-        }
         View target = getActiveDisplayView();
         if (target == null) return;
         try {
@@ -1023,6 +1032,26 @@ public class ExperimentActivity extends Activity {
         } catch (Exception e) {
             Log.w(TAG, "Display action failed", e);
         }
+    }
+
+    /** Shows the toolbar hamburger menu. The same menu is available in portrait
+     *  and landscape since the button lives in the shared toolbar content. */
+    private void showMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add(0, 1, 0, panelsOpen ? "Hide panels" : "Show panels");
+        menu.getMenu().add(0, 2, 1, isDarkTheme ? "Light theme" : "Dark theme");
+        menu.getMenu().add(0, 3, 2, isFullscreen ? "Exit fullscreen" : "Fullscreen");
+        menu.getMenu().add(0, 4, 3, "Back to models");
+        menu.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case 1: togglePanels(); break;
+                case 2: toggleTheme(); break;
+                case 3: toggleFullscreen(); break;
+                case 4: finish(); break;
+            }
+            return true;
+        });
+        menu.show();
     }
 
     /** Expands the display so it fills the whole phone screen, hiding the app
@@ -1043,8 +1072,16 @@ public class ExperimentActivity extends Activity {
         }
         if (isFullscreen) {
             savedDisplayWeight = displayColumnLp.weight;
-            displayColumnLp.height = 0;
-            displayColumnLp.weight = 1f;
+            if (isLandscape) {
+                // Landscape: the display column fills the whole row and the side
+                // column is hidden; height must stay MATCH_PARENT (weight 0 in a
+                // horizontal LinearLayout governs width only).
+                displayColumnLp.weight = 1f;
+                if (rightCol != null) rightCol.setVisibility(View.GONE);
+            } else {
+                displayColumnLp.height = 0;
+                displayColumnLp.weight = 1f;
+            }
         } else {
             displayColumnLp.weight = savedDisplayWeight;
             showPanel(tabLayout.getSelectedTabPosition());
