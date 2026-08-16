@@ -812,6 +812,9 @@ public class ExperimentActivity extends Activity {
         } else {
             // Portrait: the panels follow the selected tab unless the user hid them
             // via the hamburger menu (panelsOpen), which lets the display fill up.
+            // The tab strip (Display/Console/Layers/Params) is part of the panel
+            // chrome, so it collapses with the panels too.
+            if (tabLayout != null) tabLayout.setVisibility(panelsOpen ? View.GONE : View.VISIBLE);
             boolean showBottom = !panelsOpen && !displayTab;
             dragHandle.setVisibility(showBottom ? View.VISIBLE : View.GONE);
             bottomPanel.setVisibility(showBottom ? View.VISIBLE : View.GONE);
