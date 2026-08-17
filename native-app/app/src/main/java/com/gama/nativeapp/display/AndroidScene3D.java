@@ -1080,8 +1080,16 @@ public class AndroidScene3D {
                 oy[m] = vy[i] + t * (vy[j] - vy[i]);
                 oz[m] = vz[i] + t * (vz[j] - vz[i]);
                 if (ou != null) {
-                    ou[m] = vu[i] + t * (vu[j] - vu[i]);
-                    ov[m] = vv[i] + t * (vv[j] - vv[i]);
+                    float wi = -vz[i], wj = -vz[j], wc = -oz[m];
+                    if (wi > 0.001f && wj > 0.001f && wc > 0.001f) {
+                        float invWi = 1f / wi, invWj = 1f / wj;
+                        float s = (1f / wc - invWi) / (invWj - invWi);
+                        ou[m] = (vu[i] * invWi + s * (vu[j] * invWj - vu[i] * invWi)) * wc;
+                        ov[m] = (vv[i] * invWi + s * (vv[j] * invWj - vv[i] * invWi)) * wc;
+                    } else {
+                        ou[m] = vu[i] + t * (vu[j] - vu[i]);
+                        ov[m] = vv[i] + t * (vv[j] - vv[i]);
+                    }
                 }
                 m++;
             }
@@ -1280,7 +1288,7 @@ public class AndroidScene3D {
                 boolean neg = w0 <= 0 && w1 <= 0 && w2 <= 0;
                 if (!pos && !neg) continue;
 
-                float wsum = w0 * invq0 + w1 * invq1 + w2 * invq2;
+                float wsum = w0 * invq2 + w1 * invq0 + w2 * invq1;
                 if (wsum == 0) continue;
                 // Barycentric weights: w0 is the edge function of edge 0-1 (weight of vertex 2),
                 // w1 of edge 1-2 (weight of vertex 0), w2 of edge 2-0 (weight of vertex 1).
