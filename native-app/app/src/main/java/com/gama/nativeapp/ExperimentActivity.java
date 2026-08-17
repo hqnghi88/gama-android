@@ -265,7 +265,6 @@ public class ExperimentActivity extends Activity {
         menuBtn.setMinWidth(0);
         menuBtn.setMinHeight(0);
         menuBtn.setOnClickListener(this::showMenu);
-        toolbarContent.addView(menuBtn);
 
         TextView backBtn = new TextView(this);
         backBtn.setText("\u2190 Back");
@@ -282,6 +281,7 @@ public class ExperimentActivity extends Activity {
         bg.setColor(0xFF2196F3);
         backBtn.setBackground(bg);
         backBtn.setOnClickListener(v -> finish());
+        toolbarContent.addView(backBtn);
 
         toolbarTitle = new TextView(this);
         toolbarTitle.setText(modelName != null ? modelName : "GAMA");
@@ -313,9 +313,7 @@ public class ExperimentActivity extends Activity {
         themeBtn.setOnClickListener(v -> toggleTheme());
         toolbarContent.addView(themeBtn);
 
-        // Back button sits at the far right of the toolbar, away from the
-        // hamburger menu on the left, so the two cannot be mis-tapped.
-        toolbarContent.addView(backBtn);
+        toolbarContent.addView(menuBtn);
 
         toolbar.addView(toolbarContent);
         root.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
