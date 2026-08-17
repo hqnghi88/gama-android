@@ -1812,6 +1812,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     private void renderScene3D() {
         Canvas c = canvas;
+        android.util.Log.d("ANDROID_3D", "renderScene3D: canvas=" + (c != null) + " prims=" + scene3d.size());
         if (c == null || scene3d.size() == 0) return;
         try {
             // Apply ambient + default directional light from display data
@@ -1854,9 +1855,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 if (out != null && (out.hasFacet("axes") || out.hasFacet("draw_env"))) {
                     axesOn = data.isDrawEnv();
                 }
+                android.util.Log.d("ANDROID_3D", "axes facet check: out=" + (out != null) + " hasAxes=" + (out != null && out.hasFacet("axes")) + " hasDrawEnv=" + (out != null && out.hasFacet("draw_env")) + " isDrawEnv=" + data.isDrawEnv());
             } catch (Throwable ignored) {
+                android.util.Log.d("ANDROID_3D", "axes facet check failed: " + ignored);
             }
             scene3d.setAxesEnabled(axesOn);
+            android.util.Log.d("ANDROID_3D", "axesOn=" + axesOn);
 
             IPoint camPos = null, camTarget = null;
             Double camLens = null;

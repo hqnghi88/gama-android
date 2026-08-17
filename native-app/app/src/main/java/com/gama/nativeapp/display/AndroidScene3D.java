@@ -411,21 +411,17 @@ public class AndroidScene3D {
      */
     private void addAxesPrims(float minX, float minY, float minZ, float maxX, float maxY, float maxZ) {
         if (!drawAxes) return;
-        // All three lines pass through the environment origin (0,0,0): each axis
-        // spans from the origin towards both the negative and positive extents of
-        // the world box, so the intersection sits exactly at the origin.
-        float x0 = Math.min(0f, minX), x1 = Math.max(0f, maxX);
-        float y0 = Math.min(0f, minY), y1 = Math.max(0f, maxY);
-        float z0 = Math.min(0f, minZ), z1 = Math.max(0f, maxZ);
-        float dx = Math.max((x1 - x0) * 0.03f, 1e-3f);
-        float dy = Math.max((y1 - y0) * 0.03f, 1e-3f);
-        float dz = Math.max((z1 - z0) * 0.03f, 1e-3f);
-        addLine(new float[]{x0, 0f, 0f, x1, 0f, 0f}, 0xFFFF0000, 3f);
-        addText(x1 + dx, 0f, 0f, "x", 0xFFFF0000, 22f, 0f, 1f);
-        addLine(new float[]{0f, y0, 0f, 0f, y1, 0f}, 0xFF00B800, 3f);
-        addText(0f, y1 + dy, 0f, "y", 0xFF00B800, 22f, 0f, 1f);
-        addLine(new float[]{0f, 0f, z0, 0f, 0f, z1}, 0xFF0070FF, 3f);
-        addText(0f, 0f, z1 + dz, "z", 0xFF0070FF, 22f, 0f, 1f);
+        float dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+        float maxDim = Math.max(dx, Math.max(dy, dz));
+        if (maxDim < 1e-6f) return;
+        float len = maxDim * 0.075f;
+        float labelOff = maxDim * 0.02f;
+        addLine(new float[]{0f, 0f, 0f, len, 0f, 0f}, 0xFFFF0000, 3f);
+        addText(len + labelOff, 0f, 0f, "X", 0xFFFF0000, 22f, 0f, 1f);
+        addLine(new float[]{0f, 0f, 0f, 0f, len, 0f}, 0xFF00B800, 3f);
+        addText(0f, len + labelOff, 0f, "Y", 0xFF00B800, 22f, 0f, 1f);
+        addLine(new float[]{0f, 0f, 0f, 0f, 0f, len}, 0xFF0070FF, 3f);
+        addText(0f, 0f, len + labelOff, "Z", 0xFF0070FF, 22f, 0f, 1f);
     }
 
     // Frozen camera frame: when set, the camera always frames exactly this world
