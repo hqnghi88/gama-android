@@ -292,7 +292,7 @@ public class AndroidScene3D {
             p.v[i * 3 + 1] = -model[i * 3 + 1];
             p.v[i * 3 + 2] = model[i * 3 + 2];
         }
-        p.uv = uv;
+        p.uv = uv != null ? uv.clone() : null;
         p.texture = texture;
         p.tint = tint;
         p.border = border;

@@ -1535,9 +1535,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         double[] zz = smoothMesh(cols, rows, data, noData, attributes.getSmooth());
         double[] minMax = meshMinMax(zz, noData);
         double min = minMax[0], max = minMax[1];
-        if (!(max > min)) return;
+        boolean wireframe = attributes.isEmpty();
         IMeshColorProvider provider = attributes.getColorProvider();
-        if (provider == null) return;
+        boolean triangulated = attributes.isTriangulated();
         double zScale = attributes.getScale() != null ? attributes.getScale() : 1.0;
         double above = attributes.getAbove();
         boolean checkAbove = above != MeshLayerData.ABOVE;
@@ -1554,6 +1554,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         int maxDim = 120;
         int nx = Math.min(maxDim, cols);
         int ny = Math.min(maxDim, rows);
+
+        List<?> texAttrs = attributes.getTextures();
+        boolean grayscaled = attributes.isGrayscaled();
+        Object tex = (!grayscaled && texAttrs != null && !texAttrs.isEmpty()) ? loadTexture(texAttrs, getSurface().getScope()) : null;
+        if (provider == null && !wireframe && triangulated && tex == null) return;
+        int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
 
         double[] zc = new double[(nx + 1) * (ny + 1)];
         int[] vc = new int[(nx + 1) * (ny + 1)];
@@ -1576,23 +1582,116 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 if (v == noData || Double.isNaN(v)) v = 0;
                 int idx = j * (nx + 1) + i;
                 zc[idx] = v;
-                vc[idx] = vertexMeshColor(provider, Math.min(j, rows - 1) * cols + Math.min(i, cols - 1),
-                        v, min, max, rgb, checkAbove, above);
+                if (provider != null) {
+                    vc[idx] = vertexMeshColor(provider, Math.min(j, rows - 1) * cols + Math.min(i, cols - 1),
+                            v, min, max, rgb, checkAbove, above);
+                }
             }
         }
 
+        if (wireframe) {
+            int borderColor = attributes.getBorder() != null ? colorToARGB(attributes.getBorder(), 0xFF000000) : 0xFF000000;
+            boolean withText = attributes.isWithText();
+            float[] seg = new float[6];
+            for (int j = 0; j <= ny; j++) {
+                float y = (float) (j * envH / ny);
+                for (int i = 0; i < nx; i++) {
+                    int i0 = j * (nx + 1) + i, i1 = i0 + 1;
+                    float x0 = (float) (i * envW / nx);
+                    float x1 = (float) ((i + 1) * envW / nx);
+                    seg[0] = x0; seg[1] = y; seg[2] = (float) (zc[i0] * zScale);
+                    seg[3] = x1; seg[4] = y; seg[5] = (float) (zc[i1] * zScale);
+                    scene3d.addLine(seg, borderColor, 1f);
+                }
+            }
+            for (int i = 0; i <= nx; i++) {
+                float x = (float) (i * envW / nx);
+                for (int j = 0; j < ny; j++) {
+                    int i0 = j * (nx + 1) + i, i1 = i0 + (nx + 1);
+                    float y0 = (float) (j * envH / ny);
+                    float y1 = (float) ((j + 1) * envH / ny);
+                    seg[0] = x; seg[1] = y0; seg[2] = (float) (zc[i0] * zScale);
+                    seg[3] = x; seg[4] = y1; seg[5] = (float) (zc[i1] * zScale);
+                    scene3d.addLine(seg, borderColor, 1f);
+                }
+            }
+            if (withText) {
+                double cellW = envW / nx, cellH = envH / ny;
+                for (int j = 0; j < ny; j++) {
+                    for (int i = 0; i < nx; i++) {
+                        int i00 = j * (nx + 1) + i;
+                        double val = data[Math.min(j, rows - 1) * cols + Math.min(i, cols - 1)];
+                        String label = String.format("%.1f", val);
+                        float cx = (float) ((i + 0.5) * cellW);
+                        float cy = (float) ((j + 0.5) * cellH);
+                        float cz = (float) (zc[i00] * zScale) + 1f;
+                        scene3d.addText(cx, cy, cz, label, 0xFF000000, Math.max(8f, (float) Math.min(cellW, cellH) * 0.3f), 0f, 0f);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (!triangulated) {
+            if (!(max > min)) {
+                min = 0;
+            }
+            double cellW = envW / nx, cellH = envH / ny;
+            int borderColor = attributes.getBorder() != null ? colorToARGB(attributes.getBorder(), 0) : 0;
+            for (int j = 0; j < ny; j++) {
+                float y0 = (float) (j * cellH), y1 = (float) ((j + 1) * cellH);
+                for (int i = 0; i < nx; i++) {
+                    int i00 = j * (nx + 1) + i;
+                    float x0 = (float) (i * cellW), x1 = (float) ((i + 1) * cellW);
+                    double zTop = zc[i00] * zScale;
+                    double depth = Math.abs(zTop) > 0.001 ? Math.abs(zTop) : Math.max(cellW, cellH) * 0.1;
+                    double bz0 = zTop > 0 ? 0 : zTop;
+                    double bz1 = zTop > 0 ? zTop : 0;
+                    if (tex != null) {
+                        float u0 = (float) i / nx, u1 = (float) (i + 1) / nx;
+                        float v0 = (float) j / ny, v1 = (float) (j + 1) / ny;
+                        float[] quad = new float[] {
+                            x0, y0, (float) bz1, x1, y0, (float) bz1,
+                            x1, y1, (float) bz1, x0, y1, (float) bz1
+                        };
+                        float[] uv = new float[] { u0, v0, u1, v0, u1, v1, u0, v1 };
+                        scene3d.addTexturedPoly(quad, 4, uv, tex, tint, borderColor, 1f);
+                    } else {
+                        double cz = zTop > 0 ? zTop / 2 : depth / 2;
+                        int fill = vc[i00];
+                        scene3d.addBox(x0 + cellW / 2, y0 + cellH / 2, cz, cellW, cellH, depth, fill, borderColor, 1f);
+                    }
+                }
+            }
+            return;
+        }
+        if (!(max > min) && tex == null) return;
         float[] tri = new float[9];
+        float[] uv = new float[6];
         for (int j = 0; j < ny; j++) {
             float y0 = (float) (j * envH / ny);
             float y1 = (float) ((j + 1) * envH / ny);
+            float v0 = (float) j / ny, v1 = (float) (j + 1) / ny;
             for (int i = 0; i < nx; i++) {
                 int i00 = j * (nx + 1) + i, i10 = i00 + 1, i01 = i00 + (nx + 1), i11 = i01 + 1;
                 float x0 = (float) (i * envW / nx);
                 float x1 = (float) ((i + 1) * envW / nx);
-                // Two triangles per cell on the same diagonal as desktop GAMA:
-                // t0 = v00, v10, v01  ;  t1 = v10, v11, v01   (diagonal (i+1,j)-(i,j+1))
-                emitMeshTriangle(tri, x0, y0, zc[i00], vc[i00], x1, y0, zc[i10], vc[i10], x0, y1, zc[i01], vc[i01], zScale);
-                emitMeshTriangle(tri, x1, y0, zc[i10], vc[i10], x1, y1, zc[i11], vc[i11], x0, y1, zc[i01], vc[i01], zScale);
+                float u0 = (float) i / nx, u1 = (float) (i + 1) / nx;
+                if (tex != null) {
+                    tri[0] = x0; tri[1] = y0; tri[2] = (float) (zc[i00] * zScale);
+                    tri[3] = x1; tri[4] = y0; tri[5] = (float) (zc[i10] * zScale);
+                    tri[6] = x0; tri[7] = y1; tri[8] = (float) (zc[i01] * zScale);
+                    uv[0] = u0; uv[1] = v0; uv[2] = u1; uv[3] = v0; uv[4] = u0; uv[5] = v1;
+                    scene3d.addTexturedPoly(tri, 3, uv, tex, tint, 0, 1f);
+                    tri[0] = x1; tri[1] = y0; tri[2] = (float) (zc[i10] * zScale);
+                    tri[3] = x1; tri[4] = y1; tri[5] = (float) (zc[i11] * zScale);
+                    tri[6] = x0; tri[7] = y1; tri[8] = (float) (zc[i01] * zScale);
+                    uv[0] = u1; uv[1] = v0; uv[2] = u1; uv[3] = v1; uv[4] = u0; uv[5] = v1;
+                    scene3d.addTexturedPoly(tri, 3, uv, tex, tint, 0, 1f);
+                } else {
+                    emitMeshTriangle(tri, x0, y0, zc[i00], vc[i00], x1, y0, zc[i10], vc[i10], x0, y1, zc[i01], vc[i01], zScale);
+                    emitMeshTriangle(tri, x1, y0, zc[i10], vc[i10], x1, y1, zc[i11], vc[i11], x0, y1, zc[i01], vc[i01], zScale);
+                }
             }
         }
     }

@@ -320,6 +320,9 @@ dependencies {
 
     implementation 'org.locationtech.jts:jts-core:1.19.0'
     implementation 'org.jgrapht:jgrapht-core:1.5.2'
+    implementation('org.jgrapht:jgrapht-io:1.5.2') {
+        exclude group: 'org.apache.commons', module: 'commons-lang3'
+    }
     implementation 'org.jfree:jfreechart:1.5.4'
     implementation 'org.java-websocket:Java-WebSocket:1.5.4'
     implementation 'org.locationtech.jts:jts-io:1.19.0'
