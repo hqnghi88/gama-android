@@ -74,6 +74,7 @@ public class AndroidScene3D {
         float stroke;
         boolean cull;       // backface cull (only safe for faces with known outward winding)
         float depth;        // view-space z used for painter's algorithm sorting
+        int layerIdx;       // layer stack index – preserves layer ordering for translucent overlays
         boolean background; // drawn first (behind everything), e.g. a ground/picture plane
         String text;
         float textSize;
@@ -126,8 +127,10 @@ public class AndroidScene3D {
     }
 
     private final List<Prim> prims = new ArrayList<>();
+    private int frameCount;
     private final java.util.LinkedHashMap<gama.api.ui.layers.ILayer, List<Prim>> staticCache =
             new java.util.LinkedHashMap<>();
+    private int currentLayerIdx;
     private final Paint fillPaint = new Paint();
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -147,12 +150,35 @@ public class AndroidScene3D {
     private Bitmap frameBmp;
     private Canvas frameCanvas;
     private int[] regionBuf;
+    // When non-null, fillTexturedPoly reads from this instead of frameBmp.
+    private Bitmap readBmp;
     private final Map<Bitmap, int[]> texCache = new HashMap<>();
     private final Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final float[] scratch3 = new float[3];
     private final List<Prim> visibleBuf = new ArrayList<>();
     private static final Comparator<Prim> depthSorter =
-            (a, b) -> Float.compare(a.depth, b.depth);
+            (a, b) -> {
+                // Pass 1: textured POLY (terrain/background) — fillTexturedPoly
+                // reads from frameBmp so must draw before non-textured content.
+                // Pass 2: non-textured prims (trail, grid, axes) — Canvas API.
+                // Pass 3: billboards (agents) — foreground, read existing content.
+                int pa = a.kind == BILLBOARD ? 2 : (a.kind == POLY && a.texture != null ? 0 : 1);
+                int pb = b.kind == BILLBOARD ? 2 : (b.kind == POLY && b.texture != null ? 0 : 1);
+                int c = Integer.compare(pa, pb);
+                if (c != 0) return c;
+                c = Integer.compare(a.layerIdx, b.layerIdx);
+                if (c != 0) return c;
+                int da = (int) (a.depth * 100f);
+                int db = (int) (b.depth * 100f);
+                c = Integer.compare(da, db);
+                if (c != 0) return c;
+                int n = Math.min(a.v.length, b.v.length);
+                for (int i = 0; i < n; i++) {
+                    c = Float.compare(a.v[i], b.v[i]);
+                    if (c != 0) return c;
+                }
+                return Integer.compare(a.v.length, b.v.length);
+            };
     private final float[] boundsOut = new float[6];
 
     public AndroidScene3D() {
@@ -165,6 +191,11 @@ public class AndroidScene3D {
 
     public void clear() { prims.clear(); }
 
+    /** Advances to the next layer index. Called from AndroidDisplayGraphics
+     *  at the start of each layer so that prims from later layers sort after
+     *  earlier layers (preserving GAML layer order for translucent overlays). */
+    public int nextLayer() { return ++currentLayerIdx; }
+
     /**
      * Starts a new frame: keeps the prims of non-dynamic layers (refresh:false,
      * drawn once by the core layer logic) and drops the ones emitted by dynamic
@@ -172,6 +203,7 @@ public class AndroidScene3D {
      */
     public void beginFrame() {
         prims.clear();
+        currentLayerIdx = 0;
         for (List<Prim> cached : staticCache.values()) prims.addAll(cached);
     }
 
@@ -184,6 +216,8 @@ public class AndroidScene3D {
         if (fromIndex < 0 || fromIndex > prims.size()) return;
         staticCache.put(layer, new ArrayList<>(prims.subList(fromIndex, prims.size())));
     }
+
+    /** Marks prims in the given index range as terrain for the two-pass cache. */
 
     public int size() { return prims.size(); }
 
@@ -219,6 +253,7 @@ public class AndroidScene3D {
         p.border = border;
         p.stroke = stroke;
         p.cull = cull;
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -238,6 +273,7 @@ public class AndroidScene3D {
         p.border = border;
         p.stroke = stroke;
         p.cull = cull;
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -264,6 +300,7 @@ public class AndroidScene3D {
         p.cull = false;
         float[] nn = faceNormal(model, n);
         p.lnx = nn[0]; p.lny = nn[1]; p.lnz = nn[2];
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -280,6 +317,7 @@ public class AndroidScene3D {
         p.v[5] = model[5];
         p.border = color;
         p.stroke = stroke;
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -294,6 +332,7 @@ public class AndroidScene3D {
         p.bbW = w;
         p.bbH = h;
         p.bbRot = rotDeg;
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -307,6 +346,7 @@ public class AndroidScene3D {
         p.textSize = size;
         p.ax = ax;
         p.ay = ay;
+        p.layerIdx = currentLayerIdx;
         prims.add(p);
     }
 
@@ -789,7 +829,7 @@ public class AndroidScene3D {
             frameBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888);
             frameCanvas = new Canvas(frameBmp);
         }
-        frameCanvas.drawColor(0, PorterDuff.Mode.CLEAR);
+        frameCanvas.drawColor(0xFFFFFFFF);
 
         if (sx == null || sx.length < 256) { sx = new float[256]; sy = new float[256]; }
 
@@ -805,12 +845,9 @@ public class AndroidScene3D {
         Collections.sort(visible, depthSorter);
 
         for (Prim p : visible) {
-            try {
-                drawPrim(frameCanvas, p, rw, rh);
-            } catch (Throwable t) {
-                Log.w(TAG, "drawPrim failed: " + t);
-            }
+            drawPrim(frameCanvas, p, rw, rh);
         }
+        frameCount++;
 
         canvas.drawBitmap(frameBmp, null, new android.graphics.RectF(0, 0, viewW, viewH), blitPaint);
     }
@@ -1189,7 +1226,8 @@ public class AndroidScene3D {
         if (regionBuf == null || regionBuf.length < bw * bh) {
             regionBuf = new int[Math.max(bw * bh, 256 * 256)];
         }
-        frameBmp.getPixels(regionBuf, 0, bw, bx0, by0, bw, bh);
+        Bitmap readSrc = readBmp != null ? readBmp : frameBmp;
+        readSrc.getPixels(regionBuf, 0, bw, bx0, by0, bw, bh);
         for (int i = 1; i < clipped - 1; i++) {
             rasterTriangle(regionBuf, bw, bh, bx0, by0,
                     sx[i], sy[i], dU[i], dV[i], q[i],

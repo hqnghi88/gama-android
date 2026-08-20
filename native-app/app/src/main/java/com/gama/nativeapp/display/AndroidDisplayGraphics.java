@@ -780,14 +780,15 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private void addLine3D(LineString ls, int color, float stroke) {
         Coordinate[] cs = ls.getCoordinates();
         if (cs.length < 2) return;
+        float zBias = 0.1f;
         for (int i = 0; i < cs.length - 1; i++) {
             float[] m = new float[6];
             m[0] = (float) cs[i].x;
             m[1] = (float) cs[i].y;
-            m[2] = Double.isNaN(cs[i].z) ? 0f : (float) cs[i].z;
+            m[2] = (float) ((Double.isNaN(cs[i].z) ? 0 : cs[i].z) + terrainLift(cs[i].x, cs[i].y)) + zBias;
             m[3] = (float) cs[i + 1].x;
             m[4] = (float) cs[i + 1].y;
-            m[5] = Double.isNaN(cs[i + 1].z) ? 0f : (float) cs[i + 1].z;
+            m[5] = (float) ((Double.isNaN(cs[i + 1].z) ? 0 : cs[i + 1].z) + terrainLift(cs[i + 1].x, cs[i + 1].y)) + zBias;
             scene3d.addLine(m, color, stroke);
         }
     }
@@ -1895,7 +1896,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public void beginDrawingLayer(final ILayer layer) {
         currentLayer = layer;
         layerCount++;
-        if (is3dMode()) layerPrimStart = scene3d.size();
+        if (is3dMode()) {
+            layerPrimStart = scene3d.size();
+            scene3d.nextLayer();
+        }
         applyLayerTransparency(layer);
     }
 
@@ -1918,7 +1922,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public void endDrawingLayer(ILayer layer) {
         super.endDrawingLayer(layer);
         if (is3dMode() && layerPrimStart >= 0) {
-            if (!layer.getData().isDynamic()) {
+            boolean isDynamic = layer.getData().isDynamic();
+            if (!isDynamic) {
                 scene3d.captureStaticPrims(layer, layerPrimStart);
             }
         }
