@@ -10,6 +10,7 @@ import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
@@ -49,6 +50,8 @@ import gama.api.GAMA;
 import gama.api.ui.displays.IGraphicsScope;
 
 public class AndroidDisplaySurface extends View implements OpenGL {
+
+    private static final String TAG = "AndroidDisplaySurface";
 
     private final LayeredDisplayOutput output;
     private final ILayerManager layerManager;
@@ -164,7 +167,14 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         this.androidGraphics = new AndroidDisplayGraphics();
         this.androidGraphics.setDisplaySurface(this);
 
-        bgPaint.setColor(IColor.toAWTColor(output.getData().getBackgroundColor()).getRGB() | 0xFF000000);
+        bgPaint.setColor(0xFFFFFFFF);
+        try {
+            int bg = IColor.toAWTColor(output.getData().getBackgroundColor()).getRGB();
+            Log.i(TAG, "bgPaint color=0x" + Integer.toHexString(bg));
+            bgPaint.setColor(bg | 0xFF000000);
+        } catch (Throwable e) {
+            Log.w(TAG, "bgPaint init failed", e);
+        }
         bgPaint.setStyle(Paint.Style.FILL);
 
         agentPaint.setColor(0xFF00FF00);
@@ -1000,6 +1010,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             } else if (value instanceof java.awt.Color c) {
                 rgb = c.getRGB();
             }
+            Log.i(TAG, "BACKGROUND changed: value=" + value + " class=" + (value == null ? "null" : value.getClass().getName()) + " rgb=0x" + Integer.toHexString(rgb));
             bgPaint.setColor(rgb | 0xFF000000);
         }
     }

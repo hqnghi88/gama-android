@@ -1944,6 +1944,17 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             }
             scene3d.setAmbientLight(ambientARGB);
             scene3d.setDirectionalLight(ldx, ldy, ldz, lightRGB);
+            // Pass the display background color to the 3D renderer so the
+            // frame bitmap matches the model's background:#... instead of
+            // always using white.
+            try {
+                LayeredDisplayOutput out = getSurface() instanceof AndroidDisplaySurface
+                        ? ((AndroidDisplaySurface) getSurface()).getOutput() : null;
+                if (out != null) {
+                    int displayBg = gama.api.types.color.IColor.toAWTColor(out.getData().getBackgroundColor()).getRGB();
+                    scene3d.setBgColor(displayBg);
+                }
+            } catch (Throwable t) { /* keep default white */ }
             // The display's axes/draw_env facet maps onto isDrawEnv() in this
             // build, whose default comes from a preference (CORE_DRAW_ENV). Only
             // honour it when the model explicitly wrote one of the two facets,

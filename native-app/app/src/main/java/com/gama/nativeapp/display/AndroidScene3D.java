@@ -35,6 +35,9 @@ public class AndroidScene3D {
     // Ambient light color (ARGB) for textured polygons - default white (no change)
     private int ambientLight = 0xFFFFFFFF;
 
+    // Background color for the 3D frame - default white
+    private int bgColor = 0xFFFFFFFF;
+
     // Directional ("default") light: unit direction (original model coords) + RGB intensity.
     private float sunX = 0, sunY = 0, sunZ = 1;
     private int sunColor = 0xFFFFFFFF;
@@ -50,6 +53,10 @@ public class AndroidScene3D {
 
     public void setAmbientLight(int argb) {
         this.ambientLight = argb;
+    }
+
+    public void setBgColor(int argb) {
+        this.bgColor = argb | 0xFF000000;
     }
 
     public void setDirectionalLight(double dx, double dy, double dz, int rgb) {
@@ -829,7 +836,7 @@ public class AndroidScene3D {
             frameBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888);
             frameCanvas = new Canvas(frameBmp);
         }
-        frameCanvas.drawColor(0xFFFFFFFF);
+        frameCanvas.drawColor(bgColor);
 
         if (sx == null || sx.length < 256) { sx = new float[256]; sy = new float[256]; }
 

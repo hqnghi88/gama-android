@@ -16,6 +16,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.Layout;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextPaint;
@@ -120,7 +121,6 @@ public class ModelEditorActivity extends AppCompatActivity {
 
     private EditText codeEditor;
     private TextView lineNumbers;
-    private MaterialToolbar toolbar;
     private LinearProgressIndicator progressBar;
     private String modelName;
     private String jarPath;
@@ -139,6 +139,21 @@ public class ModelEditorActivity extends AppCompatActivity {
     private TextView langLabel;
     private TextView statusInfo;
     private LinearLayout statusBar;
+
+    // Find / replace bar
+    private LinearLayout findBar;
+    private EditText findInput;
+    private TextView findCountText;
+    private LinearLayout replaceRow;
+    private EditText replaceInput;
+    private boolean replaceVisible = false;
+    private int lastFindIndex = -1;
+
+    // Undo / redo
+    private final java.util.ArrayDeque<String> undoStack = new java.util.ArrayDeque<>(200);
+    private final java.util.ArrayDeque<String> redoStack = new java.util.ArrayDeque<>(200);
+    private boolean undoRedoAction = false;
+
     private boolean isDarkTheme = true;
 
     @Override
@@ -158,16 +173,12 @@ public class ModelEditorActivity extends AppCompatActivity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFitsSystemWindows(true);
 
-        toolbar = new MaterialToolbar(this);
-        toolbar.setBackgroundColor(COLOR_TOOLBAR_BG);
-        toolbar.setTitleTextColor(COLOR_TOOLBAR_TEXT);
-        toolbar.setSubtitleTextColor(0xB3FFFFFF);
-        toolbar.setNavigationIcon(null);
-
-        LinearLayout toolbarContent = new LinearLayout(toolbar.getContext());
-        toolbarContent.setOrientation(LinearLayout.HORIZONTAL);
-        toolbarContent.setGravity(Gravity.CENTER_VERTICAL);
-        toolbarContent.setPadding(dp(4), 0, dp(8), 0);
+        // Row 1: Back, Save, Run
+        LinearLayout toolbarRow1 = new LinearLayout(this);
+        toolbarRow1.setOrientation(LinearLayout.HORIZONTAL);
+        toolbarRow1.setGravity(Gravity.CENTER_VERTICAL);
+        toolbarRow1.setBackgroundColor(COLOR_TOOLBAR_BG);
+        toolbarRow1.setPadding(dp(4), dp(4), dp(8), dp(4));
 
         backBtn = new TextView(this);
         backBtn.setText("\u2190 Back");
@@ -186,25 +197,16 @@ public class ModelEditorActivity extends AppCompatActivity {
             backBtn.setBackground(bg);
         }
         backBtn.setOnClickListener(v -> onBackPressed());
-        toolbarContent.addView(backBtn);
+        toolbarRow1.addView(backBtn);
 
-        titleText = new TextView(toolbar.getContext());
-        titleText.setText(modelName != null ? modelName : "Editor");
-        titleText.setTextSize(16);
-        titleText.setTextColor(COLOR_TOOLBAR_TEXT);
-        titleText.setTypeface(null, Typeface.BOLD);
-        titleText.setPadding(dp(8), 0, 0, 0);
-        titleText.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        toolbarContent.addView(titleText);
-
-        progressBar = new LinearProgressIndicator(toolbar.getContext());
+        progressBar = new LinearProgressIndicator(this);
         progressBar.setIndeterminate(true);
         progressBar.setTrackThickness(dp(2));
         progressBar.setVisibility(View.GONE);
         progressBar.setLayoutParams(new LinearLayout.LayoutParams(dp(20), dp(20)));
-        toolbarContent.addView(progressBar);
+        toolbarRow1.addView(progressBar);
 
-        saveBtn = new MaterialButton(toolbar.getContext());
+        saveBtn = new MaterialButton(this);
         saveBtn.setText("Save");
         saveBtn.setTextSize(12);
         saveBtn.setTypeface(null, Typeface.BOLD);
@@ -221,9 +223,9 @@ public class ModelEditorActivity extends AppCompatActivity {
         saveLp.setMargins(dp(4), 0, dp(4), 0);
         saveBtn.setLayoutParams(saveLp);
         saveBtn.setOnClickListener(v -> saveFile());
-        toolbarContent.addView(saveBtn);
+        toolbarRow1.addView(saveBtn);
 
-        runBtn = new MaterialButton(toolbar.getContext());
+        runBtn = new MaterialButton(this);
         runBtn.setText("Run");
         runBtn.setTextSize(12);
         runBtn.setTypeface(null, Typeface.BOLD);
@@ -239,10 +241,145 @@ public class ModelEditorActivity extends AppCompatActivity {
         runLp.setMargins(dp(4), 0, 0, 0);
         runBtn.setLayoutParams(runLp);
         runBtn.setOnClickListener(v -> runModel());
-        toolbarContent.addView(runBtn);
+        toolbarRow1.addView(runBtn);
 
-        toolbar.addView(toolbarContent);
-        root.addView(toolbar, new LinearLayout.LayoutParams(
+        root.addView(toolbarRow1, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // Row 2: Model title
+        titleText = new TextView(this);
+        titleText.setText(modelName != null ? modelName : "Editor");
+        titleText.setTextSize(15);
+        titleText.setTextColor(COLOR_TOOLBAR_TEXT);
+        titleText.setTypeface(null, Typeface.BOLD);
+        titleText.setPadding(dp(12), dp(4), dp(12), dp(4));
+        titleText.setMaxLines(2);
+        titleText.setBackgroundColor(COLOR_TOOLBAR_BG);
+        root.addView(titleText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // Row 3: Undo, Redo, Find
+        LinearLayout editBar = new LinearLayout(this);
+        editBar.setOrientation(LinearLayout.HORIZONTAL);
+        editBar.setGravity(Gravity.CENTER_VERTICAL);
+        editBar.setPadding(dp(8), dp(2), dp(8), dp(2));
+        editBar.setBackgroundColor(COLOR_TOOLBAR_BG);
+
+        TextView undoBtn = (TextView) makeFindBtn("\u21A9", v -> undo());
+        undoBtn.setTextSize(16);
+        undoBtn.setContentDescription("Undo");
+        editBar.addView(undoBtn);
+
+        TextView redoBtn = (TextView) makeFindBtn("\u21AA", v -> redo());
+        redoBtn.setTextSize(16);
+        redoBtn.setContentDescription("Redo");
+        editBar.addView(redoBtn);
+
+        TextView findToggle = (TextView) makeFindBtn("\uD83D\uDD0D Find", v -> toggleFindBar());
+        findToggle.setTextSize(13);
+        editBar.addView(findToggle);
+
+        root.addView(editBar, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // --- Find / Replace bar (hidden by default) ---
+        findBar = new LinearLayout(this);
+        findBar.setOrientation(LinearLayout.VERTICAL);
+        findBar.setBackgroundColor(COLOR_TOOLBAR_BG);
+        findBar.setPadding(dp(8), dp(8), dp(8), dp(8));
+        findBar.setVisibility(View.GONE);
+
+        // Row 1: find input + count + prev + next + toggle replace + close
+        LinearLayout findRow = new LinearLayout(this);
+        findRow.setOrientation(LinearLayout.HORIZONTAL);
+        findRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        findInput = new EditText(this);
+        findInput.setHint("Find...");
+        findInput.setTextSize(14);
+        findInput.setTypeface(Typeface.MONOSPACE);
+        findInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        findInput.setSingleLine(true);
+        findInput.setPadding(dp(10), dp(8), dp(10), dp(8));
+        findInput.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_NEXT);
+        LinearLayout.LayoutParams findInputLp = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        findInput.setLayoutParams(findInputLp);
+        {
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+            bg.setCornerRadius(dp(8));
+            bg.setColor(COLOR_EDITOR_BG);
+            bg.setStroke(dp(1), COLOR_BTN_STROKE);
+            findInput.setBackground(bg);
+        }
+        findInput.setTextColor(COLOR_DEFAULT);
+        findInput.setHintTextColor(0xFF888888);
+        findInput.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable s) { findAllMatches(false); }
+        });
+        findRow.addView(findInput);
+
+        findCountText = new TextView(this);
+        findCountText.setText("0");
+        findCountText.setTextSize(12);
+        findCountText.setTextColor(COLOR_STATUS_TEXT);
+        findCountText.setPadding(dp(6), 0, dp(6), 0);
+        findCountText.setMinWidth(dp(32));
+        findCountText.setGravity(Gravity.CENTER);
+        findRow.addView(findCountText);
+
+        findRow.addView(makeFindBtn("\u25B2", v -> findPrev()));
+        findRow.addView(makeFindBtn("\u25BC", v -> findNext()));
+        // Toggle replace row button
+        final TextView[] toggleReplaceBtn = {null};
+        toggleReplaceBtn[0] = (TextView) makeFindBtn("\u25BC", v -> {
+            replaceVisible = !replaceVisible;
+            replaceRow.setVisibility(replaceVisible ? View.VISIBLE : View.GONE);
+            toggleReplaceBtn[0].setText(replaceVisible ? "\u25B2" : "\u25BC");
+        });
+        toggleReplaceBtn[0].setTextSize(10);
+        toggleReplaceBtn[0].setContentDescription("Toggle replace");
+        findRow.addView(toggleReplaceBtn[0]);
+        findRow.addView(makeFindBtn("\u2715", v -> toggleFindBar()));
+
+        findBar.addView(findRow);
+
+        // Row 2: replace (hidden by default)
+        replaceRow = new LinearLayout(this);
+        replaceRow.setOrientation(LinearLayout.HORIZONTAL);
+        replaceRow.setGravity(Gravity.CENTER_VERTICAL);
+        replaceRow.setPadding(0, dp(6), 0, 0);
+        replaceRow.setVisibility(View.GONE);
+
+        replaceInput = new EditText(this);
+        replaceInput.setHint("Replace...");
+        replaceInput.setTextSize(14);
+        replaceInput.setTypeface(Typeface.MONOSPACE);
+        replaceInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        replaceInput.setSingleLine(true);
+        replaceInput.setPadding(dp(10), dp(8), dp(10), dp(8));
+        LinearLayout.LayoutParams repInputLp = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        replaceInput.setLayoutParams(repInputLp);
+        {
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setShape(android.graphics.drawable.GradientDrawable.RECTANGLE);
+            bg.setCornerRadius(dp(8));
+            bg.setColor(COLOR_EDITOR_BG);
+            bg.setStroke(dp(1), COLOR_BTN_STROKE);
+            replaceInput.setBackground(bg);
+        }
+        replaceInput.setTextColor(COLOR_DEFAULT);
+        replaceInput.setHintTextColor(0xFF888888);
+        replaceRow.addView(replaceInput);
+
+        replaceRow.addView(makeFindBtn("Replace", v -> replaceOne()));
+        replaceRow.addView(makeFindBtn("All", v -> replaceAll()));
+
+        findBar.addView(replaceRow);
+
+        root.addView(findBar, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         LinearLayout editorArea = new LinearLayout(this);
@@ -326,7 +463,12 @@ public class ModelEditorActivity extends AppCompatActivity {
         setContentView(root);
 
         codeEditor.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+                if (!isLoading && !undoRedoAction && count > 0) {
+                    pushUndoState();
+                }
+            }
             @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
             @Override
             public void afterTextChanged(Editable s) {
@@ -404,10 +546,10 @@ public class ModelEditorActivity extends AppCompatActivity {
             flags = dark ? (flags & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
             getWindow().getDecorView().setSystemUiVisibility(flags);
         }
-        if (toolbar != null) {
-            toolbar.setBackgroundTintList(ColorStateList.valueOf(COLOR_TOOLBAR_BG));
-            toolbar.setTitleTextColor(COLOR_TOOLBAR_TEXT);
+        if (titleText != null) {
             titleText.setTextColor(COLOR_TOOLBAR_TEXT);
+        }
+        if (saveBtn != null) {
             saveBtn.setBackgroundTintList(ColorStateList.valueOf(COLOR_BTN_BG));
             saveBtn.setStrokeColor(ColorStateList.valueOf(COLOR_BTN_STROKE));
             saveBtn.setTextColor(COLOR_BTN_TEXT);
@@ -426,6 +568,11 @@ public class ModelEditorActivity extends AppCompatActivity {
             statusInfo.setTextColor(COLOR_STATUS_TEXT);
             themeToggle.setTextColor(COLOR_STATUS_TEXT);
             themeToggle.setText(isDarkTheme ? "\u2600" : "\u263E");
+        }
+        if (findBar != null) {
+            findBar.setBackgroundColor(COLOR_TOOLBAR_BG);
+            findInput.setTextColor(COLOR_DEFAULT);
+            replaceInput.setTextColor(COLOR_DEFAULT);
         }
         if (codeEditor != null && codeEditor.getEditableText().length() > 0) {
             highlightSyntax(codeEditor.getEditableText());
@@ -730,6 +877,188 @@ public class ModelEditorActivity extends AppCompatActivity {
             sb.append(i).append('\n');
         }
         lineNumbers.setText(sb.toString());
+    }
+
+    // ---- Undo / Redo ----
+
+    private void pushUndoState() {
+        if (undoRedoAction) return;
+        String current = codeEditor.getText().toString();
+        if (!undoStack.isEmpty() && undoStack.peek().equals(current)) return;
+        undoStack.push(current);
+        if (undoStack.size() > 200) undoStack.removeLast();
+        redoStack.clear();
+    }
+
+    private void undo() {
+        if (undoStack.size() <= 1) return;
+        String current = undoStack.pop();
+        redoStack.push(current);
+        String previous = undoStack.peek();
+        undoRedoAction = true;
+        codeEditor.setText(previous);
+        codeEditor.setSelection(Math.min(previous.length(), codeEditor.getText().length()));
+        undoRedoAction = false;
+    }
+
+    private void redo() {
+        if (redoStack.isEmpty()) return;
+        String next = redoStack.pop();
+        undoStack.push(next);
+        undoRedoAction = true;
+        codeEditor.setText(next);
+        codeEditor.setSelection(Math.min(next.length(), codeEditor.getText().length()));
+        undoRedoAction = false;
+    }
+
+    // ---- Find / Replace ----
+
+    private View makeFindBtn(String text, android.view.View.OnClickListener l) {
+        TextView btn = new TextView(this);
+        btn.setText(text);
+        btn.setTextSize(12);
+        btn.setTextColor(COLOR_BTN_TEXT);
+        btn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        btn.setGravity(Gravity.CENTER);
+        btn.setOnClickListener(l);
+        return btn;
+    }
+
+    private void toggleFindBar() {
+        if (findBar.getVisibility() == View.VISIBLE) {
+            findBar.setVisibility(View.GONE);
+            hideKeyboard();
+        } else {
+            findBar.setVisibility(View.VISIBLE);
+            findInput.requestFocus();
+            showKeyboard();
+            // If there is selected text, pre-fill the find field
+            int selStart = codeEditor.getSelectionStart();
+            int selEnd = codeEditor.getSelectionEnd();
+            if (selStart < selEnd) {
+                String sel = codeEditor.getText().subSequence(selStart, selEnd).toString();
+                if (!sel.contains("\n")) {
+                    findInput.setText(sel);
+                    findInput.setSelection(sel.length());
+                }
+            }
+        }
+    }
+
+    private void findAllMatches(boolean cycle) {
+        String query = findInput.getText().toString();
+        String text = codeEditor.getText().toString();
+        if (query.isEmpty()) {
+            findCountText.setText("0");
+            return;
+        }
+        int count = 0;
+        int idx = 0;
+        while ((idx = text.indexOf(query, idx)) != -1) {
+            count++;
+            idx += query.length();
+        }
+            findCountText.setText(String.valueOf(count));
+        if (count > 0) {
+            if (cycle) findNext();
+        } else {
+            lastFindIndex = -1;
+        }
+    }
+
+    private void findNext() {
+        String query = findInput.getText().toString();
+        if (query.isEmpty()) return;
+        String text = codeEditor.getText().toString();
+        int start = codeEditor.getSelectionEnd();
+        int idx = text.indexOf(query, start);
+        if (idx == -1) {
+            // Wrap around
+            idx = text.indexOf(query);
+        }
+        if (idx != -1) {
+            codeEditor.setSelection(idx, idx + query.length());
+            lastFindIndex = idx;
+            scrollToSelection();
+        }
+    }
+
+    private void findPrev() {
+        String query = findInput.getText().toString();
+        if (query.isEmpty()) return;
+        String text = codeEditor.getText().toString();
+        int start = codeEditor.getSelectionStart() - 1;
+        if (start < 0) start = text.length();
+        int idx = text.lastIndexOf(query, start);
+        if (idx == -1) {
+            // Wrap around
+            idx = text.lastIndexOf(query);
+        }
+        if (idx != -1) {
+            codeEditor.setSelection(idx, idx + query.length());
+            lastFindIndex = idx;
+            scrollToSelection();
+        }
+    }
+
+    private void replaceOne() {
+        String query = findInput.getText().toString();
+        String replacement = replaceInput.getText().toString();
+        if (query.isEmpty()) return;
+        String text = codeEditor.getText().toString();
+        int selStart = codeEditor.getSelectionStart();
+        int selEnd = codeEditor.getSelectionEnd();
+        // Only replace if current selection matches query
+        if (selStart < selEnd && text.substring(selStart, selEnd).equals(query)) {
+            isLoading = true;
+            Editable editable = codeEditor.getText();
+            editable.replace(selStart, selEnd, replacement);
+            isLoading = false;
+            codeEditor.setSelection(selStart + replacement.length(), selStart + replacement.length());
+            findAllMatches(false);
+            scrollToSelection();
+        } else {
+            findNext();
+        }
+    }
+
+    private void replaceAll() {
+        String query = findInput.getText().toString();
+        String replacement = replaceInput.getText().toString();
+        if (query.isEmpty()) return;
+        String text = codeEditor.getText().toString();
+        if (!text.contains(query)) return;
+        String newText = text.replace(query, replacement);
+        isLoading = true;
+        currentContent = newText;
+        codeEditor.setText(newText);
+        isLoading = false;
+        highlightSyntax(codeEditor.getEditableText());
+        updateLineNumbers();
+        findAllMatches(false);
+    }
+
+    private void scrollToSelection() {
+        int pos = codeEditor.getSelectionStart();
+        if (pos < 0) return;
+        Layout layout = codeEditor.getLayout();
+        if (layout == null) return;
+        int line = layout.getLineForOffset(pos);
+        int lineTop = layout.getLineTop(line);
+        int editorHeight = codeEditor.getHeight();
+        codeEditor.scrollTo(0, Math.max(0, lineTop - editorHeight / 3));
+    }
+
+    private void showKeyboard() {
+        android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) imm.showSoftInput(findInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+    }
+
+    private void hideKeyboard() {
+        android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (imm != null) imm.hideSoftInputFromWindow(codeEditor.getWindowToken(), 0);
     }
 
     private int dp(int value) {
