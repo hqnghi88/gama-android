@@ -282,7 +282,7 @@ android {
                          'modeling32.png', 'lib/native/**', 'META-INF/DEPENDENCIES',
                          'META-INF/LICENSE', 'META-INF/NOTICE', 'META-INF/README*',
                          'META-INF/*.DSA', 'META-INF/*.SF', 'META-INF/*.RSA',
-                         '*.exsd', 'schema/*.exsd',
+                         '*.exsd', 'schema/*.exsd', 'osmosis-plugins.conf',
                          '*.namespaces', '*.imports', '*.extensions', '*.launch', '*.target']
             pickFirsts += ['META-INF/MANIFEST.MF']
         }
