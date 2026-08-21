@@ -1644,17 +1644,46 @@ public class ExperimentActivity extends Activity {
                 Log.i(TAG, "Started: controllers.size=" + controllers.size());
 
                 setupStdoutRedirect();
+
+                // Respect the GAML 'autorun' facet: experiments declared without
+                // autorun:true must open PAUSED and wait for the user to press Play.
+                boolean autoRun = false;
+                try {
+                    Object ar = expClass.getMethod("isAutorun").invoke(expPlan);
+                    autoRun = Boolean.TRUE.equals(ar);
+                } catch (Exception e) {
+                    Log.w(TAG, "isAutorun check failed", e);
+                }
+                log("Experiment '" + expName + "' autorun=" + autoRun);
+
                 ctrlInterface.getMethod("processStart", boolean.class).invoke(controller, true);
 
                 Class<?> absControllerClass = Class.forName("gama.api.kernel.simulation.DefaultExperimentController").getSuperclass();
                 java.lang.reflect.Field pField = absControllerClass.getDeclaredField("paused");
-                pField.setAccessible(true); pField.setBoolean(controller, false);
+                pField.setAccessible(true);
                 java.lang.reflect.Field lField = absControllerClass.getDeclaredField("lock");
                 lField.setAccessible(true);
                 Object lock = lField.get(controller);
-                lock.getClass().getMethod("release").invoke(lock);
 
-                log("Experiment started");
+                if (autoRun) {
+                    pField.setBoolean(controller, false);
+                    lock.getClass().getMethod("release").invoke(lock);
+                    handler.post(() -> {
+                        setTransportIcon(playPauseBtn, R.drawable.ic_pause);
+                        stepBtn.setAlpha(0.45f);
+                    });
+                    log("Experiment started (autorun:true)");
+                } else {
+                    // Pause immediately after init so the simulation waits for Play.
+                    ctrlInterface.getMethod("processPause", boolean.class).invoke(controller, true);
+                    isPaused = true;
+                    handler.post(() -> {
+                        setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                        stepBtn.setAlpha(1f);
+                    });
+                    log("Experiment loaded paused (no autorun:true) — press Play to run");
+                }
+
                 startStatePolling(controller);
             } catch (Exception e) {
                 Log.e(TAG, "Run error", e);
