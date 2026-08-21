@@ -20,6 +20,7 @@ public class CanvasGraphics2D extends Graphics2D {
     private final Paint fillPaint;
     private final Paint strokePaint;
     private final Paint textPaint;
+    private final Paint nnPaint;
     private final Matrix currentMatrix;
     private final Matrix savedMatrix;
     private final java.awt.image.BufferedImage ownerImage;
@@ -46,6 +47,8 @@ public class CanvasGraphics2D extends Graphics2D {
         this.strokePaint.setStrokeWidth(1f);
         this.textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         this.textPaint.setTextSize(12f);
+        this.nnPaint = new Paint();
+        this.nnPaint.setFilterBitmap(false);
         this.currentMatrix = new Matrix();
         this.savedMatrix = new Matrix();
         this.awtTransform = new AffineTransform();
@@ -497,20 +500,30 @@ public class CanvasGraphics2D extends Graphics2D {
         trace("drawImage:x" + x + "y" + y);
         Bitmap src = toBitmap(img);
         if (src == null) return false;
-        canvas.drawBitmap(src, (float) x, (float) y, fillPaint);
+        canvas.drawBitmap(src, (float) x, (float) y, nnPaint);
         return true;
     }
 
     @Override
     public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.image.ImageObserver observer) {
         markDrawn();
-        trace("drawImage:x" + x + "y" + y + "w" + width + "h" + height);
         Bitmap src = toBitmap(img);
-        if (src == null) return false;
+        if (src == null) {
+            return false;
+        }
+        if (ownerImage != null && x == 0 && y == 0 && width > 0 && height > 0
+                && width != src.getWidth() && height != src.getHeight()) {
+            Bitmap scaled = Bitmap.createScaledBitmap(src, width, height, false);
+            int[] px = new int[width * height];
+            scaled.getPixels(px, 0, width, 0, 0, width, height);
+            if (scaled != src) scaled.recycle();
+            ownerImage.setRGB(0, 0, width, height, px, 0, width);
+            return true;
+        }
         Matrix m = new Matrix();
         m.postScale(width / (float) src.getWidth(), height / (float) src.getHeight());
         m.postTranslate(x, y);
-        canvas.drawBitmap(src, m, fillPaint);
+        canvas.drawBitmap(src, m, nnPaint);
         return true;
     }
 
@@ -531,7 +544,7 @@ public class CanvasGraphics2D extends Graphics2D {
         Matrix m = new Matrix();
         m.postTranslate((float) xform.getTranslateX(), (float) xform.getTranslateY());
         m.postScale((float) xform.getScaleX(), (float) xform.getScaleY());
-        canvas.drawBitmap(src, m, fillPaint);
+        canvas.drawBitmap(src, m, nnPaint);
         return true;
     }
 
@@ -540,27 +553,12 @@ public class CanvasGraphics2D extends Graphics2D {
         int w = bi.getWidth();
         int h = bi.getHeight();
         if (w <= 0 || h <= 0) return null;
-        if (w == 250 && h == 217 && BIRDPROBE < 4) {
-            BIRDPROBE++;
-            int[] d = null;
-            try {
-                java.awt.image.DataBuffer db = bi.getRaster().getDataBuffer();
-                if (db instanceof java.awt.image.DataBufferInt) d = ((java.awt.image.DataBufferInt) db).getData();
-            } catch (Throwable t) {}
-            String d0 = d != null ? Integer.toHexString(d[0]) : "null";
-            String dc = d != null ? Integer.toHexString(d[w / 2 * h + h / 2]) : "null";
-            android.util.Log.i("DEBUG_BIRD", "toBitmap source gd=" + bi.isGraphicsDrawn()
-                    + " type=" + bi.getType() + " owner=" + System.identityHashCode(bi)
-                    + " data[0]=" + d0 + " data[c]=" + dc);
-        }
         int[] pixels = new int[w * h];
         bi.getRGB(0, 0, w, h, pixels, 0, w);
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         bmp.setPixels(pixels, 0, w, 0, 0, w, h);
         return bmp;
     }
-
-    private static int BIRDPROBE = 0;
 
     public Bitmap getBitmap() { return bitmap; }
 

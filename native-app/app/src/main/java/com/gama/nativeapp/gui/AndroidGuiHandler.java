@@ -262,8 +262,14 @@ public class AndroidGuiHandler implements IGui {
 
     @Override
     public boolean openSimulationPerspective(IModelSpecies model, String experimentId) {
+        Log.i(TAG, "openSimulationPerspective called for model=" + model.getName() + " experiment=" + experimentId);
         Activity activity = currentActivity;
         if (activity == null) return false;
+        if (activity instanceof ExperimentActivity) {
+            ExperimentActivity exp = (ExperimentActivity) activity;
+            exp.autoStartExperiment(experimentId);
+            return true;
+        }
         Intent intent = new Intent(activity, ExperimentActivity.class);
         intent.putExtra("model_name", model.getName());
         intent.putExtra("experiment_name", experimentId);

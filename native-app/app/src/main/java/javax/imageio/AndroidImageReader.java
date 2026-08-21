@@ -4,6 +4,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,9 +52,17 @@ public class AndroidImageReader extends ImageReader {
 
         notifyImageStarted();
 
+        byte[] rawBytes = readFileBytes(file);
+        byte[] decodedBytes = stripGammaChunk(rawBytes);
+
         BitmapFactory.Options opts = new BitmapFactory.Options();
         opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+        Bitmap bitmap;
+        if (decodedBytes != null) {
+            bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length, opts);
+        } else {
+            bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+        }
 
         if (bitmap == null) {
             throw new IOException("Failed to decode image: " + file.getName());
@@ -74,6 +83,49 @@ public class AndroidImageReader extends ImageReader {
         notifyImageComplete();
 
         return image;
+    }
+
+    private static byte[] readFileBytes(File file) throws IOException {
+        java.io.FileInputStream fis = new java.io.FileInputStream(file);
+        byte[] data = new byte[(int) file.length()];
+        try {
+            int off = 0;
+            while (off < data.length) {
+                int n = fis.read(data, off, data.length - off);
+                if (n < 0) break;
+                off += n;
+            }
+        } finally {
+            fis.close();
+        }
+        return data;
+    }
+
+    private static byte[] stripGammaChunk(byte[] png) {
+        if (png.length < 8) return null;
+        if (png[0] != (byte) 0x89 || png[1] != 'P' || png[2] != 'N' || png[3] != 'G') return null;
+
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(png.length);
+        out.write(png, 0, 8);
+        int pos = 8;
+        boolean stripped = false;
+        while (pos + 8 <= png.length) {
+            int len = ((png[pos] & 0xFF) << 24) | ((png[pos + 1] & 0xFF) << 16)
+                    | ((png[pos + 2] & 0xFF) << 8) | (png[pos + 3] & 0xFF);
+            int type = ((png[pos + 4] & 0xFF) << 24) | ((png[pos + 5] & 0xFF) << 16)
+                    | ((png[pos + 6] & 0xFF) << 8) | (png[pos + 7] & 0xFF);
+            int totalLen = 12 + len;
+            if (pos + totalLen > png.length) return null;
+
+            if (type == 0x67414D41) {
+                stripped = true;
+            } else {
+                out.write(png, pos, totalLen);
+            }
+            pos += totalLen;
+        }
+        if (!stripped) return null;
+        return out.toByteArray();
     }
 
     @Override

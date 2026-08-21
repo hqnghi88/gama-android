@@ -1528,6 +1528,16 @@ public class ExperimentActivity extends Activity {
         } catch (Exception e) { log("Includes: " + e.getMessage()); }
     }
 
+    /**
+     * Called by AndroidGuiHandler.openSimulationPerspective() when the GAMA engine
+     * requests an experiment after compilation.  Stores the name so showExperiments
+     * can apply the autorun check.  If compilation is already done, triggers the
+     * picker immediately.
+     */
+    public void autoStartExperiment(String experimentId) {
+        log("Engine requested experiment: " + experimentId + " (ignored, picker will show)");
+    }
+
     private void showExperiments(Object model) {
         try {
             Class<?> modelClass = Class.forName("gama.api.kernel.species.IModelSpecies");
@@ -1551,18 +1561,6 @@ public class ExperimentActivity extends Activity {
             for (int i = 0; i < expList.size(); i++) {
                 names[i] = (String) expList.get(i).getClass().getMethod("getName").invoke(expList.get(i));
                 log("  Experiment: " + names[i]);
-            }
-
-            String requested = getIntent().getStringExtra("experiment_name");
-            if (requested != null && !requested.isEmpty()) {
-                for (int i = 0; i < expList.size(); i++) {
-                    if (requested.equals(names[i])) {
-                        log("Auto-starting experiment: " + names[i]);
-                        runExperiment(expList.get(i), names[i]);
-                        return;
-                    }
-                }
-                log("Experiment '" + requested + "' not found, showing picker");
             }
 
             new androidx.appcompat.app.AlertDialog.Builder(this)

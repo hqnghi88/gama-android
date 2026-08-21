@@ -153,7 +153,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     public int getDrawnShapesCount() { return drawnShapesCount; }
     public int getScene3dSize() { return scene3d.size(); }
-    public void resetDrawnShapesCount() { drawnShapesCount = 0; layerCount = 0; shapeDrawCount = 0; }
+    public void resetDrawnShapesCount() { drawnShapesCount = 0; layerCount = 0; }
 
     public AndroidDisplayGraphics() {
         fillPaint.setStyle(Paint.Style.FILL);
@@ -215,7 +215,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private float toPixelW(double modelW) { return (float) wFromModelUnitsToPixels(modelW); }
     private float toPixelH(double modelH) { return (float) hFromModelUnitsToPixels(modelH); }
 
-    private int shapeDrawCount = 0;
     @Override
     public Rectangle2D drawShape(Geometry gg, IDrawingAttributes attributes) {
         if (gg == null || canvas == null) return null;
@@ -225,7 +224,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             return rect;
         }
         drawnShapesCount++;
-        shapeDrawCount++;
 
         Geometry geometry = gg;
 
@@ -795,7 +793,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     @Override
     public Rectangle2D drawImage(BufferedImage img, IDrawingAttributes attributes) {
-        if (img == null || canvas == null) return null;
+        if (img == null || canvas == null) {
+            return null;
+        }
         if (is3dMode() && !(currentLayer instanceof OverlayLayer)) {
             return drawImage3D(img, attributes);
         }
@@ -1821,10 +1821,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public void fillBackground(IColor bgColor) {
         if (canvas == null) return;
         setAlpha(1);
-        bgPaint.setColor(gamaColorToArgb(bgColor));
+        int argb = gamaColorToArgb(bgColor);
+        bgPaint.setColor(argb);
         bgPaint.setStyle(Paint.Style.FILL);
         canvas.drawRect(0, 0, (float) getSurface().getDisplayWidth(),
                 (float) getSurface().getDisplayHeight(), bgPaint);
+        android.util.Log.d("ANDROID_DISPLAY", "fillBackground color=0x" + Integer.toHexString(argb)
+                + " rect=(0,0," + getSurface().getDisplayWidth() + "," + getSurface().getDisplayHeight() + ")"
+                + " canvas=" + canvas.getWidth() + "x" + canvas.getHeight());
     }
 
     @Override
@@ -1842,7 +1846,6 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     public boolean beginDrawingLayers() {
         drawnShapesCount = 0;
         layerCount = 0;
-        shapeDrawCount = 0;
         if (is3dMode()) scene3d.beginFrame();
         return true;
     }
