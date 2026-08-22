@@ -1,0 +1,80 @@
+name: Build & Upload Release
+
+on:
+  release:
+    types: [published]
+
+env:
+  JAVA_VERSION: '21'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache GAMA deps
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: native-app/app/libs
+          key: gama-deps-${{ hashFiles('native-app/app/build.gradle') }}
+          restore-keys: gama-deps-
+
+      - name: Download GAMA dependencies
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          curl -fL --retry 3 \
+            "https://github.com/${{ github.repository }}/releases/download/native-app-deps/native-app-deps.tar.gz" \
+            -o /tmp/native-app-deps.tar.gz
+          tar -xzf /tmp/native-app-deps.tar.gz -C native-app/
+          rm /tmp/native-app-deps.tar.gz
+
+      - name: Verify libs
+        run: |
+          COUNT=$(ls native-app/app/libs/pristine/*.jar 2>/dev/null | wc -l)
+          echo "Pristine jars: $COUNT"
+          if [ "$COUNT" -lt 30 ]; then
+            echo "ERROR: incomplete deps bundle"
+            exit 1
+          fi
+
+      - name: Patch GAMA jars
+        working-directory: native-app
+        run: ./gradlew --no-daemon app:patchGamaJars
+
+      - name: Build APK
+        working-directory: native-app
+        run: ./gradlew --no-daemon app:assembleDebug
+
+      - name: Build AAB
+        working-directory: native-app
+        run: ./gradlew --no-daemon app:bundleRelease
+
+      - name: Upload APK to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            native-app/app/build/outputs/apk/debug/app-debug.apk \
+            --clobber
+
+      - name: Upload AAB to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            native-app/app/build/outputs/bundle/release/app-release.aab \
+            --clobber
