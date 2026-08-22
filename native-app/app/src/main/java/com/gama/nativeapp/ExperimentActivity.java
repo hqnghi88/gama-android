@@ -26,6 +26,7 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -139,6 +140,9 @@ public class ExperimentActivity extends Activity {
     private Object currentController;
     private Runnable statePollRunnable;
     private Runnable clockUpdateRunnable;
+    // Dynamic content of the Params tab, rebuilt when an experiment opens
+    private LinearLayout paramList;
+    private final List<Runnable> paramRefreshers = new ArrayList<>();
 
     // Redirect target for System.out/System.err, stored so onDestroy can restore
     // the originals. Capturing the live System.out each launch chained the
@@ -754,10 +758,11 @@ public class ExperimentActivity extends Activity {
         ScrollView paramScroll = new ScrollView(this);
         paramScroll.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
 
-        LinearLayout paramList = new LinearLayout(this);
-        paramList.setOrientation(LinearLayout.VERTICAL);
-        paramList.setPadding(dp(16), dp(8), dp(16), dp(8));
-        paramScroll.addView(paramList);
+        LinearLayout paramListLayout = new LinearLayout(this);
+        paramListLayout.setOrientation(LinearLayout.VERTICAL);
+        paramListLayout.setPadding(dp(16), dp(8), dp(16), dp(8));
+        paramScroll.addView(paramListLayout);
+        paramList = paramListLayout;
 
         // Speed slider
         MaterialCardView speedCard = new MaterialCardView(this);
@@ -968,7 +973,64 @@ public class ExperimentActivity extends Activity {
 
     // ---- Tab/UI Switching ----
 
+    // Shown in the display container while a model initializes (heavy init like
+    // shapefile triangulation can take minutes on a phone) so the blank period
+    // reads as "loading" instead of "broken".
+    private FrameLayout loadingOverlay;
+
+    private void showLoading(String message) {
+        handler.post(() -> {
+            if (destroyed || displayContainer == null) return;
+            if (loadingOverlay != null && loadingOverlay.getParent() == displayContainer) {
+                updateLoadingText(message);
+                return;
+            }
+            displayContainer.removeAllViews();
+            loadingOverlay = new FrameLayout(this);
+            loadingOverlay.setBackgroundColor(thc(0xFFF5F5F5, 0xFF1E1E2E));
+
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setGravity(Gravity.CENTER);
+            FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
+                    WRAP_CONTENT, WRAP_CONTENT, Gravity.CENTER);
+            box.setLayoutParams(blp);
+
+            ProgressBar pb = new ProgressBar(this);
+            box.addView(pb, new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+
+            TextView tv = new TextView(this);
+            tv.setId(R.id.loading_text);
+            tv.setText(message);
+            tv.setTextSize(14);
+            tv.setPadding(dp(24), dp(12), dp(24), 0);
+            tv.setGravity(Gravity.CENTER);
+            tv.setTextColor(thc(0xFF333333, 0xFFE0E0E0));
+            box.addView(tv, new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+
+            loadingOverlay.addView(box);
+            displayContainer.addView(loadingOverlay, new FrameLayout.LayoutParams(
+                    MATCH_PARENT, MATCH_PARENT));
+        });
+    }
+
+    private void updateLoadingText(String message) {
+        if (loadingOverlay == null) return;
+        View v = loadingOverlay.findViewById(R.id.loading_text);
+        if (v instanceof TextView tv) tv.setText(message);
+    }
+
+    private void hideLoading() {
+        handler.post(() -> {
+            if (loadingOverlay != null && loadingOverlay.getParent() instanceof ViewGroup vp) {
+                vp.removeView(loadingOverlay);
+            }
+            loadingOverlay = null;
+        });
+    }
+
     public void onDisplayRegistered(String displayName, AndroidDisplaySurface surface) {
+        hideLoading();
         Log.i(TAG, "onDisplayRegistered: " + displayName + " (container=" + (getDisplayContainer() != null) + ")");
         if (activeDisplayName == null) {
             activeDisplayName = displayName;
@@ -1195,7 +1257,12 @@ public class ExperimentActivity extends Activity {
 
     private void setTransportIcon(ImageView btn, int res) {
         btn.setImageResource(res);
-        DrawableCompat.setTint(btn.getDrawable(), Color.WHITE);
+        android.graphics.drawable.Drawable d = btn.getDrawable();
+        if (d == null) return;
+        // The play/pause button sits on a light circle in light mode and a dark
+        // circle in dark mode (see styleTransportButton) — tint accordingly so
+        // the icon never disappears against its own background.
+        DrawableCompat.setTint(d, thc(0xFF006847, 0xFFFFFFFF));
     }
 
     private void stopSimulation() {
@@ -1204,6 +1271,10 @@ public class ExperimentActivity extends Activity {
         isPaused = false;
         if (statePollRunnable != null) handler.removeCallbacks(statePollRunnable);
         if (clockUpdateRunnable != null) handler.removeCallbacks(clockUpdateRunnable);
+        handler.post(() -> {
+            paramRefreshers.clear();
+            if (paramList != null) paramList.removeAllViews();
+        });
         try {
             if (currentController != null) {
                 Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
@@ -1410,33 +1481,35 @@ public class ExperimentActivity extends Activity {
                 String projectRoot = parentPath.endsWith("models/") ?
                         parentPath.substring(0, parentPath.length() - "models/".length()) : "";
 
-                boolean force = LibraryJarUtil.isExtractionStale(this);
-                if (!force) {
-                    jarFile.close();
-                } else {
-                    java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
-                    while (entries.hasMoreElements()) {
-                        JarEntry e = entries.nextElement();
-                        String eName = e.getName();
-                        if (e.isDirectory() || !eName.startsWith(projectRoot)) continue;
-                        String relativePath = eName.substring(projectRoot.length());
-                        if (relativePath.isEmpty()) continue;
-                        File outFile = new File(cacheDir, projectRoot + relativePath);
-                        if (outFile.exists()) {
-                            if (outFile.lastModified() > cacheJar.lastModified()) continue;
-                        }
-                        outFile.getParentFile().mkdirs();
-                        try (InputStream is = jarFile.getInputStream(e);
-                             FileOutputStream fos = new FileOutputStream(outFile)) {
-                            byte[] buf = new byte[4096]; int n;
-                            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
-                        }
+                // 1) Extract the model's own project tree
+                java.util.Enumeration<? extends JarEntry> entries = jarFile.entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry e = entries.nextElement();
+                    String eName = e.getName();
+                    if (e.isDirectory() || !eName.startsWith(projectRoot)) continue;
+                    String relativePath = eName.substring(projectRoot.length());
+                    if (relativePath.isEmpty()) continue;
+                    File outFile = new File(cacheDir, projectRoot + relativePath);
+                    if (outFile.exists()) {
+                        if (outFile.lastModified() > cacheJar.lastModified()) continue;
                     }
-                    // Do NOT markExtracted here: only the full library extraction
-                    // (ModelNavigatorActivity) marks completion, otherwise a partial
-                    // extraction could cause the full one to be skipped.
-                    jarFile.close();
+                    outFile.getParentFile().mkdirs();
+                    try (InputStream is = jarFile.getInputStream(e);
+                         FileOutputStream fos = new FileOutputStream(outFile)) {
+                        byte[] buf = new byte[4096]; int n;
+                        while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                    }
                 }
+                // 2) Extract data files referenced by the model but living OUTSIDE its
+                //    project tree (e.g. "../../Data Data Importation/includes/x.shp").
+                extractReferencedJarFiles(jarFile, cacheJar, cacheDir,
+                        parentPath, new String(java.nio.file.Files.readAllBytes(
+                                java.nio.file.Paths.get(new File(cacheDir, jarEntryPath).getAbsolutePath())),
+                                java.nio.charset.StandardCharsets.UTF_8));
+                // Do NOT markExtracted here: only the full library extraction
+                // (ModelNavigatorActivity) marks completion, otherwise a partial
+                // extraction could cause the full one to be skipped.
+                jarFile.close();
 
                 File modelFile = new File(cacheDir, jarEntryPath);
                 Object model = compileFile(modelFile);
@@ -1452,6 +1525,189 @@ public class ExperimentActivity extends Activity {
 
     private void postUi(Runnable r) {
         handler.post(() -> { if (!destroyed) r.run(); });
+    }
+
+    /**
+     * Scans the GAML source for quoted string literals that look like relative
+     * file paths and extracts the matching JAR entries next to the model, even
+     * when they resolve OUTSIDE the model's project tree (e.g.
+     * "../../Data/Data Importation/includes/test.shp"). Cross-project imports
+     * ("../../Predator Prey/models/Model 13.gaml") are resolved by remapping
+     * their first path segment onto the JAR's layout, and the imported model's
+     * whole source project is extracted alongside so its own includes resolve.
+     */
+    private void extractReferencedJarFiles(JarFile jarFile, File cacheJar, File cacheDir,
+                                           String parentPath, String gamlSource) {
+        try {
+            // Index entries by their path minus the first segment: the library JAR
+            // flattens desktop top-level projects differently than GAML expects.
+            java.util.Map<String, JarEntry> byRest = new java.util.HashMap<>();
+            java.util.Enumeration<? extends JarEntry> all = jarFile.entries();
+            while (all.hasMoreElements()) {
+                JarEntry e = all.nextElement();
+                String n = e.getName();
+                int slash = n.indexOf('/');
+                if (slash > 0 && !e.isDirectory()) byRest.putIfAbsent(n.substring(slash + 1), e);
+            }
+
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("\"([^\n\"]+)\"|'([^'\n]+)'")
+                    .matcher(gamlSource);
+            java.util.Set<String> done = new java.util.HashSet<>();
+            while (m.find()) {
+                String lit = m.group(1) != null ? m.group(1) : m.group(2);
+                if (lit == null || lit.isEmpty()) continue;
+                if (lit.startsWith("#") || lit.startsWith("http")) continue;
+                if (!lit.contains("/") && !lit.contains(".")) continue;
+                String norm = normalizeJarPath(parentPath, lit);
+                if (norm.isEmpty() || !done.add(norm)) continue;
+
+                // Imported models: prefer LINKING to the already-extracted library
+                // copy (no duplication); fall back to extracting from the JAR only
+                // if the file is not on disk anywhere.
+                if (norm.endsWith(".gaml") && linkExistingImport(cacheDir, norm)) {
+                    continue;
+                }
+
+                JarEntry entry = resolveJarEntry(jarFile, byRest, norm);
+                if (entry == null) continue;
+                extractJarEntryTo(jarFile, cacheJar, cacheDir, entry, norm);
+
+                // Imported model not found on disk: pull its whole source project
+                // tree from the JAR so ITS includes/images resolve relative to it.
+                if (norm.endsWith(".gaml")) {
+                    String jarPath = entry.getName();
+                    int s1 = jarPath.indexOf('/');
+                    int s2 = s1 >= 0 ? jarPath.indexOf('/', s1 + 1) : -1;
+                    if (s2 > 0) {
+                        String projectPrefix = jarPath.substring(0, s2 + 1);
+                        String key = norm.substring(norm.indexOf('/') + 1);
+                        String destPrefix = norm.substring(0, norm.length() - key.length());
+                        log("Import support: extracting project tree for " + key);
+                        java.util.Enumeration<? extends JarEntry> proj = jarFile.entries();
+                        while (proj.hasMoreElements()) {
+                            JarEntry pe = proj.nextElement();
+                            String pn = pe.getName();
+                            if (pe.isDirectory() || !pn.startsWith(projectPrefix)) continue;
+                            String relInProject = pn.substring(pn.indexOf('/') + 1);
+                            if (relInProject.isEmpty()) continue;
+                            extractJarEntryTo(jarFile, cacheJar, cacheDir, pe,
+                                    destPrefix + relInProject);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log("Includes: " + e.getMessage());
+        }
+    }
+
+    /**
+     * If an imported model already exists in the extracted library under a
+     * different top-level folder (e.g. "tutorials/Predator Prey" vs the
+     * "recipes/Predator Prey" the GAML import resolves to), symlinks that
+     * existing project directory into place instead of duplicating files.
+     */
+    private boolean linkExistingImport(File cacheDir, String norm) {
+        try {
+            File dest = new File(cacheDir, norm);
+            if (dest.exists()) return true;
+            int s1 = norm.indexOf('/');
+            int s2 = norm.indexOf('/', s1 + 1);
+            if (s2 < 0) return false;
+            String destPrefix = norm.substring(0, s1);        // e.g. "recipes"
+            String projectName = norm.substring(s1 + 1, s2);  // e.g. "Predator Prey"
+            String remainder = norm.substring(s1 + 1);        // "Predator Prey/models/X.gaml"
+
+            File srcProject = findProjectDirWith(cacheDir, destPrefix, projectName, remainder);
+            if (srcProject == null) return false;
+
+            File linkParent = new File(cacheDir, destPrefix);
+            linkParent.mkdirs();
+            File link = new File(linkParent, projectName);
+            if (link.exists()) return true;
+            android.system.Os.symlink(srcProject.getAbsolutePath(), link.getAbsolutePath());
+            log("Import support: linked " + destPrefix + "/" + projectName
+                    + " -> " + srcProject.getPath().replace(cacheDir.getPath() + "/", ""));
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "linkExistingImport failed", t);
+            return false;
+        }
+    }
+
+    /** Finds a directory named projectName (outside excludePrefix) containing the expected file. */
+    private static File findProjectDirWith(File cacheDir, String excludePrefix,
+                                           String projectName, String remainder) {
+        final File[] result = {null};
+        try {
+            java.nio.file.Files.walkFileTree(cacheDir.toPath(),
+                    new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+                        @Override public java.nio.file.FileVisitResult visitFile(
+                                java.nio.file.Path file,
+                                java.nio.file.attribute.BasicFileAttributes attrs) {
+                            String rel = cacheDir.toPath().relativize(file).toString();
+                            if (rel.equals(remainder) || rel.endsWith("/" + remainder)) {
+                                if (!rel.startsWith(excludePrefix + "/")) {
+                                    // Project dir = path up to and including projectName
+                                    int idx = rel.lastIndexOf(projectName + "/");
+                                    if (idx >= 0) {
+                                        result[0] = cacheDir.toPath()
+                                                .resolve(rel.substring(0, idx + projectName.length()))
+                                                .toFile();
+                                        return java.nio.file.FileVisitResult.TERMINATE;
+                                    }
+                                }
+                            }
+                            return java.nio.file.FileVisitResult.CONTINUE;
+                        }
+                    });
+        } catch (Throwable t) {
+            Log.w(TAG, "findProjectDirWith failed", t);
+        }
+        return result[0];
+    }
+
+    /** Exact match, then models/-prefixed, then first-segment-remapped match.
+     *  byRest keys are JAR paths minus their first segment (e.g.
+     *  "Predator Prey/models/X.gaml" from "tutorials/Predator Prey/..."), so the
+     *  fallback strips the FIRST segment of the normalized reference. */
+    private static JarEntry resolveJarEntry(JarFile jarFile,
+                                            java.util.Map<String, JarEntry> byRest, String norm) {
+        for (String candidate : new String[]{norm, "models/" + norm, "Models/" + norm}) {
+            JarEntry e2 = jarFile.getJarEntry(candidate);
+            if (e2 != null && !e2.isDirectory()) return e2;
+        }
+        int slash = norm.indexOf('/');
+        if (slash > 0) {
+            JarEntry e3 = byRest.get(norm.substring(slash + 1));
+            if (e3 != null) return e3;
+        }
+        return null;
+    }
+
+    /** Extracts one entry unless a fresh copy already exists at destDir/destRel. */
+    private void extractJarEntryTo(JarFile jarFile, File cacheJar, File cacheDir,
+                                   JarEntry entry, String destRel) throws java.io.IOException {
+        File outFile = new File(cacheDir, destRel);
+        if (outFile.exists() && outFile.lastModified() > cacheJar.lastModified()) return;
+        outFile.getParentFile().mkdirs();
+        try (InputStream is = jarFile.getInputStream(entry);
+             FileOutputStream fos = new FileOutputStream(outFile)) {
+            byte[] buf = new byte[4096]; int n;
+            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+        }
+    }
+
+    /** Resolves "dir/" + "../x/y.ext" into a clean JAR-relative path. */
+    private static String normalizeJarPath(String baseDir, String rel) {
+        java.util.ArrayDeque<String> stack = new java.util.ArrayDeque<>();
+        for (String part : (baseDir + rel).split("/")) {
+            if (part.isEmpty() || part.equals(".")) continue;
+            if (part.equals("..")) { if (!stack.isEmpty()) stack.pollLast(); }
+            else stack.addLast(part);
+        }
+        return String.join("/", stack);
     }
 
     private Object compileFile(File modelFile) throws Exception {
@@ -1582,6 +1838,7 @@ public class ExperimentActivity extends Activity {
     }
 
     private void showError(String message) {
+        hideLoading();
         postUi(() -> {
             contentArea.removeAllViews();
             TextView errText = new TextView(this);
@@ -1612,6 +1869,7 @@ public class ExperimentActivity extends Activity {
         } catch (Exception e) { Log.w(TAG, "Clear state error", e); }
 
         handler.post(() -> toolbarTitle.setText(expName));
+        showLoading("Initializing \"" + expName + "\"…\n(heavy models can take a while)");
 
         new Thread(() -> {
             try {
@@ -1656,6 +1914,17 @@ public class ExperimentActivity extends Activity {
                 }
                 log("Experiment '" + expName + "' autorun=" + autoRun);
 
+                // Batch experiments drive many simulations internally and have no
+                // display; their progress is reported through status messages.
+                try {
+                    boolean isBatch = (Boolean) expClass.getMethod("isBatch").invoke(expPlan);
+                    if (isBatch) {
+                        handler.post(() -> toolbarTitle.setText("⚙ " + expName + " (batch)"));
+                        log("Batch experiment — open the Console tab to follow runs; "
+                                + "Stop ends the exploration.");
+                    }
+                } catch (Throwable ignored) {}
+
                 ctrlInterface.getMethod("processStart", boolean.class).invoke(controller, true);
 
                 Class<?> absControllerClass = Class.forName("gama.api.kernel.simulation.DefaultExperimentController").getSuperclass();
@@ -1685,6 +1954,17 @@ public class ExperimentActivity extends Activity {
                 }
 
                 startStatePolling(controller);
+
+                // Build the Params tab content from the engine (parameters,
+                // texts, user_command buttons) once the scope is available.
+                if (expPlan instanceof gama.api.kernel.species.IExperimentSpecies esp) {
+                    handler.post(() -> {
+                        if (destroyed || paramList == null) return;
+                        paramRefreshers.clear();
+                        com.gama.nativeapp.gui.ParamsPanelBuilder.populate(
+                                this, paramList, esp, paramRefreshers);
+                    });
+                }
             } catch (Exception e) {
                 Log.e(TAG, "Run error", e);
                 log("ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -1693,6 +1973,7 @@ public class ExperimentActivity extends Activity {
                     log("  CAUSE: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
                     cause = cause.getCause();
                 }
+                hideLoading();
                 handler.post(() -> { isRunning = false; toolbarTitle.setText(modelName + " (error)"); });
             }
         }).start();
@@ -1781,6 +2062,12 @@ public class ExperimentActivity extends Activity {
                     if (changed || stale) {
                         lastInvalidate[0] = System.currentTimeMillis();
                         updateDisplays();
+                        // Refresh read-only parameter values / labels
+                        if (paramRefreshers != null && !paramRefreshers.isEmpty()) {
+                            for (Runnable r : new ArrayList<>(paramRefreshers)) {
+                                try { r.run(); } catch (Throwable ignored) {}
+                            }
+                        }
                     }
                 });
             } catch (Exception e) {

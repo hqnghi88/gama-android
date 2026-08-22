@@ -35,6 +35,7 @@ import gama.api.types.map.IMap;
 import gama.api.compilation.descriptions.IActionDescription;
 import gama.api.utils.tests.CompoundSummary;
 import gama.api.types.geometry.IPoint;
+import gama.api.types.map.GamaMapFactory;
 import gama.api.utils.server.ISocketCommand;
 import gama.api.kernel.simulation.ISimulationAgent;
 import gama.api.kernel.simulation.ITopLevelAgent;
@@ -43,6 +44,17 @@ import gama.api.ui.displays.IDisplayCreator;
 public class AndroidGuiHandler implements IGui {
 
     private static final String TAG = "AndroidGuiHandler";
+
+    // Last known pointer position, published by AndroidDisplaySurface so GAML
+    // constants like #user_location / #user_location_in_display resolve.
+    private static volatile IPoint mouseModelPoint;
+    private static volatile IPoint mouseDisplayPoint;
+
+    public static void setMouseLocations(IPoint model, IPoint display) {
+        mouseModelPoint = model;
+        mouseDisplayPoint = display;
+    }
+
     private static Activity currentActivity;
     private static AndroidGuiHandler instance;
     private ConsoleListener consoleListener;
@@ -252,12 +264,77 @@ public class AndroidGuiHandler implements IGui {
 
     @Override
     public IPoint getMouseLocationInModel() {
-        return null;
+        return mouseModelPoint;
     }
 
     @Override
     public IPoint getMouseLocationInDisplay() {
-        return null;
+        return mouseDisplayPoint;
+    }
+
+    @Override
+    public gama.api.ui.IDialogFactory getDialogFactory() {
+        return new gama.api.ui.IDialogFactory() {
+            private Activity act() { return currentActivity; }
+            @Override public void error(IScope s, String m) { AndroidDialogs.message(act(), "Error", m); }
+            @Override public void inform(IScope s, String m) { AndroidDialogs.message(act(), "Information", m); }
+            @Override public void warning(IScope s, String m) { AndroidDialogs.message(act(), "Warning", m); }
+            @Override public boolean confirm(IScope s, String t, String m) {
+                return AndroidDialogs.confirm(act(), t, m);
+            }
+            @Override public boolean question(IScope s, String t, String m) {
+                return AndroidDialogs.confirm(act(), t, m);
+            }
+        };
+    }
+
+    /** Routes GAMA status messages (batch progress, task info) to the app console.
+     *  Callers pass (text, viewId) — e.g. BatchAgent pushes its endStatus() text
+     *  first and the constant "status/status.simulation" second. Repeats of the
+     *  same text within a few seconds are throttled (progress ticks per cycle). */
+    private String lastStatusText;
+    private long lastStatusAt;
+
+    private void showStatusOnce(String text) {
+        if (text == null || text.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        if (text.equals(lastStatusText) && now - lastStatusAt < 4000) return;
+        lastStatusText = text;
+        lastStatusAt = now;
+        deliver(text, false, false);
+    }
+
+    private final gama.api.ui.IStatusDisplayer statusDisplayer = new gama.api.ui.IStatusDisplayer() {
+        @Override public void informStatus(String text, String viewId) {
+            Log.i(TAG, "[status/" + viewId + "] " + text);
+            showStatusOnce(text);
+        }
+        @Override public void setStatus(String viewId, String message, gama.api.types.color.IColor color) {
+            if (message == null || message.isEmpty()) return;
+            Log.i(TAG, "[status/" + viewId + "] " + message);
+            showStatusOnce(message);
+        }
+        @Override public void errorStatus(GamaRuntimeException e) {
+            deliver("ERROR: " + (e != null ? e.getMessage() : "unknown"), true, true);
+        }
+        @Override public void waitStatus(String viewId, String message, Runnable action) {
+            if (message != null && !message.isEmpty()) deliver(message, false, false);
+            // Execute inline: the engine thread is the waiter on desktop too.
+            if (action != null) action.run();
+        }
+        @Override public void beginTask(String name, String task) {
+            Log.i(TAG, "[beginTask] name=" + name + " task=" + task);
+            showStatusOnce(name != null && !name.contains("/") ? name : task);
+        }
+        @Override public void endTask(String name, String task) {
+            Log.i(TAG, "[endTask] name=" + name + " task=" + task);
+            showStatusOnce(name != null && !name.contains("/") ? name : task);
+        }
+    };
+
+    @Override
+    public gama.api.ui.IStatusDisplayer getStatus() {
+        return statusDisplayer;
     }
 
     @Override
@@ -370,13 +447,78 @@ public class AndroidGuiHandler implements IGui {
     @Override
     public Map<String, Object> openUserInputDialog(IScope scope, String title,
             List<IParameter> parameters, IFont font, IColor color, Boolean showTitle) {
-        return java.util.Collections.emptyMap();
+        Activity activity = currentActivity;
+        if (activity == null || parameters == null || parameters.isEmpty()) {
+            return java.util.Collections.emptyMap();
+        }
+        try {
+            return AndroidDialogs.userInput(activity, scope, title, parameters);
+        } catch (Throwable t) {
+            Log.e(TAG, "openUserInputDialog failed", t);
+            return java.util.Collections.emptyMap();
+        }
     }
 
     @Override
     public IMap<String, IMap<String, Object>> openWizard(IScope scope, String title,
             IActionDescription finish, IList<IMap<String, Object>> pages) {
+        Activity activity = currentActivity;
+        if (activity == null) return null;
+        IMap<String, IMap<String, Object>> results = gama.api.types.map.GamaMapFactory.createOrdered();
+        try {
+            if (pages != null) {
+                for (int i = 0; i < pages.length(scope); i++) {
+                    IMap<String, Object> page = pages.get(i);
+                    if (page == null) continue;
+                    // Page structure: name/title plus the list of input elements.
+                    Object nameVal = keyOf(page, "name", "title");
+                    String pageName = String.valueOf(
+                            nameVal != null ? nameVal : "page" + (i + 1));
+                    List<IParameter> params = extractPageParameters(page);
+                    Map<String, Object> pageResult = params.isEmpty()
+                            ? new LinkedHashMap<>()
+                            : AndroidDialogs.userInput(activity, scope,
+                                    title + " — " + pageName, params);
+                    if (pageResult.isEmpty()) {
+                        return null; // cancelled
+                    }
+                    results.put(pageName, GamaMapFactory.wrap(pageResult));
+                }
+            }
+            return results;
+        } catch (Throwable t) {
+            Log.e(TAG, "openWizard failed", t);
+            return null;
+        }
+    }
+
+    private static Object keyOf(IMap<String, Object> map, String... keys) {
+        for (String k : keys) {
+            if (map.containsKey(k)) {
+                Object v = map.get(k);
+                if (v != null && !String.valueOf(v).isEmpty()) return v;
+            }
+        }
         return null;
+    }
+
+    /** Finds the IParameter inputs of a wizard page regardless of the exact core-side key. */
+    @SuppressWarnings("unchecked")
+    private static List<IParameter> extractPageParameters(IMap<String, Object> page) {
+        List<IParameter> out = new java.util.ArrayList<>();
+        for (String candidate : new String[]{"parameters", "params", "elements", "inputs"}) {
+            Object v = page.get(candidate);
+            if (v instanceof List) {
+                for (Object o : (List<Object>) v) {
+                    if (o instanceof IParameter) out.add((IParameter) o);
+                }
+                if (!out.isEmpty()) return out;
+            }
+        }
+        for (Object v : page.values()) {
+            if (v instanceof IParameter) out.add((IParameter) v);
+        }
+        return out;
     }
 
     @Override

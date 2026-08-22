@@ -73,6 +73,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     private float currentAlpha = 1f;
     private Rectangle2D.Double rect = new Rectangle2D.Double();
+    private final android.graphics.RectF fastRect = new android.graphics.RectF();
     private int drawnShapesCount = 0;
 
     private final AndroidScene3D scene3d = new AndroidScene3D();
@@ -252,9 +253,36 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         }
 
         workPath.reset();
-        geometryToPath(geometry, workPath, locDx, locDy);
+
+        // Fast path for axis-aligned rectangles (grid cells): drawRect avoids
+        // building a Path and is far cheaper than drawPath per cell.
+        if (!isLine && geometry instanceof org.locationtech.jts.geom.Polygon
+                && ((org.locationtech.jts.geom.Polygon) geometry).isRectangle()) {
+            float left = toPixelX(geometry.getEnvelopeInternal().getMinX());
+            float top = toPixelY(geometry.getEnvelopeInternal().getMaxY());
+            float right = toPixelX(geometry.getEnvelopeInternal().getMaxX());
+            float bottom = toPixelY(geometry.getEnvelopeInternal().getMinY());
+            float fy = Math.min(top, bottom);
+            rect.setRect(left + locDx, fy + locDy,
+                    right - left, Math.abs(bottom - top));
+            fastRect.set((float) (left + locDx), (float) (fy + locDy),
+                    (float) (right + locDx),
+                    (float) (fy + Math.abs(bottom - top) + locDy));
+            if (!isLine && !attributes.isEmpty()) {
+                fillPaint.setColor(colorWithAlpha(attributes.getColor(), currentAlpha));
+                canvas.drawRect(fastRect, fillPaint);
+            }
+            if (border != null || attributes.isEmpty()) {
+                strokePaint.setColor(colorWithAlpha(
+                        border != null ? border : attributes.getColor(), currentAlpha));
+                canvas.drawRect(fastRect, strokePaint);
+            }
+            return rect;
+        }
 
         try {
+            geometryToPath(geometry, workPath, locDx, locDy);
+
             float left = toPixelX(geometry.getEnvelopeInternal().getMinX());
             float top = toPixelY(geometry.getEnvelopeInternal().getMaxY());
             float right = toPixelX(geometry.getEnvelopeInternal().getMaxX());

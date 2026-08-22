@@ -152,6 +152,7 @@ tasks.register('patchGamaJars') {
             gamaApiJar,
             gamaCoreJar,
             "${libsDir}/gama.extension.bdi_0.0.0.202608091252.jar",
+            "${libsDir}/gama.extension.batch-0.0.0-SNAPSHOT.jar",
             "${libsDir}/gama.extension.database_0.0.0.202608091252.jar",
             "${libsDir}/gama.extension.fipa_0.0.0.202608091252.jar",
             "${libsDir}/gama.extension.image_0.0.0.202608091252.jar",

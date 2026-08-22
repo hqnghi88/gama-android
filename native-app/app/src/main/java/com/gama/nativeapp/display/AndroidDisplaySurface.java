@@ -12,9 +12,14 @@ import android.os.Looper;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.GestureDetector;
+import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
 
 import java.awt.Font;
 import java.awt.Rectangle;
@@ -256,11 +261,108 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         setMeasuredDimension(Math.max(1, measuredW), Math.max(1, measuredH));
     }
 
+    // Triple-buffered snapshot rendering:
+    //
+    //  - The GAMA output scheduler calls updateDisplay() from the SIMULATION
+    //    thread at the END of every cycle. We render the layers into a work
+    //    bitmap right there, so each snapshot is a post-cycle frame — never
+    //    mid-reflex (this is what made the FoV cone appear unmasked while the
+    //    slow masked_by computation was running).
+    //  - Completed snapshots are handed to the UI via an atomic index swap; the
+    //    UI thread only ever READS the presented bitmap, and the renderer never
+    //    writes into it again until two swaps later — no concurrent draw/read,
+    //    hence no flicker.
+    private static final int FRAME_BUFFERS = 3;
+    private final android.graphics.Bitmap[] frameBuffers =
+            new android.graphics.Bitmap[FRAME_BUFFERS];
+    private final android.graphics.Canvas[] frameCanvases =
+            new android.graphics.Canvas[FRAME_BUFFERS];
+    private final Object renderLock = new Object();
+    private int workIndex = 0;
+    private volatile int presentIndex = -1;
+    private volatile long lastCycleRenderNs;
+
+    // Cap snapshot renders (~10 fps, matching the legacy poll cadence): fast
+    // models run hundreds of cycles per second and painting every cycle-end on
+    // the SIM thread would throttle the simulation itself. Skipped cycles are
+    // simply not painted; each painted frame stays a consistent post-cycle
+    // snapshot.
+    private static final long MIN_SNAPSHOT_INTERVAL_NS = 100_000_000L;
+
+    /** Renders layers into the next work buffer, then publishes it (any thread). */
+    private void renderSnapshot() {
+        int w = getWidth(), h = getHeight();
+        if (w <= 0 || h <= 0) return;
+        synchronized (renderLock) {
+            ensureBuffers(w, h);
+            try {
+                renderFrame(frameCanvases[workIndex]);
+                presentIndex = workIndex;
+                lastCycleRenderNs = System.nanoTime();
+                // Next work buffer: any slot that is NOT the one being presented.
+                for (int i = 0; i < FRAME_BUFFERS; i++) {
+                    if (i != presentIndex && i != workIndex) { workIndex = i; break; }
+                }
+                if (workIndex == presentIndex) workIndex = (presentIndex + 1) % FRAME_BUFFERS;
+            } catch (Throwable t) {
+                android.util.Log.e("ANDROID_DISPLAY", "snapshot render failed", t);
+            }
+        }
+    }
+
+    private void ensureBuffers(int w, int h) {
+        boolean ok = true;
+        for (int i = 0; i < FRAME_BUFFERS; i++) {
+            if (frameBuffers[i] == null || frameBuffers[i].getWidth() != w
+                    || frameBuffers[i].getHeight() != h) { ok = false; break; }
+        }
+        if (ok) return;
+        for (int i = 0; i < FRAME_BUFFERS; i++) {
+            if (frameBuffers[i] != null) frameBuffers[i].recycle();
+            frameBuffers[i] = null;
+            frameCanvases[i] = null;
+        }
+        presentIndex = -1;
+        try {
+            for (int i = 0; i < FRAME_BUFFERS; i++) {
+                frameBuffers[i] = android.graphics.Bitmap.createBitmap(w, h,
+                        android.graphics.Bitmap.Config.ARGB_8888);
+                frameCanvases[i] = new Canvas(frameBuffers[i]);
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_DISPLAY", "frame buffers alloc failed: " + t);
+        }
+    }
+
     @Override
-     protected void onDraw(Canvas canvas) {
+    protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         if (disposed || output == null) return;
 
+        long now = System.nanoTime();
+        int p = presentIndex;
+        boolean fresh = p >= 0 && frameBuffers[p] != null
+                && now - lastCycleRenderNs < 300_000_000L;
+
+        if (!fresh) {
+            // Paused / interactive / first-frame: take a fresh snapshot.
+            renderSnapshot();
+            p = presentIndex;
+        }
+
+        if (p >= 0 && frameBuffers[p] != null) {
+            canvas.drawBitmap(frameBuffers[p], 0, 0, null);
+        }
+    }
+
+    /** Called by GAMA's scheduler from the SIM thread at end of every cycle:
+     *  render a consistent snapshot immediately, then ask UI to present it. */
+    private void onSimCycleUpdate() {
+        renderSnapshot();
+        uiHandler.post(this::invalidateSafe);
+    }
+
+    private void renderFrame(Canvas canvas) {
         canvas.drawColor(bgPaint.getColor());
 
         if (androidGraphics == null) {
@@ -312,6 +414,35 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 androidGraphics.beginFrame();
                 layerManager.drawLayersOn(androidGraphics);
                 drewShapes = androidGraphics.getDrawnShapesCount() > 0;
+                if (!drewShapes && frames % 50 == 0) {
+                    int n = -1;
+                    String pops = "?";
+                    try {
+                        Object lm = layerManager;
+                        java.util.List ls = (java.util.List) lm.getClass().getMethod("getLayers").invoke(lm);
+                        n = ls == null ? -1 : ls.size();
+                        StringBuilder sb = new StringBuilder();
+                        if (ls != null) {
+                            for (Object l : ls) {
+                                try {
+                                    Object pop = l.getClass().getMethod("getPopulationFor").invoke(l);
+                                    Integer sz = pop != null ? (Integer) pop.getClass()
+                                            .getMethod("size").invoke(pop) : null;
+                                    sb.append(l.getClass().getSimpleName()).append('=')
+                                            .append(sz).append(' ');
+                                } catch (Throwable ignored) {
+                                    sb.append(l.getClass().getSimpleName()).append("=? ");
+                                }
+                            }
+                        }
+                        pops = sb.toString();
+                    } catch (Throwable ignored) {}
+                    android.util.Log.w("ANDROID_DISPLAY", "dbg paused-frame: interrupted="
+                            + (drawScope != null && drawScope.interrupted())
+                            + " layers=" + n + " drawn=" + androidGraphics.getDrawnShapesCount()
+                            + " is3d=" + (androidGraphics != null && androidGraphics.is3dMode())
+                            + " pops=[" + pops + "]");
+                }
             }
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DISPLAY", "layerManager draw error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
@@ -588,11 +719,17 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             case MotionEvent.ACTION_DOWN:
                 lastTouchX = x;
                 lastTouchY = y;
+                downTime = System.currentTimeMillis();
+                longPressFired = false;
                 mousePosition.set(x, y);
-                dispatchMouseEvent(16, (int) x, (int) y);
+                publishMouseLocation();
+                scheduleLongPress();
+                dispatchMouseEvent(7, (int) x, (int) y);  // mouse_enter
+                dispatchMouseEvent(16, (int) x, (int) y); // mouse_down
                 return true;
 
             case MotionEvent.ACTION_POINTER_DOWN:
+                cancelLongPressCheck();
                 computeFocal(event);
                 lastFocalX = focalX;
                 lastFocalY = focalY;
@@ -602,7 +739,14 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
             case MotionEvent.ACTION_MOVE:
                 mousePosition.set(x, y);
-                dispatchMouseEvent(6, (int) x, (int) y);
+                publishMouseLocation();
+                dispatchMouseEvent(6, (int) x, (int) y);  // mouse_move
+                if (System.currentTimeMillis() - downTime > LONG_PRESS_MS
+                        && movedBeyondSlop(x, y)) {
+                    cancelLongPressCheck();
+                    longPressFired = true; // suppress menu once dragging
+                }
+                dispatchMouseEvent(5, (int) x, (int) y);  // mouse_drag
                 if (!isLocked) {
                     if (event.getPointerCount() > 1) {
                         computeFocal(event);
@@ -651,10 +795,74 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
             case MotionEvent.ACTION_UP:
                 mousePosition.set(x, y);
-                dispatchMouseEvent(17, (int) x, (int) y);
+                publishMouseLocation();
+                cancelLongPressCheck();
+                dispatchMouseEvent(17, (int) x, (int) y); // mouse_up
+                if (!longPressFired && System.currentTimeMillis() - downTime >= LONG_PRESS_MS) {
+                    dispatchMouseEvent(9, (int) x, (int) y); // mouse_menu (long press)
+                }
+                dispatchMouseEvent(8, (int) x, (int) y);  // mouse_exit
                 return true;
         }
         return super.onTouchEvent(event);
+    }
+
+    private static final long LONG_PRESS_MS = 550;
+    private long downTime;
+    private boolean longPressFired;
+    private final Runnable longPressCheck = new Runnable() {
+        @Override public void run() {
+            if (!longPressFired) {
+                longPressFired = true;
+                dispatchMouseEvent(9,
+                        (int) mousePosition.x, (int) mousePosition.y); // mouse_menu
+            }
+        }
+    };
+
+    private boolean movedBeyondSlop(float x, float y) {
+        float dx = x - lastTouchX, dy = y - lastTouchY;
+        return dx * dx + dy * dy > 64f;
+    }
+
+    private void scheduleLongPress() {
+        postDelayed(longPressCheck, LONG_PRESS_MS);
+    }
+
+    private void cancelLongPressCheck() {
+        removeCallbacks(longPressCheck);
+    }
+
+    /** Publishes the pointer position (view px + model coords) for #user_location. */
+    private void publishMouseLocation() {
+        try {
+            gama.api.types.geometry.IPoint displayPt =
+                    gama.api.types.geometry.GamaPointFactory.createImmutable(
+                            mousePosition.x, mousePosition.y);
+            gama.api.types.geometry.IPoint modelPt = null;
+            ILayer layer = primaryLayerForCoords();
+            if (layer != null) {
+                modelPt = layer.getModelCoordinatesFrom(
+                        (int) mousePosition.x, (int) mousePosition.y, this);
+            }
+            com.gama.nativeapp.gui.AndroidGuiHandler.setMouseLocations(modelPt, displayPt);
+        } catch (Throwable ignored) {}
+    }
+
+    /** First layer able to convert view coordinates to model coordinates. */
+    private ILayer primaryLayerForCoords() {
+        try {
+            Object ldo = output;
+            if (ldo == null) return null;
+            java.util.List layers = (java.util.List) ldo.getClass().getMethod("getLayers")
+                    .invoke(ldo);
+            if (layers != null) {
+                for (Object l : layers) {
+                    if (l instanceof ILayer il && !(l instanceof OverlayLayer)) return il;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     private void computeFocal(MotionEvent event) {
@@ -692,12 +900,22 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     @Override
     public void updateDisplay(boolean force, GeneralSynchronizer synchronizer) {
-        if (disposed) return;
-        post(() -> {
-            if (!isAttachedToWindow()) return;
-            invalidateSafe();
+        try {
+            if (!disposed) {
+                // Called by GAMA's output scheduler on the SIM thread at the end
+                // of each cycle. Rate-limit to MIN_SNAPSHOT_INTERVAL_NS so fast
+                // simulations are not throttled by per-cycle painting.
+                long now = System.nanoTime();
+                if (force || now - lastCycleRenderNs >= MIN_SNAPSHOT_INTERVAL_NS) {
+                    onSimCycleUpdate();
+                }
+            }
+        } catch (Throwable t) {
+            android.util.Log.e("ANDROID_DISPLAY", "updateDisplay failed", t);
+        } finally {
+            // The scheduler waits on this when the display is synchronized:true.
             if (synchronizer != null) synchronizer.release();
-        });
+        }
     }
 
     @Override
@@ -880,7 +1098,74 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     public void layersChanged() { invalidateSafe(); }
 
     @Override
-    public void addListener(IEventLayerListener e) { listeners.add(e); }
+    public void addListener(IEventLayerListener e) {
+        listeners.add(e);
+        if (e.getClass().getSimpleName().contains("Keyboard")) {
+            post(() -> installKeyboardBar());
+        }
+    }
+
+    /** Overlays a compact soft-key row so GAML keyboard event layers (letters,
+     *  arrows, escape...) are usable on touch-only devices. */
+    private void installKeyboardBar() {
+        try {
+            ViewGroup parent = (ViewGroup) getParent();
+            if (parent == null || parent.findViewWithTag("gama_key_bar") != null) return;
+
+            HorizontalScrollView scroll = new HorizontalScrollView(getContext());
+            scroll.setTag("gama_key_bar");
+            scroll.setHorizontalScrollBarEnabled(false);
+            LinearLayout row = new LinearLayout(getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+
+            android.content.Context ctx = getContext();
+            int pad = (int) (6 * ctx.getResources().getDisplayMetrics().density + 0.5f);
+            View.OnClickListener keyTap = v -> {
+                String key = (String) v.getTag();
+                if ("space".equals(key)) {
+                    dispatchKeyEvent(' ');
+                } else if (key.length() == 1) {
+                    dispatchKeyEvent(key.charAt(0));
+                } else {
+                    Integer code = SPECIAL_KEYS.get(key);
+                    if (code != null) dispatchSpecialKeyEvent(code);
+                }
+            };
+
+            String[] keys = {"esc", "←", "→", "↑", "↓",
+                    "a","b","c","d","e","f","g","h","i","j","k","l","m",
+                    "n","o","p","q","r","s","t","u","v","w","x","y","z",
+                    "0","1","2","3","4","5","6","7","8","9", "space"};
+            for (String k : keys) {
+                android.widget.Button b = new android.widget.Button(ctx, null,
+                        android.R.attr.buttonBarButtonStyle);
+                b.setText(k.equals("space") ? "␣" : k);
+                b.setTag(k.equals("esc") ? "esc" : k);
+                b.setPadding(pad * 2, pad / 2, pad * 2, pad / 2);
+                b.setMinimumWidth(0);
+                b.setMinimumHeight(0);
+                b.setTextSize(13);
+                b.setOnClickListener(keyTap);
+                row.addView(b);
+            }
+            scroll.addView(row);
+
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT);
+            lp.gravity = Gravity.BOTTOM;
+            parent.addView(scroll, lp);
+        } catch (Throwable t) {
+            Log.w("AndroidDisplaySurface", "keyboard bar install failed", t);
+        }
+    }
+
+    private static final java.util.Map<String, Integer> SPECIAL_KEYS = java.util.Map.of(
+            "esc", IEventLayerListener.KEY_ESC,
+            "←", IEventLayerListener.ARROW_LEFT,
+            "→", IEventLayerListener.ARROW_RIGHT,
+            "↑", IEventLayerListener.ARROW_UP,
+            "↓", IEventLayerListener.ARROW_DOWN);
 
     @Override
     public void removeListener(IEventLayerListener e) { listeners.remove(e); }
@@ -930,6 +1215,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 case 5: gl.mouseDrag(x, y, 1); break;
                 case 7: gl.mouseEnter(x, y); break;
                 case 8: gl.mouseExit(x, y); break;
+                case 9: gl.mouseMenu(x, y); break;
             }
         }
     }
