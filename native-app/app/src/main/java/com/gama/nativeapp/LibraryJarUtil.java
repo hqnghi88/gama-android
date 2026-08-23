@@ -29,7 +29,6 @@ public final class LibraryJarUtil {
                 byte[] buf = new byte[8192];
                 int n;
                 while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
-                Log.i(TAG, "Refreshed library jar from assets");
             } catch (Exception e) {
                 Log.e(TAG, "Failed to refresh library jar", e);
                 if (!cacheJar.exists()) return null;

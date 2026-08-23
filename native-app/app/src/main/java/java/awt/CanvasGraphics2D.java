@@ -88,7 +88,6 @@ public class CanvasGraphics2D extends Graphics2D {
         } else {
             trace("setPaint:" + (paint != null ? paint.getClass().getSimpleName() : "null"));
         }
-        if (callCount < logCap) android.util.Log.w("AWT_CHART", "     color=" + Integer.toHexString(toArgb(paint instanceof Color c ? c : currentColor)));
     }
 
     @Override
@@ -175,7 +174,6 @@ public class CanvasGraphics2D extends Graphics2D {
 
     private void trace(String method) {
         if (callCount < 500) {
-            android.util.Log.w("AWT_CHART", callCount + " " + method);
         }
         callCount++;
     }
@@ -188,14 +186,7 @@ public class CanvasGraphics2D extends Graphics2D {
         if (((fillPaint.getColor() >>> 24) & 0xFF) == 0) return;
         markDrawn();
         trace("fill:" + s.getClass().getSimpleName());
-        if (callCount < 60) android.util.Log.w("AWT_CHART", "  fillColor=" + hex(fillPaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
         try {
-            if (s instanceof Arc2D a) {
-                android.util.Log.w("AWT_CHART", "  Arc2D: cx=" + a.getCenterX() + " cy=" + a.getCenterY() +
-                    " w=" + a.getWidth() + " h=" + a.getHeight() +
-                    " start=" + a.getAngleStart() + " extent=" + a.getAngleExtent() +
-                    " type=" + a.getArcType());
-            }
             Path path = shapeToPath(s);
             if (path != null) {
                 canvas.drawPath(path, fillPaint);
@@ -211,7 +202,6 @@ public class CanvasGraphics2D extends Graphics2D {
         if (((strokePaint.getColor() >>> 24) & 0xFF) == 0) return;
         markDrawn();
         trace("draw:" + s.getClass().getSimpleName());
-        if (callCount < 60) android.util.Log.w("AWT_CHART", "  drawColor=" + hex(strokePaint.getColor()) + " shape=" + s.getClass().getSimpleName() + " owner=" + (ownerImage == null ? "null" : System.identityHashCode(ownerImage)));
         try {
             Path path = shapeToPath(s);
             if (path != null) {
@@ -510,15 +500,6 @@ public class CanvasGraphics2D extends Graphics2D {
         Bitmap src = toBitmap(img);
         if (src == null) {
             return false;
-        }
-        if (ownerImage != null && x == 0 && y == 0 && width > 0 && height > 0
-                && width != src.getWidth() && height != src.getHeight()) {
-            Bitmap scaled = Bitmap.createScaledBitmap(src, width, height, false);
-            int[] px = new int[width * height];
-            scaled.getPixels(px, 0, width, 0, 0, width, height);
-            if (scaled != src) scaled.recycle();
-            ownerImage.setRGB(0, 0, width, height, px, 0, width);
-            return true;
         }
         Matrix m = new Matrix();
         m.postScale(width / (float) src.getWidth(), height / (float) src.getHeight());

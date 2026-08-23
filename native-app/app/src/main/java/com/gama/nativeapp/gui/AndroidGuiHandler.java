@@ -62,7 +62,6 @@ public class AndroidGuiHandler implements IGui {
 
     /** Push a console/error line to the visible console view (when available) and optionally toast it. */
     private void deliver(String msg, boolean showConsole, boolean toast) {
-        Log.i(TAG, msg);
         Activity a = currentActivity;
         String low = msg.toLowerCase();
         boolean isMemoryLow = low.contains("memory is low") || low.contains("out of memory");
@@ -121,7 +120,6 @@ public class AndroidGuiHandler implements IGui {
         LayeredDisplayOutput ldo = (LayeredDisplayOutput) output;
         String displayName = ldo.getName();
         if (displaySurfaces.containsKey(displayName)) {
-            Log.i(TAG, "Surface already exists for display: " + displayName + ", skipping");
             return displaySurfaces.get(displayName);
         }
 
@@ -146,7 +144,6 @@ public class AndroidGuiHandler implements IGui {
                         buildScope.setAccessible(true);
                         IScope gfxScope = (IScope) buildScope.invoke(ldo, ctrlScope);
                         ldo.setScope(gfxScope);
-                        Log.i(TAG, "Set scope on " + displayName + " from controller (via buildScopeFrom)");
                         // Init layers directly to resolve species (skip full init which fails on
                         // initWith when simulation envelope is null)
                         java.lang.reflect.Method getLayers = ldo.getClass().getMethod("getLayers");
@@ -166,7 +163,6 @@ public class AndroidGuiHandler implements IGui {
                                     Log.w(TAG, "layer.init failed: " + t.getMessage());
                                 }
                             }
-                            Log.i(TAG, "Layers initialized for " + displayName);
                         }
                         // Set env dimensions from simulation envelope since initWith was skipped
                         try {
@@ -176,33 +172,26 @@ public class AndroidGuiHandler implements IGui {
                             if (env == null) {
                                 // Fallback to a default envelope when sim envelope unavailable
                                 env = gama.api.utils.geometry.GamaEnvelopeFactory.of(0, 100, 0, 100, 0, 0);
-                                Log.w(TAG, "Using default env for " + displayName + " (sim=" + (sim != null ? "ok" : "null") + " env=" + (sim != null && sim.getEnvelope() != null ? "ok" : "null") + ")");
                             }
                             ldo.getData().setEnvWidth(env.getWidth());
                             ldo.getData().setEnvHeight(env.getHeight());
-                            Log.i(TAG, "Set env dimensions for " + displayName + ": " + env.getWidth() + "x" + env.getHeight());
                         } catch (Throwable t) {
-                            Log.w(TAG, "Env set failed: " + t.getMessage());
                         }
                     }
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "Scope set+init failed for " + displayName + ": " + t.getMessage());
             }
             if (ldo.getScope() == null) {
-                Log.i(TAG, "Deferring surface creation for " + displayName + " (scope not ready)");
                 return null;
             }
         }
 
         Activity activity = currentActivity;
         if (activity == null) {
-            Log.w(TAG, "No activity available for display surface creation");
             return null;
         }
 
         if (ldo.getData().is3D()) {
-            Log.i(TAG, "3D display type preserved for: " + displayName);
         }
 
         final AndroidDisplaySurface[] surfaceHolder = new AndroidDisplaySurface[1];
@@ -211,7 +200,6 @@ public class AndroidGuiHandler implements IGui {
             activity.runOnUiThread(() -> {
                 try {
                     surfaceHolder[0] = new AndroidDisplaySurface(activity, ldo);
-                    Log.i(TAG, "Created surface for display: " + displayName);
 
                     displayOutputs.put(displayName, ldo);
                     displaySurfaces.put(displayName, surfaceHolder[0]);
@@ -226,13 +214,10 @@ public class AndroidGuiHandler implements IGui {
                             flp.gravity = Gravity.CENTER;
                             container.addView(surfaceHolder[0], flp);
                             surfaceHolder[0].invalidate();
-                            Log.i(TAG, "Surface added to container and invalidated: " + displayName);
                         } else {
-                            Log.w(TAG, "Container is null for: " + displayName);
                         }
                         expActivity.onDisplayRegistered(displayName, surfaceHolder[0]);
                     } else {
-                        Log.w(TAG, "Activity is not ExperimentActivity: " + (activity != null ? activity.getClass().getSimpleName() : "null"));
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "Error creating display surface on UI thread", e);
@@ -306,12 +291,10 @@ public class AndroidGuiHandler implements IGui {
 
     private final gama.api.ui.IStatusDisplayer statusDisplayer = new gama.api.ui.IStatusDisplayer() {
         @Override public void informStatus(String text, String viewId) {
-            Log.i(TAG, "[status/" + viewId + "] " + text);
             showStatusOnce(text);
         }
         @Override public void setStatus(String viewId, String message, gama.api.types.color.IColor color) {
             if (message == null || message.isEmpty()) return;
-            Log.i(TAG, "[status/" + viewId + "] " + message);
             showStatusOnce(message);
         }
         @Override public void errorStatus(GamaRuntimeException e) {
@@ -323,11 +306,9 @@ public class AndroidGuiHandler implements IGui {
             if (action != null) action.run();
         }
         @Override public void beginTask(String name, String task) {
-            Log.i(TAG, "[beginTask] name=" + name + " task=" + task);
             showStatusOnce(name != null && !name.contains("/") ? name : task);
         }
         @Override public void endTask(String name, String task) {
-            Log.i(TAG, "[endTask] name=" + name + " task=" + task);
             showStatusOnce(name != null && !name.contains("/") ? name : task);
         }
     };
@@ -339,7 +320,6 @@ public class AndroidGuiHandler implements IGui {
 
     @Override
     public boolean openSimulationPerspective(IModelSpecies model, String experimentId) {
-        Log.i(TAG, "openSimulationPerspective called for model=" + model.getName() + " experiment=" + experimentId);
         Activity activity = currentActivity;
         if (activity == null) return false;
         if (activity instanceof ExperimentActivity) {
@@ -432,7 +412,6 @@ public class AndroidGuiHandler implements IGui {
 
     @Override
     public IGamaView showView(IScope scope, String viewId, String name, int code) {
-        Log.i(TAG, "showView called: viewId=" + viewId + ", name=" + name);
         return new AndroidGamaView(name);
     }
 
@@ -529,7 +508,6 @@ public class AndroidGuiHandler implements IGui {
             Boolean keepTabs, Boolean keepToolbars, Boolean showConsoles,
             Boolean showParameters, Boolean showNavigator, Boolean showControls,
             Boolean keepTray, Supplier<IColor> color, boolean showEditors) {
-        Log.i(TAG, "[ARRANGE] called");
         cachedExperimentPlan = experimentPlan;
         Activity activity = currentActivity;
 
@@ -629,11 +607,9 @@ public class AndroidGuiHandler implements IGui {
                 surfaceField.setAccessible(true);
                 if (surfaceField.get(output) == null) {
                     surfaceField.set(output, surf);
-                    Log.i(TAG, "Set surface field on output: " + output.getName());
                 }
             }
         } catch (Exception e) {
-            Log.w(TAG, "Could not set surface field: " + e.getMessage());
         }
     }
 
@@ -643,7 +619,6 @@ public class AndroidGuiHandler implements IGui {
     private static class ConsoleListener implements IConsoleListener {
         @Override
         public void informConsole(String s, ITopLevelAgent root, IColor color) {
-            Log.i(TAG, s);
             Activity a = currentActivity;
             if (a instanceof ExperimentActivity) {
                 ((ExperimentActivity) a).log(s);

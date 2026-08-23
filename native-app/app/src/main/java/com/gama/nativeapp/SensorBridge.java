@@ -94,7 +94,6 @@ public class SensorBridge {
                 registered++;
             }
         }
-        Log.i(TAG, "start: " + registered + "/" + types.size() + " sensors registered");
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
         context.registerReceiver(batteryReceiver, filter);
     }

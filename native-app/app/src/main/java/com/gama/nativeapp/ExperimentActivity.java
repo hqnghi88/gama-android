@@ -66,6 +66,15 @@ public class ExperimentActivity extends Activity {
     private static final java.util.concurrent.ExecutorService COMPILE_EXECUTOR =
             java.util.concurrent.Executors.newSingleThreadExecutor();
 
+    // Background executor for heavy per-cycle work (dumpAntState, updateDisplays).
+    // Keeps the main thread responsive with multi-thread / large-population models.
+    private static final java.util.concurrent.ExecutorService POLL_EXECUTOR =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "state-poll-bg");
+                t.setDaemon(true);
+                return t;
+            });
+
     // UI components
     private MaterialToolbar toolbar;
     private TextView toolbarTitle;
@@ -137,9 +146,10 @@ public class ExperimentActivity extends Activity {
     private volatile boolean isRunning = false;
     private volatile boolean isPaused = false;
     private Object currentExpPlan;
-    private Object currentController;
+    private volatile Object currentController;
     private Runnable statePollRunnable;
     private Runnable clockUpdateRunnable;
+    private Runnable pendingHideLoading;
     // Dynamic content of the Params tab, rebuilt when an experiment opens
     private LinearLayout paramList;
     private final List<Runnable> paramRefreshers = new ArrayList<>();
@@ -1030,8 +1040,11 @@ public class ExperimentActivity extends Activity {
     }
 
     public void onDisplayRegistered(String displayName, AndroidDisplaySurface surface) {
+        if (pendingHideLoading != null) {
+            handler.removeCallbacks(pendingHideLoading);
+            pendingHideLoading = null;
+        }
         hideLoading();
-        Log.i(TAG, "onDisplayRegistered: " + displayName + " (container=" + (getDisplayContainer() != null) + ")");
         if (activeDisplayName == null) {
             activeDisplayName = displayName;
             surface.setVisibility(View.VISIBLE);
@@ -1215,31 +1228,64 @@ public class ExperimentActivity extends Activity {
     private void toggleTheme() {
         isDarkTheme = !isDarkTheme;
         getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
-        recreate();
+        applyThemeColors();
+    }
+
+    /** Re-skin all programmatic views for the current theme without recreating
+     *  the Activity (which would kill the running simulation). */
+    private void applyThemeColors() {
+        if (toolbar != null) toolbar.setBackgroundColor(thc(0xFF388E3C, 0xFF2E7D32));
+        if (toolbarTitle != null) toolbarTitle.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (cycleText != null) cycleText.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
+        if (transportBar != null) transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
+        if (displayColumn != null) displayColumn.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
+        if (displayTabScroll != null) displayTabScroll.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (displayContainer != null) displayContainer.setBackgroundColor(thc(0xFFE8E8E8, 0xFF2D2D2D));
+        if (displayToolbar != null) displayToolbar.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (dragHandle != null) dragHandle.setBackgroundColor(thc(0xFFDDDDDD, 0xFF424242));
+        if (rootLayout != null) rootLayout.setBackgroundColor(thc(0xFF388E3C, 0xFF2E7D32));
+        if (contentArea != null) contentArea.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (tabLayout != null) {
+            tabLayout.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+            tabLayout.setTabTextColors(thc(0xFF888888, 0xFF999999), ContextCompat.getColor(this, R.color.primary));
+        }
+        if (tabTransportRow != null) tabTransportRow.setBackgroundColor(thc(0xFF388E3C, 0xFF2E7D32));
+        if (rightCol != null) rightCol.setBackgroundColor(thc(0xFF388E3C, 0xFF2E7D32));
+        if (bottomPanel != null) bottomPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (consolePanel != null) consolePanel.setBackgroundColor(thc(0xFF1E1E1E, thc(0xFF0D0D0D, 0xFF000000)));
+        if (layersPanel != null) layersPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (paramsPanel != null) paramsPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
+        if (logView != null) logView.setBackgroundColor(thc(0xFF0D0D0D, 0xFF000000));
     }
 
     // ---- Simulation Controls ----
 
     private void togglePlayPause() {
         if (!isRunning || currentController == null) return;
-        try {
-            Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
-            if (!isPaused) {
-                ctrlInterface.getMethod("processPause", boolean.class).invoke(currentController, true);
-                isPaused = true;
-                setTransportIcon(playPauseBtn, R.drawable.ic_play);
-                stepBtn.setAlpha(1f);
-                log("Paused");
-            } else {
-                ctrlInterface.getMethod("processStart", boolean.class).invoke(currentController, true);
-                isPaused = false;
-                setTransportIcon(playPauseBtn, R.drawable.ic_pause);
-                stepBtn.setAlpha(0.45f);
-                log("Resumed");
+        final Object ctrl = currentController;
+        final boolean wasPaused = isPaused;
+        // Update UI optimistically (instant feedback).
+        isPaused = !wasPaused;
+        setTransportIcon(playPauseBtn, wasPaused ? R.drawable.ic_pause : R.drawable.ic_play);
+        stepBtn.setAlpha(wasPaused ? 0.45f : 1f);
+        log(wasPaused ? "Resumed" : "Paused");
+        // processPause/processStart block on the engine's internal lock;
+        // run off the main thread so the UI stays responsive.
+        POLL_EXECUTOR.execute(() -> {
+            try {
+                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                if (wasPaused) {
+                    ctrlInterface.getMethod("processStart", boolean.class).invoke(ctrl, true);
+                } else {
+                    ctrlInterface.getMethod("processPause", boolean.class).invoke(ctrl, true);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Toggle pause error", e);
+                // Revert UI on failure.
+                isPaused = wasPaused;
+                handler.post(() -> setTransportIcon(playPauseBtn, wasPaused ? R.drawable.ic_play : R.drawable.ic_pause));
             }
-        } catch (Exception e) {
-            Log.w(TAG, "Toggle pause error", e);
-        }
+        });
     }
 
     /** Runs exactly one simulation cycle while staying paused, using the
@@ -1247,12 +1293,14 @@ public class ExperimentActivity extends Activity {
      *  let the simulation run on, so stepping never advanced a single cycle). */
     private void stepSimulation() {
         if (!isRunning || !isPaused || currentController == null) return;
-        try {
-            Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
-            ctrlInterface.getMethod("processStep", int.class, boolean.class)
-                    .invoke(currentController, 1, true);
-            log("Step executed");
-        } catch (Exception e) { Log.w(TAG, "Step error", e); }
+        final Object ctrl = currentController;
+        POLL_EXECUTOR.execute(() -> {
+            try {
+                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                ctrlInterface.getMethod("processStep", int.class, boolean.class)
+                        .invoke(ctrl, 1, true);
+            } catch (Exception e) { Log.w(TAG, "Step error", e); }
+        });
     }
 
     private void setTransportIcon(ImageView btn, int res) {
@@ -1275,26 +1323,25 @@ public class ExperimentActivity extends Activity {
             paramRefreshers.clear();
             if (paramList != null) paramList.removeAllViews();
         });
-        try {
-            if (currentController != null) {
-                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
-                // Resume a paused experiment first so close() is not issued while
-                // the execution thread is blocked on the pause lock.
-                ctrlInterface.getMethod("processStart", boolean.class).invoke(currentController, false);
-                ctrlInterface.getMethod("close").invoke(currentController);
-                // The desktop path removes the controller from the static GAMA.controllers
-                // list (see GAMA.closeController). Calling close() directly leaks the whole
-                // experiment graph (plan -> model -> types -> sim -> displays -> activity)
-                // because the controller stays reachable from that static list forever.
-                Class<?> gamaClass = Class.forName("gama.api.GAMA");
-                java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
-                controllersField.setAccessible(true);
-                java.util.List controllers = (java.util.List) controllersField.get(null);
-                boolean removed = controllers.remove(currentController);
-                Log.i(TAG, "Stopped: removed=" + removed + " controllers.size=" + controllers.size());
-                currentController = null;
-            }
-        } catch (Exception e) { Log.w(TAG, "Stop error", e); }
+        // Capture controller reference while still valid; close() can block for
+        // a long time so run the heavy disposal on a background thread to avoid
+        // freezing the UI (especially noticeable with heavy multi-thread models).
+        final Object ctrl = currentController;
+        currentController = null;
+        if (ctrl != null) {
+            new Thread(() -> {
+                try {
+                    Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                    ctrlInterface.getMethod("processStart", boolean.class).invoke(ctrl, false);
+                    ctrlInterface.getMethod("close").invoke(ctrl);
+                    Class<?> gamaClass = Class.forName("gama.api.GAMA");
+                    java.lang.reflect.Field controllersField = gamaClass.getDeclaredField("controllers");
+                    controllersField.setAccessible(true);
+                    java.util.List controllers = (java.util.List) controllersField.get(null);
+                    boolean removed = controllers.remove(ctrl);
+                } catch (Exception e) { Log.w(TAG, "Stop error", e); }
+            }, "experiment-close").start();
+        }
         // Clean up all display and simulation resources held by this activity
         try {
             Class<?> guiHandlerClass = Class.forName("com.gama.nativeapp.gui.AndroidGuiHandler");
@@ -1899,7 +1946,6 @@ public class ExperimentActivity extends Activity {
                 @SuppressWarnings("unchecked")
                 java.util.List controllers = (java.util.List) controllersField.get(null);
                 controllers.add(controller);
-                Log.i(TAG, "Started: controllers.size=" + controllers.size());
 
                 setupStdoutRedirect();
 
@@ -1916,8 +1962,9 @@ public class ExperimentActivity extends Activity {
 
                 // Batch experiments drive many simulations internally and have no
                 // display; their progress is reported through status messages.
+                boolean isBatch = false;
                 try {
-                    boolean isBatch = (Boolean) expClass.getMethod("isBatch").invoke(expPlan);
+                    isBatch = (Boolean) expClass.getMethod("isBatch").invoke(expPlan);
                     if (isBatch) {
                         handler.post(() -> toolbarTitle.setText("⚙ " + expName + " (batch)"));
                         log("Batch experiment — open the Console tab to follow runs; "
@@ -1926,6 +1973,20 @@ public class ExperimentActivity extends Activity {
                 } catch (Throwable ignored) {}
 
                 ctrlInterface.getMethod("processStart", boolean.class).invoke(controller, true);
+
+                // For batch or no-display experiments the loading overlay would
+                // stay forever because onDisplayRegistered never fires.  Hide it
+                // immediately for batch; for others schedule a delayed fallback
+                // that is cancelled if/when a display does register.
+                if (isBatch) {
+                    hideLoading();
+                } else {
+                    pendingHideLoading = () -> {
+                        pendingHideLoading = null;
+                        hideLoading();
+                    };
+                    handler.postDelayed(pendingHideLoading, 5_000);
+                }
 
                 Class<?> absControllerClass = Class.forName("gama.api.kernel.simulation.DefaultExperimentController").getSuperclass();
                 java.lang.reflect.Field pField = absControllerClass.getDeclaredField("paused");
@@ -1973,6 +2034,10 @@ public class ExperimentActivity extends Activity {
                     log("  CAUSE: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
                     cause = cause.getCause();
                 }
+                if (pendingHideLoading != null) {
+                    handler.removeCallbacks(pendingHideLoading);
+                    pendingHideLoading = null;
+                }
                 hideLoading();
                 handler.post(() -> { isRunning = false; toolbarTitle.setText(modelName + " (error)"); });
             }
@@ -1987,21 +2052,13 @@ public class ExperimentActivity extends Activity {
             final PrintStream origOut = originalOut;
             System.setErr(new PrintStream(new java.io.OutputStream() {
                 @Override public void write(int b) { origErr.write(b); }
-                @Override public void write(byte[] b, int off, int len) {
-                    origErr.write(b, off, len);
-                    String s = new String(b, off, len).trim();
-                    if (!s.isEmpty()) Log.e(TAG, s);
-                }
+                @Override public void write(byte[] b, int off, int len) { origErr.write(b, off, len); }
             }, true));
             System.setOut(new PrintStream(new java.io.OutputStream() {
                 @Override public void write(int b) { origOut.write(b); }
-                @Override public void write(byte[] b, int off, int len) {
-                    origOut.write(b, off, len);
-                    String s = new String(b, off, len).trim();
-                    if (!s.isEmpty()) Log.i(TAG, s);
-                }
+                @Override public void write(byte[] b, int off, int len) { origOut.write(b, off, len); }
             }, true));
-        } catch (Exception e) { Log.w(TAG, "Redirect error", e); }
+        } catch (Exception ignored) { }
     }
 
     private void startStatePolling(Object controller) {
@@ -2016,7 +2073,6 @@ public class ExperimentActivity extends Activity {
                 if (aliveField != null) {
                     boolean alive = aliveField.getBoolean(controller);
                     if (!alive) {
-                        Log.i(TAG, "Experiment finished (alive=false)");
                         handler.post(() -> {
                             toolbarTitle.setText(modelName + " (finished)");
                             cycleText.setText("Completed");
@@ -2041,12 +2097,6 @@ public class ExperimentActivity extends Activity {
 
                 boolean changed = cycleCount >= 0 && cycleCount != lastCycle[0];
                 if (cycleCount >= 0) lastCycle[0] = cycleCount;
-                if (changed && scopeField != null) {
-                    try {
-                        Object scope = scopeField.get(controller);
-                        if (scope != null && (cycleCount % 3 == 0)) dumpAntState(scope, cycleCount);
-                    } catch (Exception ignored) {}
-                }
 
                 long elapsed = System.currentTimeMillis() - startTime;
                 long min = (elapsed / 1000) / 60;
@@ -2055,21 +2105,43 @@ public class ExperimentActivity extends Activity {
                 long now = System.currentTimeMillis();
                 boolean stale = now - lastInvalidate[0] > 1000;
                 final int finalCycle = cycleCount;
+
+                // Update cycle counter on the UI thread (cheap).
                 handler.post(() -> {
                     String cycleStr = finalCycle >= 0 ? String.valueOf(finalCycle) : "?";
                     cycleText.setText(cycleStr + " cycles  " +
                             String.format("%02d:%02d", min, sec));
-                    if (changed || stale) {
-                        lastInvalidate[0] = System.currentTimeMillis();
-                        updateDisplays();
-                        // Refresh read-only parameter values / labels
-                        if (paramRefreshers != null && !paramRefreshers.isEmpty()) {
-                            for (Runnable r : new ArrayList<>(paramRefreshers)) {
-                                try { r.run(); } catch (Throwable ignored) {}
-                            }
-                        }
-                    }
                 });
+
+                // Offload heavy per-cycle work to a background thread so the UI
+                // stays responsive with large populations / multi-thread models.
+                if (changed || stale) {
+                    lastInvalidate[0] = System.currentTimeMillis();
+                    POLL_EXECUTOR.execute(() -> {
+                        if (!isRunning) return;
+                        try {
+                            if (changed && scopeField != null) {
+                                try {
+                                    Object scope = scopeField.get(controller);
+                                    if (scope != null && (finalCycle % 5 == 0))
+                                        dumpAntState(scope, finalCycle);
+                                } catch (Exception ignored) {}
+                            }
+                            updateDisplays();
+                        } catch (Exception e) {
+                            Log.w(TAG, "Poll bg error: " + e.getMessage());
+                        }
+                        // Refresh read-only parameter values / labels on UI thread.
+                        if (paramRefreshers != null && !paramRefreshers.isEmpty()) {
+                            handler.post(() -> {
+                                if (!isRunning) return;
+                                for (Runnable r : new ArrayList<>(paramRefreshers)) {
+                                    try { r.run(); } catch (Throwable ignored) {}
+                                }
+                            });
+                        }
+                    });
+                }
             } catch (Exception e) {
                 Log.w(TAG, "Poll error: " + e.getMessage());
             }
@@ -2081,87 +2153,36 @@ public class ExperimentActivity extends Activity {
     private void dumpAntState(Object scope, int cycle) {
         try {
             Object sim = scope.getClass().getMethod("getSimulation").invoke(scope);
-            if (sim == null) { Log.i(TAG, "DIAG: no simulation"); return; }
+            if (sim == null) return;
             Object pop = null;
             try { pop = sim.getClass().getMethod("getPopulationFor", String.class).invoke(sim, "ant"); } catch (Exception e) {}
             if (pop == null) {
                 try { pop = findMicroPopulationReflect(sim, "ant", 0); } catch (Exception e) {}
             }
-            if (pop == null) { Log.i(TAG, "DIAG: ant population not found (cycle=" + cycle + ")"); return; }
+            if (pop == null) return;
             java.lang.reflect.Method sizeM = pop.getClass().getMethod("size");
             int size = (int) sizeM.invoke(pop);
-            if (size == 0) { Log.i(TAG, "DIAG: ant population empty"); return; }
+            if (size == 0) return;
             java.lang.reflect.Method getM = pop.getClass().getMethod("get", int.class);
-            double sumDist = 0, sumHeading = 0;
-            int carrying = 0, nearNest = 0, carryingNearNest = 0;
-            double totalFood = 0;
-            StringBuilder sample = new StringBuilder();
+            double sumDist = 0;
+            int carrying = 0, nearNest = 0;
             java.lang.reflect.Method directVar = gama.api.kernel.agent.IAgent.class
                     .getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class);
-            Object gridPop = null;
-            try { gridPop = sim.getClass().getMethod("getPopulationFor", String.class).invoke(sim, "ant_grid"); } catch (Exception e) {}
-            for (int i = 0; i < size && i < 400; i++) {
+            for (int i = 0; i < size && i < 200; i++) {
                 Object obj = getM.invoke(pop, i);
                 if (!(obj instanceof gama.api.kernel.agent.IAgent a) || a.dead()) continue;
                 gama.api.types.geometry.IPoint loc = a.getLocation();
-                Object heading = null, hasFood = null, state = null;
-                try { heading = directVar.invoke(a, scope, "heading"); } catch (Exception e) {}
-                try { hasFood = directVar.invoke(a, scope, "has_food"); } catch (Exception e) {}
-                try { state = directVar.invoke(a, scope, "state"); } catch (Exception e) {}
                 if (loc != null) {
                     double d = Math.hypot(loc.getX() - 50, loc.getY() - 50);
                     sumDist += d;
-                    if (Boolean.TRUE.equals(hasFood) && d < 4) carryingNearNest++;
                     if (d < 4) nearNest++;
-                    if (heading instanceof Number n) sumHeading += n.doubleValue();
                 }
-                if (Boolean.TRUE.equals(hasFood)) carrying++;
-                if (i < 6) sample.append(String.format("(%s,%s)h=%s/s=%s; ",
-                        loc == null ? "?" : String.format("%.0f", loc.getX()),
-                        loc == null ? "?" : String.format("%.0f", loc.getY()),
-                        heading, state));
+                try {
+                    Object hasFood = directVar.invoke(a, scope, "has_food");
+                    if (Boolean.TRUE.equals(hasFood)) carrying++;
+                } catch (Exception e) {}
             }
-            if (gridPop != null) {
-                java.lang.reflect.Method gsizeM = gridPop.getClass().getMethod("size");
-                java.lang.reflect.Method ggetM = gridPop.getClass().getMethod("get", int.class);
-                int gs = (int) gsizeM.invoke(gridPop);
-                for (int j = 0; j < gs; j++) {
-                    Object cell = ggetM.invoke(gridPop, j);
-                    if (cell instanceof gama.api.kernel.agent.IAgent c && !c.dead()) {
-                        Object food = directVar.invoke(c, scope, "food");
-                        if (food instanceof Number n) totalFood += n.doubleValue();
-                    }
-                }
-            }
-            Log.i(TAG, String.format("DIAG cycle=%d ants=%d carrying=%d nearNest=%d carryingNearNest=%d totalFood=%.0f avgDistTo50=%.2f avgHeading=%.0f %s",
-                    cycle, size, carrying, nearNest, carryingNearNest, totalFood,
-                    size > 0 ? sumDist / size : 0,
-                    size > 0 ? sumHeading / size : 0, sample));
-            StringBuilder tracked = new StringBuilder();
-            java.lang.reflect.Method dvar = gama.api.kernel.agent.IAgent.class
-                    .getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class);
-            for (int idx : new int[]{0, 1, 2}) {
-                if (idx >= size) continue;
-                Object a = getM.invoke(pop, idx);
-                if (a instanceof gama.api.kernel.agent.IAgent ag && !ag.dead()) {
-                    gama.api.types.geometry.IPoint l = ag.getLocation();
-                    Object h = null, st = null, hf = null;
-                    try { h = dvar.invoke(ag, scope, "heading"); } catch (Exception e) {}
-                    try { st = dvar.invoke(ag, scope, "state"); } catch (Exception e) {}
-                    try { hf = dvar.invoke(ag, scope, "has_food"); } catch (Exception e) {}
-                    tracked.append(String.format("A%d=(%s,%s)h=%s s=%s f=%s; ", idx,
-                            l == null ? "?" : String.format("%.1f", l.getX()),
-                            l == null ? "?" : String.format("%.1f", l.getY()), h, st, hf));
-                }
-            }
-            Object fg = null, fp = null;
-            try { fg = sim.getClass().getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class)
-                    .invoke(sim, scope, "food_gathered"); } catch (Exception e) {}
-            try { fp = sim.getClass().getMethod("getDirectVarValue", gama.api.runtime.scope.IScope.class, String.class)
-                    .invoke(sim, scope, "food_placed"); } catch (Exception e) {}
-            Log.i(TAG, "DIAG tracked cycle=" + cycle + " food_gathered=" + fg + " food_placed=" + fp + " " + tracked);
         } catch (Throwable t) {
-            Log.i(TAG, "DIAG error: " + t);
         }
     }
 
@@ -2238,9 +2259,6 @@ public class ExperimentActivity extends Activity {
                     if (getVar.invoke(spAll, n) == null) { missingAll.add(n); }
                     if (getVar.invoke(spNamed, n) == null) { missingNamed.add(n); }
                 }
-                Log.i(TAG, "DIAG species=" + e.getKey() + " sameInstance=" + (spAll == spNamed)
-                        + " missingAll=" + missingAll + " missingNamed=" + missingNamed
-                        + " spNamed=" + spNamed);
             }
         } catch (Exception ex) {
             Log.w(TAG, "DIAG error", ex);
@@ -2266,29 +2284,21 @@ public class ExperimentActivity extends Activity {
                     (java.util.Map<String, Object>) guiHandlerClass.getMethod("getDisplayOutputs").invoke(guiHandler);
 
             if (outputsMap == null || outputsMap.isEmpty()) {
-                Log.w(TAG, "updateDisplays: no outputs, probing...");
                 guiHandlerClass.getMethod("probeAndCreateSurface").invoke(null);
                 return;
             }
 
-            Log.i(TAG, "updateDisplays: " + outputsMap.size() + " output(s)");
             boolean hasSurface = false;
             for (Object ldoObj : outputsMap.values()) {
                 try {
                     Object surfObj = ldoObj.getClass().getMethod("getSurface").invoke(ldoObj);
                     if (surfObj instanceof View surfView) {
-                        Log.i(TAG, "updateDisplays: invalidating " + surfView.getClass().getSimpleName());
                         surfView.post(surfView::invalidate);
                         hasSurface = true;
-                    } else {
-                        Log.w(TAG, "updateDisplays: surface is not a View: " + (surfObj != null ? surfObj.getClass().getSimpleName() : "null"));
                     }
-                } catch (Exception de) {
-                    Log.w(TAG, "updateDisplays: getSurface error: " + de.getMessage());
-                }
+                } catch (Exception de) { /* skip broken output */ }
             }
             if (!hasSurface) {
-                Log.w(TAG, "updateDisplays: no valid surface found, probing...");
                 guiHandlerClass.getMethod("probeAndCreateSurface").invoke(null);
             }
         } catch (Exception e) {
@@ -2305,7 +2315,6 @@ public class ExperimentActivity extends Activity {
     }
 
     public void log(String message) {
-        Log.i(TAG, message);
         handler.post(() -> {
             logView.append(message + "\n");
             logScroll.fullScroll(ScrollView.FOCUS_DOWN);

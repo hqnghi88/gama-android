@@ -175,7 +175,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         bgPaint.setColor(0xFFFFFFFF);
         try {
             int bg = IColor.toAWTColor(output.getData().getBackgroundColor()).getRGB();
-            Log.i(TAG, "bgPaint color=0x" + Integer.toHexString(bg));
             bgPaint.setColor(bg | 0xFF000000);
         } catch (Throwable e) {
             Log.w(TAG, "bgPaint init failed", e);
@@ -385,7 +384,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                     if (outScope != null) {
                         setDisplayScope(outScope.copyForGraphics("in android2d display"));
                         scopeUpdated = true;
-                        android.util.Log.i("ANDROID_DISPLAY", "Initialized display scope from output");
                     }
                 } catch (Throwable t) {
                     android.util.Log.w("ANDROID_DISPLAY", "Could not init scope from output: " + t.getMessage());
@@ -414,35 +412,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 androidGraphics.beginFrame();
                 layerManager.drawLayersOn(androidGraphics);
                 drewShapes = androidGraphics.getDrawnShapesCount() > 0;
-                if (!drewShapes && frames % 50 == 0) {
-                    int n = -1;
-                    String pops = "?";
-                    try {
-                        Object lm = layerManager;
-                        java.util.List ls = (java.util.List) lm.getClass().getMethod("getLayers").invoke(lm);
-                        n = ls == null ? -1 : ls.size();
-                        StringBuilder sb = new StringBuilder();
-                        if (ls != null) {
-                            for (Object l : ls) {
-                                try {
-                                    Object pop = l.getClass().getMethod("getPopulationFor").invoke(l);
-                                    Integer sz = pop != null ? (Integer) pop.getClass()
-                                            .getMethod("size").invoke(pop) : null;
-                                    sb.append(l.getClass().getSimpleName()).append('=')
-                                            .append(sz).append(' ');
-                                } catch (Throwable ignored) {
-                                    sb.append(l.getClass().getSimpleName()).append("=? ");
-                                }
-                            }
-                        }
-                        pops = sb.toString();
-                    } catch (Throwable ignored) {}
-                    android.util.Log.w("ANDROID_DISPLAY", "dbg paused-frame: interrupted="
-                            + (drawScope != null && drawScope.interrupted())
-                            + " layers=" + n + " drawn=" + androidGraphics.getDrawnShapesCount()
-                            + " is3d=" + (androidGraphics != null && androidGraphics.is3dMode())
-                            + " pops=[" + pops + "]");
-                }
             }
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DISPLAY", "layerManager draw error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
@@ -453,11 +422,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 if (!androidGraphics.is3dMode()) {
                     drawAgentsManually(canvas);
                 }
-                if (frames < 5) {
-                    android.util.Log.w("ANDROID_DISPLAY", "frame=" + frames + " fell back to manual draw, drawnShapes=0");
-                }
-            } else if (frames < 5) {
-                android.util.Log.w("ANDROID_DISPLAY", "frame=" + frames + " chart-only display, skipping agent fallback");
             }
         }
         canvas.restore();
@@ -470,7 +434,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         try {
             IGraphicsScope drawScope = scope;
             if (drawScope == null || drawScope.interrupted()) {
-                if (frames < 5) android.util.Log.w("DispDraw", "drawAgentsManually: drawScope=" + (drawScope == null ? "null" : "interrupted"));
                 return;
             }
 
@@ -530,14 +493,12 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 capturedSim = sim;
             }
             if (sim == null) {
-                if (frames < 5) android.util.Log.w("DispDraw", "drawAgentsManually: sim is null after all attempts");
                 return;
             }
 
             double envW = getEnvWidth();
             double envH = getEnvHeight();
             if (envW <= 0 || envH <= 0) {
-                if (frames < 5) android.util.Log.w("DispDraw", "drawAgentsManually: envW=" + envW + " envH=" + envH);
                 return;
             }
 
@@ -568,7 +529,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 lastSpeciesCacheTime = now;
             }
             if (cachedSpeciesNames == null || cachedSpeciesNames.isEmpty()) {
-                if (frames < 5) android.util.Log.w("DispDraw", "drawAgentsManually: no species names cached");
                 return;
             }
 
@@ -672,7 +632,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                         try {
                             IPopulation microPop = macro.getPopulationFor(speciesName);
                             if (microPop != null && microPop.size() > 0) {
-                                if (frames % 120 == 0) android.util.Log.i("DispDraw", "findInPop: FOUND " + speciesName + " via getPopulationFor size=" + microPop.size() + " depth=" + depth + " agent=" + ag.getSpecies());
                                 return microPop;
                             }
                         } catch (Throwable t) {}
@@ -686,11 +645,9 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                         try {
                             IPopulation<? extends gama.api.kernel.agent.IAgent>[] allMicro = macro.getMicroPopulations();
                             if (allMicro != null) {
-                                if (frames % 120 == 0 && depth == 0) android.util.Log.i("DispDraw", "findInPop: agent " + i + " (" + ag.getSpecies() + ") has " + allMicro.length + " microPops");
                                 for (Object mp : allMicro) {
                                     if (mp instanceof IPopulation subPop) {
                                         String popName = subPop.getSpecies() != null ? subPop.getSpecies().getName() : "";
-                                        if (frames % 120 == 0 && depth == 0) android.util.Log.i("DispDraw", "  microPop: " + popName + " size=" + subPop.size());
                                         if (popName.equals(speciesName) && subPop.size() > 0) return subPop;
                                         IPopulation deeper = findInPopulations(subPop, speciesName, depth + 1);
                                         if (deeper != null) return deeper;
@@ -1273,7 +1230,6 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             } else if (value instanceof java.awt.Color c) {
                 rgb = c.getRGB();
             }
-            Log.i(TAG, "BACKGROUND changed: value=" + value + " class=" + (value == null ? "null" : value.getClass().getName()) + " rgb=0x" + Integer.toHexString(rgb));
             bgPaint.setColor(rgb | 0xFF000000);
         }
     }

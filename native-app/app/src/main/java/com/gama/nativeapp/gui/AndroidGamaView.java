@@ -44,7 +44,6 @@ public class AndroidGamaView implements IGamaView.Display {
 
     @Override
     public void close(IScope scope) {
-        Log.i(TAG, "View closing: " + name);
     }
 
     @Override

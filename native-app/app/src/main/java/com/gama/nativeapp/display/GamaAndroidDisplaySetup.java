@@ -10,6 +10,5 @@ public class GamaAndroidDisplaySetup {
 
     public static void registerDisplays() {
         GAML.addConstants("android2d", "2d", "android3d", "3d", "opengl", "opengl2");
-        Log.i(TAG, "Registered android2d/android3d display types");
     }
 }

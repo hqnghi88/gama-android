@@ -23,6 +23,5 @@ public class GamaApplication extends Application {
         // axis order from the .prj file, which already uses (longitude, latitude).
         System.setProperty("use_global_preference_store", "false");
         System.setProperty("java.util.prefs.PreferencesFactory", "com.gama.nativeapp.NoOpPreferencesFactory");
-        Log.i(TAG, "Application started, forceXY=true, prefs disabled");
     }
 }

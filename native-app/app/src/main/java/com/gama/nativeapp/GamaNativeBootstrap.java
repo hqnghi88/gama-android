@@ -33,11 +33,9 @@ public class GamaNativeBootstrap {
         // Note: NOT setting org.geotools.referencing.forceXY - it triggers
         // LongitudeFirstFactory wrapping in DefaultAuthorityFactory which causes
         // RecursiveSearchException on Android. Axis order from .prj files is used.
-        Log.i(TAG, "=== Bootstrap started ===");
         callback.onProgress("Setting up GAMA plugin bundles...");
 
         WorkspaceManager.setEngineWorkspacePath(WorkspaceManager.workspaceRoot(context).getAbsolutePath());
-        Log.i(TAG, "Engine workspace root: " + WorkspaceManager.engineWorkspacePath());
 
         ClassLoader appClassLoader = context.getClassLoader();
 
@@ -61,7 +59,6 @@ public class GamaNativeBootstrap {
             Platform.registerBundle(pluginName, bundle);
         }
 
-        Log.i(TAG, "Registered " + registeredBundles.size() + " plugin bundles");
         callback.onProgress("Registered " + registeredBundles.size() + " plugin bundles");
 
         // Install an Android workspace manager. The desktop implementation tracks
@@ -71,7 +68,6 @@ public class GamaNativeBootstrap {
             Class<?> gamaClass = Class.forName("gama.api.GAMA");
             gamaClass.getMethod("setWorkspaceManager", Class.forName("gama.api.runtime.IWorkspaceManager"))
                 .invoke(null, new AndroidWorkspaceManager());
-            Log.i(TAG, "Android workspace manager registered");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register workspace manager", e);
         }
@@ -96,7 +92,6 @@ public class GamaNativeBootstrap {
                 Method setBuilder = holder.getMethod("setBuilder", iface);
                 setBuilder.invoke(null, Class.forName(f[2]).getDeclaredConstructor().newInstance());
             }
-            Log.i(TAG, "GAMA data-type factories initialized");
             callback.onProgress("GAMA data-type factories initialized");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to initialize data-type factories", e);
@@ -174,7 +169,6 @@ public class GamaNativeBootstrap {
             registerTextValidator.invoke(null, Class.forName("gaml.compiler.validation.GamlTextValidator")
                 .getMethod("getInstance").invoke(null));
 
-            Log.i(TAG, "GAML services registered (symbol factories, descriptions, artefact factory, expression factories, content provider, model builder, validator)");
             callback.onProgress("GAML services registered (parser, factories, builder, validator)");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register GAML services", e);
@@ -230,7 +224,6 @@ public class GamaNativeBootstrap {
             }
         }
 
-        Log.i(TAG, "Loaded " + loaded + " plugin additions, skipped " + skipped);
         callback.onProgress("Loaded " + loaded + " plugin additions, skipped " + skipped);
 
         // Register the base agent classes for species. Desktop does this in
@@ -256,7 +249,6 @@ public class GamaNativeBootstrap {
             Class.forName("gama.api.GAMA")
                 .getMethod("setJsonEncoder", Class.forName("gama.api.utils.json.IJson"))
                 .invoke(null, json);
-            Log.i(TAG, "JSON encoder registered");
             callback.onProgress("JSON encoder registered");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register JSON encoder", e);
@@ -274,7 +266,6 @@ public class GamaNativeBootstrap {
                     Class.forName("gama.core.outputs.layers.MouseEventLayerDelegate").getDeclaredConstructor().newInstance());
             addEventDelegate.invoke(null,
                     Class.forName("gama.core.outputs.layers.KeyboardEventLayerDelegate").getDeclaredConstructor().newInstance());
-            Log.i(TAG, "Event layer delegates registered (mouse, keyboard)");
             callback.onProgress("Event layer delegates registered");
         } catch (Throwable e) {
             Log.w(TAG, "Failed to register event layer delegates", e);
@@ -304,7 +295,6 @@ public class GamaNativeBootstrap {
                 Class<?> mathSupplierClass = Class.forName("gama.extension.maths.ode.MathConstantSupplier");
                 Object mathSupplier = mathSupplierClass.getDeclaredConstructor().newInstance();
                 supply.invoke(mathSupplier, acceptor);
-                Log.i(TAG, "Math constants registered");
             } catch (Throwable e) {
                 Log.e(TAG, "Math constants registration failed", e);
             }
@@ -314,13 +304,11 @@ public class GamaNativeBootstrap {
                 Class<?> imgSupplierClass = Class.forName("gama.extension.image.ImageConstantSupplier");
                 Object imgSupplier = imgSupplierClass.getDeclaredConstructor().newInstance();
                 supply.invoke(imgSupplier, acceptor);
-                Log.i(TAG, "Image constants registered");
             } catch (Throwable ignored) {}
 
             Method getUnits = gamlConstClass.getMethod("getUnits");
             @SuppressWarnings("unchecked")
             java.util.Map<?, ?> units = (java.util.Map<?, ?>) getUnits.invoke(null);
-            Log.i(TAG, "GAML constants registered: " + units.size() + " entries (includes colors, units)");
             callback.onProgress("GAML constants registered: " + units.size() + " entries");
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register GAML constants", e);
@@ -365,7 +353,6 @@ public class GamaNativeBootstrap {
             }) {
                 Class.forName(prefClass);
             }
-            Log.i(TAG, "GAMA preference classes initialized");
             callback.onProgress("GAMA preferences initialized");
         } catch (Throwable e) {
             Log.w(TAG, "Failed to initialize GAMA preference classes", e);
@@ -415,7 +402,6 @@ public class GamaNativeBootstrap {
             Field poolField = executorClass.getField("AGENT_PARALLEL_EXECUTOR");
             Object pool = poolField.get(null);
             if (pool != null) {
-                Log.i(TAG, "ForkJoinPool initialized: " + pool);
                 callback.onProgress("ForkJoinPool initialized for parallel execution");
             } else {
                 Log.w(TAG, "ForkJoinPool still null after reset()");
@@ -426,7 +412,6 @@ public class GamaNativeBootstrap {
                 Field androidPoolField = executorClass.getField("ANDROID_PARALLEL_EXECUTOR");
                 Object androidPool = androidPoolField.get(null);
                 if (androidPool != null) {
-                    Log.i(TAG, "ANDROID_PARALLEL_EXECUTOR initialized: " + androidPool.getClass().getSimpleName());
                 } else {
                     Log.w(TAG, "ANDROID_PARALLEL_EXECUTOR is null");
                 }
@@ -445,7 +430,6 @@ public class GamaNativeBootstrap {
             Object guiHandler = guiHandlerClass.getMethod("getInstance").invoke(null);
             Method setHeadlessGui = gamaClass.getMethod("setHeadlessGui", Class.forName("gama.api.ui.IGui"));
             setHeadlessGui.invoke(null, guiHandler);
-            Log.i(TAG, "Android GUI handler registered");
             callback.onProgress("Android GUI handler registered");
         } catch (Throwable e) {
             Log.w(TAG, "Failed to set Android GUI handler", e);
@@ -471,13 +455,11 @@ public class GamaNativeBootstrap {
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.TextDrawer").getDeclaredConstructor().newInstance());
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AssetDrawer").getDeclaredConstructor().newInstance());
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AspectDrawer").getDeclaredConstructor().newInstance());
-            Log.i(TAG, "Draw delegates registered");
 
             // Verify registry contents
             Method getDrawDelegates = registryClass.getMethod("getDrawDelegates");
             @SuppressWarnings("unchecked")
             java.util.Map<?, ?> delegates = (java.util.Map<?, ?>) getDrawDelegates.invoke(null);
-            Log.i(TAG, "Draw delegates map size: " + delegates.size() + " keys: " + delegates.keySet());
         } catch (Throwable e) {
             Log.w(TAG, "Failed to register draw delegates", e);
             callback.onProgress("Draw delegates registration skipped: " + e.getMessage());
@@ -492,14 +474,12 @@ public class GamaNativeBootstrap {
             addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromCSVDelegate").getDeclaredConstructor().newInstance());
             addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromGeometriesDelegate").getDeclaredConstructor().newInstance());
             addCreateDelegate.invoke(null, Class.forName("gama.gaml.statements.create.CreateFromGridFileDelegate").getDeclaredConstructor().newInstance());
-            Log.i(TAG, "Create delegates registered (4)");
 
             Method getCreateDelegates = registryClass.getMethod("getCreateDelegates");
             @SuppressWarnings("unchecked")
             java.lang.Iterable<?> createDelegates = (java.lang.Iterable<?>) getCreateDelegates.invoke(null);
             int createCount = 0;
             for (Object ignored : createDelegates) { createCount++; }
-            Log.i(TAG, "Create delegates count: " + createCount);
         } catch (Throwable e) {
             Log.w(TAG, "Failed to register create delegates", e);
             callback.onProgress("Create delegates registration skipped: " + e.getMessage());
@@ -533,12 +513,10 @@ public class GamaNativeBootstrap {
                     Log.w(TAG, "Skipped save delegate " + clsName + ": " + e.getMessage());
                 }
             }
-            Log.i(TAG, "Save delegates registered (" + registered + "/" + saverClasses.length + ")");
 
             Method getSaveDelegates = registryClass.getMethod("getSaveDelegates");
             @SuppressWarnings("unchecked")
             java.util.Map<?, ?> saveDelegates = (java.util.Map<?, ?>) getSaveDelegates.invoke(null);
-            Log.i(TAG, "Save delegates map size: " + saveDelegates.size() + " keys: " + saveDelegates.keySet());
         } catch (Throwable e) {
             Log.e(TAG, "Failed to register save delegates: " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
             callback.onProgress("Save delegates registration skipped: " + e.getClass().getSimpleName() + ": " + e.getMessage());

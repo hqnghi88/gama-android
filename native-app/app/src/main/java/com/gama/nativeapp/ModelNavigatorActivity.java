@@ -95,6 +95,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     // Source switcher
     private static final int SOURCE_LIBRARY = 0;
     private static final int SOURCE_WORKSPACE = 1;
+    private boolean isDarkTheme = false;
     private static final int REQUEST_PICK_WORKSPACE_FOLDER = 1001;
     private static final int REQUEST_MANAGE_ACCESS = 1002;
     private static final int REQUEST_WRITE_STORAGE = 1003;
@@ -107,15 +108,18 @@ public class ModelNavigatorActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        setTheme(R.style.Theme_GamaNative);
+        boolean dark = getSharedPreferences("gama_prefs", 0).getBoolean("dark_theme", false);
+        isDarkTheme = dark;
+        setTheme(dark ? R.style.Theme_GamaNative_Dark : R.style.Theme_GamaNative);
         super.onCreate(savedInstanceState);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setFitsSystemWindows(true);
+        root.setBackgroundColor(isDarkTheme ? 0xFF1E1E2E : 0xFFF5F5F5);
 
         toolbar = new MaterialToolbar(this);
-        toolbar.setBackgroundColor(ContextCompat.getColor(this, R.color.toolbar_background));
+        toolbar.setBackgroundColor(isDarkTheme ? 0xFF2E7D32 : ContextCompat.getColor(this, R.color.toolbar_background));
         toolbar.setTitle("GAMA Models");
         toolbar.setTitleTextColor(0xFFFFFFFF);
         toolbar.setSubtitleTextColor(0xB3FFFFFF);
@@ -140,12 +144,26 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         settingsIcon.setContentDescription("Workspace location");
         toolbar.addView(settingsIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
+        TextView themeIcon = new TextView(this);
+        themeIcon.setText(isDarkTheme ? "\u2600" : "\u263E");
+        themeIcon.setTextSize(18);
+        themeIcon.setTextColor(0xFFFFFFFF);
+        themeIcon.setPadding(dp(12), dp(8), dp(12), dp(8));
+        themeIcon.setOnClickListener(v -> {
+            isDarkTheme = !isDarkTheme;
+            getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
+            themeIcon.setText(isDarkTheme ? "\u2600" : "\u263E");
+            applyThemeColors();
+        });
+        toolbar.addView(themeIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
         root.addView(toolbar, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         LinearLayout switcher = new LinearLayout(this);
         switcher.setOrientation(LinearLayout.HORIZONTAL);
         switcher.setPadding(dp(16), dp(8), dp(16), dp(4));
+        switcher.setBackgroundColor(isDarkTheme ? 0xFF1E1E2E : 0xFFF5F5F5);
 
         libTabBtn = buildSourceTab("Library", true);
         wsTabBtn = buildSourceTab("Workspace", false);
@@ -188,12 +206,12 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         statusBar.setOrientation(LinearLayout.HORIZONTAL);
         statusBar.setGravity(Gravity.CENTER_VERTICAL);
         statusBar.setPadding(dp(16), dp(12), dp(16), dp(12));
-        statusBar.setBackgroundColor(0xFFF5F5F5);
+        statusBar.setBackgroundColor(isDarkTheme ? 0xFF2D2D2D : 0xFFF5F5F5);
 
         statusText = new TextView(this);
         statusText.setText("Initializing...");
         statusText.setTextSize(13);
-        statusText.setTextColor(0xFF666666);
+        statusText.setTextColor(isDarkTheme ? 0xFFAAAAAA : 0xFF666666);
         statusText.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         statusBar.addView(statusText);
 
@@ -211,6 +229,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         recyclerView.setVisibility(View.GONE);
         recyclerView.setClipToPadding(false);
+        recyclerView.setBackgroundColor(isDarkTheme ? 0xFF1E1E2E : 0xFFFFFFFF);
         recyclerView.setPadding(0, dp(8), 0, dp(80));
         root.addView(recyclerView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -257,7 +276,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         title.setText("No Models Found");
         title.setTextSize(18);
         title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(0xFF888888);
+        title.setTextColor(isDarkTheme ? 0xFF777777 : 0xFF888888);
         title.setPadding(0, dp(16), 0, dp(4));
         emptyTitleText = title;
         container.addView(title);
@@ -529,10 +548,34 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             btn.setStrokeColor(ColorStateList.valueOf(
                     ContextCompat.getColor(this, R.color.primary)));
         } else {
-            btn.setBackgroundTintList(ColorStateList.valueOf(0xFFEEEEEE));
-            btn.setTextColor(0xFF555555);
-            btn.setStrokeColor(ColorStateList.valueOf(0xFFCCCCCC));
+            btn.setBackgroundTintList(ColorStateList.valueOf(isDarkTheme ? 0xFF333333 : 0xFFEEEEEE));
+            btn.setTextColor(isDarkTheme ? 0xFFAAAAAA : 0xFF555555);
+            btn.setStrokeColor(ColorStateList.valueOf(isDarkTheme ? 0xFF444444 : 0xFFCCCCCC));
         }
+    }
+
+    private void applyThemeColors() {
+        int bg = isDarkTheme ? 0xFF1E1E2E : 0xFFF5F5F5;
+        int surface = isDarkTheme ? 0xFF2D2D2D : 0xFFFFFFFF;
+        int cardBg = isDarkTheme ? 0xFF2D2D2D : 0xFFFFFFFF;
+        int cardBgAlt = isDarkTheme ? 0xFF252525 : 0xFFFAFAFA;
+        int textPrimary = isDarkTheme ? 0xFFEEEEEE : 0xFF333333;
+        int textSecondary = isDarkTheme ? 0xFFBBBBBB : 0xFF666666;
+        int textMuted = isDarkTheme ? 0xFF777777 : 0xFF888888;
+        int textMuted2 = isDarkTheme ? 0xFFAAAAAA : 0xFF666666;
+        int statusBg = isDarkTheme ? 0xFF2D2D2D : 0xFFF5F5F5;
+        int green = isDarkTheme ? 0xFF66BB6A : 0xFF4CAF50;
+        int folderTint = isDarkTheme ? 0xFF999999 : 0xFF888888;
+
+        View root = ((ViewGroup) findViewById(android.R.id.content)).getChildAt(0);
+        if (root != null) root.setBackgroundColor(bg);
+        if (toolbar != null) toolbar.setBackgroundColor(isDarkTheme ? 0xFF2E7D32 : ContextCompat.getColor(this, R.color.toolbar_background));
+        if (recyclerView != null) recyclerView.setBackgroundColor(surface);
+
+        applySourceTabStyle(libTabBtn, currentSource == SOURCE_LIBRARY);
+        applySourceTabStyle(wsTabBtn, currentSource == SOURCE_WORKSPACE);
+
+        adapter.notifyDataSetChanged();
     }
 
     private void switchSource(int source) {
@@ -1169,7 +1212,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             TextView infoText = new TextView(ModelNavigatorActivity.this);
             infoText.setId(R.id.item_info);
             infoText.setTextSize(11);
-            infoText.setTextColor(0xFF888888);
+            infoText.setTextColor(isDarkTheme ? 0xFF777777 : 0xFF888888);
             infoText.setPadding(0, dp(2), 0, 0);
             textContainer.addView(infoText);
 
@@ -1198,13 +1241,13 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 String arrow = item.isExpanded() ? "\u25BC " : "\u25B6 ";
                 int childCount = item.getChildren().size();
                 holder.nameText.setText(arrow + item.getName());
-                holder.nameText.setTextColor(0xFF333333);
+                holder.nameText.setTextColor(isDarkTheme ? 0xFFCCCCCC : 0xFF333333);
                 holder.nameText.setTextSize(14);
                 holder.infoText.setText(childCount + " item" + (childCount == 1 ? "" : "s"));
                 holder.icon.setImageDrawable(ContextCompat.getDrawable(
                         ModelNavigatorActivity.this, R.drawable.ic_folder));
-                holder.icon.setImageTintList(ColorStateList.valueOf(0xFF888888));
-                holder.card.setCardBackgroundColor(0xFFFFFFFF);
+                holder.icon.setImageTintList(ColorStateList.valueOf(isDarkTheme ? 0xFF999999 : 0xFF888888));
+                holder.card.setCardBackgroundColor(isDarkTheme ? 0xFF2D2D2D : 0xFFFFFFFF);
                 holder.card.setClickable(true);
                 holder.card.setOnClickListener(v -> {
                     item.setExpanded(!item.isExpanded());
@@ -1219,19 +1262,19 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                         : null);
             } else if (item.getType() == ModelTreeItem.Type.MODEL_FILE) {
                 holder.nameText.setText(item.getName());
-                holder.nameText.setTextColor(ContextCompat.getColor(
+                holder.nameText.setTextColor(isDarkTheme ? 0xFF66BB6A : ContextCompat.getColor(
                         ModelNavigatorActivity.this, R.color.gaml_dark_green));
                 holder.nameText.setTextSize(14);
                 String sizeStr = item.getFileSize() > 0
                         ? Formatter.formatFileSize(ModelNavigatorActivity.this, item.getFileSize())
                         : "";
                 holder.infoText.setText("GAML" + (sizeStr.isEmpty() ? "" : " · " + sizeStr));
-                holder.infoText.setTextColor(0xFF4CAF50);
+                holder.infoText.setTextColor(isDarkTheme ? 0xFF66BB6A : 0xFF4CAF50);
                 holder.icon.setImageDrawable(ContextCompat.getDrawable(
                         ModelNavigatorActivity.this, R.drawable.ic_file_gaml));
                 holder.icon.setImageTintList(ColorStateList.valueOf(
                         ContextCompat.getColor(ModelNavigatorActivity.this, R.color.primary)));
-                holder.card.setCardBackgroundColor(0xFFFFFFFF);
+                holder.card.setCardBackgroundColor(isDarkTheme ? 0xFF2D2D2D : 0xFFFFFFFF);
                 holder.card.setOnClickListener(v -> {
                     if (currentSource == SOURCE_WORKSPACE) {
                         launchEditorFile(item);
@@ -1251,16 +1294,16 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 });
             } else {
                 holder.nameText.setText(item.getName());
-                holder.nameText.setTextColor(0xFF666666);
+                holder.nameText.setTextColor(isDarkTheme ? 0xFFBBBBBB : 0xFF666666);
                 holder.nameText.setTextSize(13);
                 String ext = item.getExtension();
                 String sizeStr = item.getFileSize() > 0
                         ? Formatter.formatFileSize(ModelNavigatorActivity.this, item.getFileSize())
                         : "";
                 holder.infoText.setText(ext.toUpperCase() + " · " + sizeStr);
-                holder.infoText.setTextColor(0xFF888888);
+                holder.infoText.setTextColor(isDarkTheme ? 0xFF777777 : 0xFF888888);
                 holder.icon.setImageDrawable(null);
-                holder.card.setCardBackgroundColor(0xFFFAFAFA);
+                holder.card.setCardBackgroundColor(isDarkTheme ? 0xFF252525 : 0xFFFAFAFA);
                 if (currentSource == SOURCE_WORKSPACE) {
                     holder.card.setClickable(true);
                     holder.card.setOnClickListener(v -> openItem(item));
