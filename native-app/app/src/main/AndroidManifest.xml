@@ -19,6 +19,8 @@
         android:requestLegacyExternalStorage="true"
         android:name=".GamaApplication"
         android:allowBackup="true"
+        android:extractNativeLibs="true"
+        android:icon="@mipmap/ic_launcher"
         android:label="GAMA Native"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
