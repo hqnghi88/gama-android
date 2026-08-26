@@ -244,7 +244,7 @@ if (keystorePropsFile.exists()) {
 
 android {
     namespace 'com.gama.nativeapp'
-    compileSdk 34
+    compileSdk 36
 
     signingConfigs {
         release {
@@ -260,9 +260,9 @@ android {
     defaultConfig {
         applicationId "com.gama.nativeapp"
         minSdk 26
-        targetSdk 34
-        versionCode 34
-        versionName "0.1.39"
+        targetSdk 36
+        versionCode 35
+        versionName "0.1.40"
     }
 
     buildTypes {
