@@ -130,6 +130,8 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private float lastTouchX, lastTouchY;
     private float lastFocalX, lastFocalY;
     private float focalX, focalY;
+    private float lastTwistAngle;
+    private boolean twistTracking;
     private ScaleGestureDetector scaleDetector;
     private GestureDetector tapDetector;
     private final Paint bgPaint = new Paint();
@@ -692,6 +694,10 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 lastFocalY = focalY;
                 lastTouchX = x;
                 lastTouchY = y;
+                if (event.getPointerCount() >= 2) {
+                    lastTwistAngle = twistAngle(event);
+                    twistTracking = true;
+                }
                 return true;
 
             case MotionEvent.ACTION_MOVE:
@@ -707,11 +713,23 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 if (!isLocked) {
                     if (event.getPointerCount() > 1) {
                         computeFocal(event);
-                        float dx = focalX - lastFocalX;
-                        float dy = focalY - lastFocalY;
                         if (output != null && output.getData().is3D()) {
-                            androidGraphics.rotateCamera3D(-dx * 0.3f, -dy * 0.3f);
+                            float dy = focalY - lastFocalY;
+                            if (twistTracking) {
+                                float angle = twistAngle(event);
+                                float dAngle = angle - lastTwistAngle;
+                                // Normalize to [-180, 180] to handle the -PI/PI wrap
+                                if (dAngle > 180f) dAngle -= 360f;
+                                else if (dAngle < -180f) dAngle += 360f;
+                                androidGraphics.rotateCamera3D(dAngle, -dy * 0.3f);
+                                lastTwistAngle = angle;
+                            } else {
+                                float dx = focalX - lastFocalX;
+                                androidGraphics.rotateCamera3D(-dx * 0.3f, -dy * 0.3f);
+                            }
                         } else {
+                            float dx = focalX - lastFocalX;
+                            float dy = focalY - lastFocalY;
                             viewPort.offset(-(int) dx, -(int) dy);
                         }
                         lastFocalX = focalX;
@@ -748,6 +766,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 lastFocalY = focalY;
                 lastTouchX = x;
                 lastTouchY = y;
+                twistTracking = false;
                 return true;
 
             case MotionEvent.ACTION_UP:
@@ -831,6 +850,14 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         }
         focalX = fx / n;
         focalY = fy / n;
+    }
+
+    /** Angle (degrees) of the line between the two pointers, relative to
+     *  the horizontal.  Used to detect twist/rotation gestures. */
+    private float twistAngle(MotionEvent event) {
+        float dx = event.getX(1) - event.getX(0);
+        float dy = event.getY(1) - event.getY(0);
+        return (float) Math.toDegrees(Math.atan2(dy, dx));
     }
 
     // -- IDisplaySurface implementation --

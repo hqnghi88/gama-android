@@ -746,8 +746,8 @@ public class AndroidScene3D {
                 double az = Math.atan2(vy, vx);
                 double elev = Math.atan2(vz, Math.hypot(vx, vy));
                 az += Math.toRadians(rotYawDeg);
-                elev = Math.max(Math.toRadians(25),
-                        Math.min(Math.toRadians(80), elev + Math.toRadians(rotPitchDeg)));
+                elev = Math.max(Math.toRadians(-85),
+                        Math.min(Math.toRadians(85), elev + Math.toRadians(rotPitchDeg)));
                 double horiz = orbitDist * Math.cos(elev);
                 double nvz = orbitDist * Math.sin(elev);
                 double ncx = tarX + horiz * Math.cos(az);
