@@ -774,7 +774,16 @@ public class ExperimentActivity extends Activity {
         paramScroll.addView(paramListLayout);
         paramList = paramListLayout;
 
-        // Speed slider
+        addSpeedCard(paramList);
+
+        paramsPanel.addView(paramScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        bottomPanel.addView(paramsPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+    }
+
+    /** Rebuilds the simulation-speed card at the top of the Params list.
+     *  Must be re-applied after ParamsPanelBuilder.populate() clears the list. */
+    private void addSpeedCard(LinearLayout list) {
+        if (list == null) return;
         MaterialCardView speedCard = new MaterialCardView(this);
         speedCard.setRadius(dp(8));
         speedCard.setCardElevation(dp(1));
@@ -824,10 +833,7 @@ public class ExperimentActivity extends Activity {
             }
         });
         speedCard.addView(speedSlider);
-        paramList.addView(speedCard);
-
-        paramsPanel.addView(paramScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
-        bottomPanel.addView(paramsPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        list.addView(speedCard);
     }
 
     private void showPanel(int position) {
@@ -2024,6 +2030,8 @@ public class ExperimentActivity extends Activity {
                         paramRefreshers.clear();
                         com.gama.nativeapp.gui.ParamsPanelBuilder.populate(
                                 this, paramList, esp, paramRefreshers);
+                        // populate() clears the list, so re-append the speed slider.
+                        addSpeedCard(paramList);
                     });
                 }
             } catch (Exception e) {

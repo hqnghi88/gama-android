@@ -42,10 +42,39 @@ public class AndroidScene3D {
     private float sunX = 0, sunY = 0, sunZ = 1;
     private int sunColor = 0xFFFFFFFF;
 
+    // Ambient light color (ARGB) for textured polygons - default white (no change)
+    private float ambR = 1f, ambG = 1f, ambB = 1f;
+
+    // Full set of non-ambient light sources (point / spot / directional) supplied
+    // by the model's display. Each is used to add diffuse (and per-light
+    // attenuation) shading on top of the ambient term, matching multi-light GAMA
+    // displays such as the Lighting and Specular Effects recipes.
+    private GamaLight[] lights = new GamaLight[0];
+
+    static final int LT_AMB = 0, LT_DIR = 1, LT_POINT = 2, LT_SPOT = 3;
+
+    static final class GamaLight {
+        int type;
+        float r, g, b;          // 0..1 intensity colour (0 when inactive)
+        float px, py, pz;       // location (model coords)
+        float ldx, ldy, ldz;    // unit vector from surface toward the light (model coords)
+        float cosSpot;          // cos of spot cutoff angle
+        float ca, la, qa;       // constant / linear / quadratic attenuation
+        boolean active;
+    }
+
     // The 3D frame is rasterized at this fraction of the view resolution and then
     // upscaled to the canvas. A software rasterizer's cost is fill-rate bound, so
     // rendering at ~0.6x resolution cuts pixel work ~2.8x with only a mild blur.
     private float renderScale = 0.6f;
+
+    /**
+     * True when the model provides its own camera (display camera statement).
+     * When set, the auto-fit distance framing is skipped so the model's camera
+     * framing is honoured (matching desktop GAMA), instead of pulling the camera
+     * back to frame the whole world bounds.
+     */
+    public boolean explicitCamera = false;
 
     public void setRenderScale(float scale) {
         renderScale = Math.max(0.25f, Math.min(1f, scale));
@@ -53,6 +82,19 @@ public class AndroidScene3D {
 
     public void setAmbientLight(int argb) {
         this.ambientLight = argb;
+        ambR = ((argb >>> 16) & 0xFF) / 255f;
+        ambG = ((argb >>> 8) & 0xFF) / 255f;
+        ambB = (argb & 0xFF) / 255f;
+    }
+
+    /** Replaces the active set of non-ambient light sources; null clears them. */
+    public void setLights(GamaLight[] ls) {
+        if (ls == null) ls = new GamaLight[0];
+        lights = ls;
+    }
+
+    public void setViewPos(double x, double y, double z) {
+        viewX = (float) x; viewY = (float) y; viewZ = (float) z;
     }
 
     public void setBgColor(int argb) {
@@ -63,6 +105,17 @@ public class AndroidScene3D {
         double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (len > 1e-9) { sunX = (float) (dx / len); sunY = (float) (dy / len); sunZ = (float) (dz / len); }
         sunColor = rgb | 0xFF000000;
+        // Represented as a directional light so both the textured path (which
+        // reads sunX/sunY/sunZ) and any callers of computeLighting stay coherent.
+        GamaLight l = new GamaLight();
+        l.type = LT_DIR;
+        l.ldx = sunX; l.ldy = sunY; l.ldz = sunZ;
+        l.r = ((rgb >>> 16) & 0xFF) / 255f;
+        l.g = ((rgb >>> 8) & 0xFF) / 255f;
+        l.b = (rgb & 0xFF) / 255f;
+        l.ca = 1f; l.la = 0f; l.qa = 0f;
+        l.active = !(l.r == 0f && l.g == 0f && l.b == 0f);
+        lights = new GamaLight[] { l };
     }
 
     static final int POLY = 0;
@@ -81,6 +134,7 @@ public class AndroidScene3D {
         float stroke;
         boolean cull;       // backface cull (only safe for faces with known outward winding)
         float depth;        // view-space z used for painter's algorithm sorting
+        float altZ;         // average world-space altitude (Y-negated z), used for layer-internal ordering
         int layerIdx;       // layer stack index – preserves layer ordering for translucent overlays
         boolean background; // drawn first (behind everything), e.g. a ground/picture plane
         String text;
@@ -151,6 +205,10 @@ public class AndroidScene3D {
     private final float[] p2 = new float[3];
     private final float[] p3 = new float[3];
     private float curNx = 0, curNy = 0, curNz = 1;
+    private float curLightX = 0, curLightY = 0, curLightZ = 0;
+    private float viewX = 0, viewY = 0, viewZ = 100f;
+    private float specShine = 14f;
+    private float specIntensity = 1.0f;
 
     // Compositing frame (viewer size): textured prims rasterize into it, all
     // other prims are drawn onto it with the canvas API.
@@ -165,26 +223,43 @@ public class AndroidScene3D {
     private final List<Prim> visibleBuf = new ArrayList<>();
     private static final Comparator<Prim> depthSorter =
             (a, b) -> {
-                // Pass 1: textured POLY (terrain/background) — fillTexturedPoly
-                // reads from frameBmp so must draw before non-textured content.
-                // Pass 2: non-textured prims (trail, grid, axes) — Canvas API.
-                // Pass 3: billboards (agents) — foreground, read existing content.
-                int pa = a.kind == BILLBOARD ? 2 : (a.kind == POLY && a.texture != null ? 0 : 1);
-                int pb = b.kind == BILLBOARD ? 2 : (b.kind == POLY && b.texture != null ? 0 : 1);
-                int c = Integer.compare(pa, pb);
+                // Background (ground/terrain/picture plane) always draws first, behind
+                // everything. fillTexturedPoly composites over the current framebuffer,
+                // so textured content draws correctly no matter where it lands in order.
+                int ba = a.background ? -1 : 0;
+                int bb = b.background ? -1 : 0;
+                int c = Integer.compare(ba, bb);
                 if (c != 0) return c;
+                // Billboard foreground markers (camera-facing agents) draw last, on top.
+                int ka = a.kind == BILLBOARD ? 1 : 0;
+                int kb = b.kind == BILLBOARD ? 1 : 0;
+                c = Integer.compare(ka, kb);
+                if (c != 0) return c;
+                // Order by world altitude first: a shape lying higher (larger z) draws
+                // over one lying lower, e.g. an elevated/3D object stays above a flat
+                // ground/water polygon no matter which GAML layer declared it. Real 3D
+                // depth must win over declared layer order (desktop GAMA depth-buffers),
+                // otherwise a later-declared water plane would cover an OBJ sitting on it.
+                // Quantized so genuinely same-altitude pieces compare equal and fall
+                // through to layer/draw (insertion) order — which keeps flat 2D and
+                // translucent overlays stacked the way the model declares them.
+                int qa = (int) (a.altZ * 20f);
+                int qb = (int) (b.altZ * 20f);
+                c = Integer.compare(qa, qb);
+                if (c != 0) return c;
+                // Among same-altitude (typically flat 2D/translucent overlay) content,
+                // GAML layers composite bottom-to-top: a later layer draws over earlier
+                // ones, preserving declared layer order regardless of tiny depth diffs.
                 c = Integer.compare(a.layerIdx, b.layerIdx);
                 if (c != 0) return c;
-                int da = (int) (a.depth * 100f);
-                int db = (int) (b.depth * 100f);
-                c = Integer.compare(da, db);
+                // At equal altitude, textured sprites (agents) draw above non-textured
+                // overlays (trail, grid), so ants stay visible on top of the trail.
+                int ta = (a.kind == POLY && a.texture != null) ? 1 : 0;
+                int tb = (b.kind == POLY && b.texture != null) ? 1 : 0;
+                c = Integer.compare(ta, tb);
                 if (c != 0) return c;
-                int n = Math.min(a.v.length, b.v.length);
-                for (int i = 0; i < n; i++) {
-                    c = Float.compare(a.v[i], b.v[i]);
-                    if (c != 0) return c;
-                }
-                return Integer.compare(a.v.length, b.v.length);
+                // Stable tie: preserve insertion (draw-statement) order.
+                return 0;
             };
     private final float[] boundsOut = new float[6];
 
@@ -644,45 +719,47 @@ public class AndroidScene3D {
                 minX, minY, minZ, maxX, maxY, maxZ);
         long nowMs = System.currentTimeMillis();
         if (fitStartMs < 0) fitStartMs = nowMs;
-        if (fitLocked) {
-            camX = fitCamX;
-            camY = fitCamY;
-            camZ = fitCamZ;
-            dist = fitDist;
-            if (neededFit > fitNeed * 1.15f) {
-                fitLocked = false;
-                fitStartMs = nowMs;
+        if (!explicitCamera) {
+            if (fitLocked) {
+                camX = fitCamX;
+                camY = fitCamY;
+                camZ = fitCamZ;
+                dist = fitDist;
+                if (neededFit > fitNeed * 1.15f) {
+                    fitLocked = false;
+                    fitStartMs = nowMs;
+                }
+            } else {
+                if (neededFit > fitNeed) fitNeed = (float) neededFit;
+                if (fitNeed > dist) {
+                    double ux = fvx, uy = fvy, uz = fvz;
+                    double back = fitNeed - dist;
+                    camX += ux * back;
+                    camY += uy * back;
+                    camZ += uz * back;
+                    dxc = camX - tarX;
+                    dyc = camY - tarY;
+                    dzc = camZ - tarZ;
+                    dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+                } else if (coverFit && fitNeed < dist) {
+                    // Cover: zoom in until the scene fills the viewport. Uses the
+                    // settle-window maximum so a static frame settles to one value.
+                    double ux = fvx, uy = fvy, uz = fvz;
+                    double forward = dist - fitNeed;
+                    camX -= ux * forward;
+                    camY -= uy * forward;
+                    camZ -= uz * forward;
+                    dxc = camX - tarX;
+                    dyc = camY - tarY;
+                    dzc = camZ - tarZ;
+                    dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+                }
+                fitCamX = camX;
+                fitCamY = camY;
+                fitCamZ = camZ;
+                fitDist = dist;
+                if (nowMs - fitStartMs > 2000) fitLocked = true;
             }
-        } else {
-            if (neededFit > fitNeed) fitNeed = (float) neededFit;
-            if (fitNeed > dist) {
-                double ux = fvx, uy = fvy, uz = fvz;
-                double back = fitNeed - dist;
-                camX += ux * back;
-                camY += uy * back;
-                camZ += uz * back;
-                dxc = camX - tarX;
-                dyc = camY - tarY;
-                dzc = camZ - tarZ;
-                dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
-            } else if (coverFit && fitNeed < dist) {
-                // Cover: zoom in until the scene fills the viewport. Uses the
-                // settle-window maximum so a static frame settles to one value.
-                double ux = fvx, uy = fvy, uz = fvz;
-                double forward = dist - fitNeed;
-                camX -= ux * forward;
-                camY -= uy * forward;
-                camZ -= uz * forward;
-                dxc = camX - tarX;
-                dyc = camY - tarY;
-                dzc = camZ - tarZ;
-                dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
-            }
-            fitCamX = camX;
-            fitCamY = camY;
-            fitCamZ = camZ;
-            fitDist = dist;
-            if (nowMs - fitStartMs > 2000) fitLocked = true;
         }
 
         // Re-aim the camera so its view axis passes through the scene centre.
@@ -690,7 +767,9 @@ public class AndroidScene3D {
         // comodel mixes micro-model coordinate frames (e.g. Flood Evacuation's
         // grid cells live at the micro-model's raw DEM coordinates); without this
         // the whole scene is pushed off-screen and the display looks blank.
-        {
+        // When a model declares its own camera (location/target facets) GAMA uses it
+        // verbatim, so this re-aiming is skipped to reproduce the model's framing.
+        if (!explicitCamera) {
             double offx = cx - tarX, offy = cy - tarY, offz = cz - tarZ;
             double fdot = offx * fvx + offy * fvy + offz * fvz;
             double perpX = offx - fdot * fvx;
@@ -713,7 +792,9 @@ public class AndroidScene3D {
         // camera looks horizontally from the same height as the geometry.
         // Lift the camera above the scene centre and aim it back down at the
         // usual oblique angle, re-framing the whole footprint.
-        {
+        // Skipped for models that declare their own camera (which GAMA honours
+        // verbatim, e.g. the Moving 3D Object example's oblique ground camera).
+        if (!explicitCamera) {
             float zSpan = maxZ - minZ;
             float xySpan = Math.max(maxX - minX, maxY - minY);
             if (zSpan < xySpan * 0.05f && zSpan < (float) r * 0.2f) {
@@ -756,19 +837,22 @@ public class AndroidScene3D {
                 // Re-frame from the rotated view direction so the whole scene
                 // footprint stays visible. The camera was framed for the original
                 // view axis only; rotating to a steeper/more oblique angle makes
-                // parts of the scene fall outside the viewport.
-                double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
-                double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
-                if (fl > 1e-9) {
-                    double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
-                            cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
-                    if (need > orbitDist) {
-                        orbitDist = need;
-                        horiz = orbitDist * Math.cos(elev);
-                        nvz = orbitDist * Math.sin(elev);
-                        ncx = tarX + horiz * Math.cos(az);
-                        ncy = tarY + horiz * Math.sin(az);
-                        ncz = tarZ + nvz;
+                // parts of the scene fall outside the viewport. Skipped for models
+                // that declare their own camera (GAMA keeps the model's distance).
+                if (!explicitCamera) {
+                    double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
+                    double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
+                    if (fl > 1e-9) {
+                        double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
+                                cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
+                        if (need > orbitDist) {
+                            orbitDist = need;
+                            horiz = orbitDist * Math.cos(elev);
+                            nvz = orbitDist * Math.sin(elev);
+                            ncx = tarX + horiz * Math.cos(az);
+                            ncy = tarY + horiz * Math.sin(az);
+                            ncz = tarZ + nvz;
+                        }
                     }
                 }
                 camX = ncx;
@@ -847,6 +931,7 @@ public class AndroidScene3D {
         for (Prim p : prims) {
             if (p.cull && !visibleFromOutside(p, (float) camX, (float) camY, (float) camZ)) continue;
             p.depth = p.background ? Float.NEGATIVE_INFINITY : viewZ(p, cx, cy, cz);
+            p.altZ = avgWorldZ(p);
             visible.add(p);
         }
         Collections.sort(visible, depthSorter);
@@ -957,6 +1042,15 @@ public class AndroidScene3D {
         // The Y ordinate negation flips the winding, so normals are inverted;
         // faces are visible when the (inverted) normal points away from the camera.
         return nx * vx + ny * vy + nz * vz >= 0;
+    }
+
+    /** Average world-space altitude (z) of a primitive's vertices — Y-negated z is unchanged. */
+    private float avgWorldZ(Prim p) {
+        int n = p.v.length / 3;
+        if (n <= 0) return 0;
+        float wz = 0;
+        for (int i = 0; i < p.v.length; i += 3) wz += p.v[i + 2];
+        return wz / n;
     }
 
     /** View-space z of a primitive's centroid (used for painter's sorting). */
@@ -1174,7 +1268,13 @@ public class AndroidScene3D {
             for (int i = 1; i < clipped; i++) workPath.lineTo(sx[i], sy[i]);
             workPath.close();
         if (p.fill != 0) {
-            int lit = litColor(p.fill, p.lnx, p.lny, p.lnz);
+            float cx = 0, cy = 0, cz = 0;
+            int cc = p.v.length / 3;
+            for (int i = 0; i < cc; i++) {
+                cx += p.v[i * 3]; cy += -p.v[i * 3 + 1]; cz += p.v[i * 3 + 2];
+            }
+            cx /= cc; cy /= cc; cz /= cc;
+            int lit = litColor(p.fill, p.lnx, p.lny, p.lnz, cx, cy, cz);
             fillPaint.setColor(lit);
             canvas.drawPath(workPath, fillPaint);
         }
@@ -1196,6 +1296,12 @@ public class AndroidScene3D {
         curNx = p.lnx;
         curNy = p.lny;
         curNz = p.lnz;
+        int cc = p.v.length / 3;
+        float cx = 0, cy = 0, cz = 0;
+        for (int i = 0; i < cc; i++) {
+            cx += p.v[i * 3]; cy += -p.v[i * 3 + 1]; cz += p.v[i * 3 + 2];
+        }
+        curLightX = cx / cc; curLightY = cy / cc; curLightZ = cz / cc;
         int[] tex = texCache.get(texBmp);
         int tw, th;
         if (tex == null) {
@@ -1253,21 +1359,74 @@ public class AndroidScene3D {
     }
 
     /** Modulates an ARGB fill by the GAMA lighting model (ambient + diffuse * max(N.L,0)), preserving alpha. */
-    private int litColor(int argb, float nx, float ny, float nz) {
+    private int litColor(int argb, float nx, float ny, float nz, float px, float py, float pz) {
         if (nx == 0 && ny == 0 && nz == 0) return argb;
-        float nd = nx * sunX + ny * sunY + nz * sunZ;
-        if (nd < 0) nd = 0;
+        float[] f = lightFactors(nx, ny, nz, px, py, pz);
         int a = (argb >>> 24) & 0xFF;
         int r = (argb >>> 16) & 0xFF, g = (argb >>> 8) & 0xFF, b = argb & 0xFF;
-        float ar = (ambientLight >>> 16) & 0xFF, ag = (ambientLight >>> 8) & 0xFF, ab = ambientLight & 0xFF;
-        float sr = (sunColor >>> 16) & 0xFF, sg = (sunColor >>> 8) & 0xFF, sb = sunColor & 0xFF;
-        float fr = Math.min(1f, ar / 255f + (sr / 255f) * nd);
-        float fg = Math.min(1f, ag / 255f + (sg / 255f) * nd);
-        float fb = Math.min(1f, ab / 255f + (sb / 255f) * nd);
-        int rr = Math.round(r * fr); if (rr > 255) rr = 255;
-        int gg = Math.round(g * fg); if (gg > 255) gg = 255;
-        int bb = Math.round(b * fb); if (bb > 255) bb = 255;
+        int rr = Math.round(r * f[0]); if (rr > 255) rr = 255;
+        int gg = Math.round(g * f[1]); if (gg > 255) gg = 255;
+        int bb = Math.round(b * f[2]); if (bb > 255) bb = 255;
         return (a << 24) | (rr << 16) | (gg << 8) | bb;
+    }
+
+    /**
+     * Computes per-channel lighting factors fr, fg, fb in [0,1] for a surface at
+     * model coordinates (px,py,pz) with unit face normal (nx,ny,nz). The result is
+     * ambient + the diffuse contribution of every active light, each scaled by
+     * max(N.L,0) and (for point/spot lights) by attenuation. Mirrors the GAMA
+     * desktop fixed-function model but sums a single contribution per channel.
+     */
+    private float[] lightFactors(float nx, float ny, float nz, float px, float py, float pz) {
+        float fr = ambR, fg = ambG, fb = ambB;
+        float vx = viewX - px, vy = viewY - py, vz = viewZ - pz;
+        float vlen = (float) Math.sqrt(vx * vx + vy * vy + vz * vz);
+        if (vlen > 1e-6f) { vx /= vlen; vy /= vlen; vz /= vlen; }
+        else { vx = 0; vy = 0; vz = 1; }
+        for (GamaLight l : lights) {
+            if (!l.active) continue;
+            float lx, ly, lz, atten = 1f;
+            if (l.type == LT_DIR) {
+                lx = l.ldx; ly = l.ldy; lz = l.ldz;
+            } else {
+                float ovx = l.px - px, ovy = l.py - py, ovz = l.pz - pz;
+                float d = (float) Math.sqrt(ovx * ovx + ovy * ovy + ovz * ovz);
+                if (d < 1e-6f) { lx = 0; ly = 0; lz = 1; }
+                else { lx = ovx / d; ly = ovy / d; lz = ovz / d; }
+                if (l.type == LT_SPOT) {
+                    // light axis points from the light toward its target (ld = -direction)
+                    float dot = lx * l.ldx + ly * l.ldy + lz * l.ldz;
+                    if (dot < l.cosSpot) continue;
+                }
+                atten = Math.min(1f, 1f / (l.ca + l.la * d + l.qa * d * d));
+            }
+            float nd = nx * lx + ny * ly + nz * lz;
+            // Desktop GAMA enables GL_LIGHT_MODEL_TWO_SIDE, so faces whose stored
+            // normals point away from the light (e.g. a floor generated with a
+            // downward normal) are lit using the flipped normal. Without this the
+            // model's configured light leaves large flat surfaces (the board) in
+            // near-black ambient, which reads as "the light is not working".
+            if (nd < 0) { nd = -nd; nx = -nx; ny = -ny; nz = -nz; }
+            float dl = Math.min(1f, nd * atten);
+            fr += l.r * dl;
+            fg += l.g * dl;
+            fb += l.b * dl;
+            float hx = lx + vx, hy = ly + vy, hz = lz + vz;
+            float hl = (float) Math.sqrt(hx * hx + hy * hy + hz * hz);
+            if (hl > 1e-6f) {
+                float dh = (nx * hx + ny * hy + nz * hz) / hl;
+                if (dh > 0) {
+                    float spec = (float) Math.pow(dh, specShine) * specIntensity;
+                    fr += l.r * spec;
+                    fg += l.g * spec;
+                    fb += l.b * spec;
+                }
+            }
+        }
+        if (fr > 1f) fr = 1f;
+        if (fg > 1f) fg = 1f;
+        if (fb > 1f) fb = 1f;
+        return new float[] { fr, fg, fb };
     }
 
     /** Fills the clipped polygon with a flat color (used when a texture bitmap is unavailable). */
@@ -1306,17 +1465,8 @@ public class AndroidScene3D {
         // setup, so they are constant for every pixel of this triangle. Computing
         // them here (instead of inside the pixel loop) removes two float divides
         // per pixel from the hottest path.
-        float ndotl = curNx * sunX + curNy * sunY + curNz * sunZ;
-        float nd = ndotl > 0 ? ndotl : 0f;
-        int ar = (ambientLight >>> 16) & 0xFF;
-        int ag = (ambientLight >>> 8) & 0xFF;
-        int ab = ambientLight & 0xFF;
-        int sr255 = (sunColor >>> 16) & 0xFF;
-        int sg255 = (sunColor >>> 8) & 0xFF;
-        int sb255 = sunColor & 0xFF;
-        float fr = Math.min(1f, ar / 255f + (sr255 / 255f) * nd);
-        float fg = Math.min(1f, ag / 255f + (sg255 / 255f) * nd);
-        float fb = Math.min(1f, ab / 255f + (sb255 / 255f) * nd);
+        float[] ff = lightFactors(curNx, curNy, curNz, curLightX, curLightY, curLightZ);
+        float fr = ff[0], fg = ff[1], fb = ff[2];
 
         for (int py = miny; py <= maxy; py++) {
             float fy = py;

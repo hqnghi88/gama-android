@@ -75,6 +75,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private Rectangle2D.Double rect = new Rectangle2D.Double();
     private final android.graphics.RectF fastRect = new android.graphics.RectF();
     private int drawnShapesCount = 0;
+    private static double worldSurfaceZ = Double.NaN;
 
     private final AndroidScene3D scene3d = new AndroidScene3D();
 
@@ -480,7 +481,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         Coordinate[] boxShell = new Coordinate[] {
                             new Coordinate(cx - w / 2, cy - h / 2), new Coordinate(cx + w / 2, cy - h / 2),
                             new Coordinate(cx + w / 2, cy + h / 2), new Coordinate(cx - w / 2, cy + h / 2) };
-                        addPrism3D(boxShell, bz0, bz1, 0, 0, fill, border, tex, wallTex, tint);
+                        addPrism3D(boxShell, bz0, bz1, 0, 0, bz0, fill, border, tex, wallTex, tint);
                     } else {
                         AxisAngle rot = attributes.getRotation();
                         if (rot != null) {
@@ -516,11 +517,27 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         addTaperedMesh(ts, z0, z0 + depth, ox, oy, fill, border, tex, tint);
                     }
                 } else {
+                    // Compute the ring centroid for horizontal positioning. The bbox
+                    // center drifts when GAML's rotated_by changes the shape, causing
+                    // XY misalignment, while the centroid is invariant under
+                    // rotation-about-centroid (which is what rotated_by uses).
+                    int nRing = shell.length;
+                    double centX = 0, centY = 0;
+                    for (int ri = 0; ri < nRing; ri++) {
+                        centX += shell[ri].x;
+                        centY += shell[ri].y;
+                    }
+                    centX /= nRing; centY /= nRing;
+
                     double ox = 0, oy = 0, oz = 0;
                     if (loc != null) {
                         double lift = terrainLift(loc.getX(), loc.getY());
-                        ox = loc.getX() - center[0];
-                        oy = loc.getY() - center[1];
+                        ox = loc.getX() - centX;
+                        oy = loc.getY() - centY;
+                        // Vertical: anchor the model's bounding-box center (the pivot
+                        // transformVertex scales/rotates about) at the location's Z.
+                        // Using the vertex average here launches asymmetric 3D models
+                        // (e.g. an OBJ boat) skyward, since bbox center Z != mean Z.
                         oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
                     }
                     AxisAngle rot = attributes.getRotation();
@@ -529,7 +546,9 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         double z0 = loc != null ? (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) : shellZ0;
                         z0 += terrainLift(cx, cy);
                         Coordinate[] ts = transformShell(shell, center, k, rot);
-                        addPrism3D(ts, z0, z0 + depth, ox, oy, fill, border, tex, tex, tint);
+                        addPrism3D(ts, z0, z0 + depth, ox, oy, oz, fill, border, tex, tex, tint);
+                        double surf = z0 + depth;
+                        if (Double.isNaN(worldSurfaceZ) || surf > worldSurfaceZ) worldSurfaceZ = surf;
                     } else {
                         float[] model = new float[shell.length * 3];
                         for (int i = 0; i < shell.length; i++) {
@@ -664,24 +683,54 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     }
 
     private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border) {
-        addPrism3D(shell, z0, z1, ox, oy, fill, border, null, null, 0);
+        addPrism3D(shell, z0, z1, ox, oy, 0, fill, border, null, null, 0);
     }
 
     /** Draws an extruded polygon prism. `topTex` is applied to the top/bottom faces,
      *  `wallTex` to the sides (desktop GAMA: primary vs alternate texture). Either may
-     *  be null, in which case the corresponding face(s) fall back to the fill color. */
-    private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, int fill, int border,
-                            Object topTex, Object wallTex, int tint) {
+     *  be  null, in which case the corresponding face(s) fall back to the fill color.
+     *  For rotated shapes the extrusion direction follows the polygon's local normal
+     *  (computed from the first three vertices) instead of the global Z axis. */
+    private void addPrism3D(Coordinate[] shell, double z0, double z1, double ox, double oy, double oz,
+                            int fill, int border, Object topTex, Object wallTex, int tint) {
         int n = shell.length;
+        float depth = (float) (z1 - z0);
+
+        // Sanitize Z values (2D Coordinate shells may have NaN z) and build
+        // bottom vertices, simultaneously collecting the first three for normal
+        // computation.
         float[] bottom = new float[n * 3];
         float[] top = new float[n * 3];
         for (int i = 0; i < n; i++) {
+            float sz = Double.isNaN(shell[i].z) ? 0 : (float) shell[i].z;
             bottom[i * 3] = (float) (shell[i].x + ox);
             bottom[i * 3 + 1] = (float) (shell[i].y + oy);
-            bottom[i * 3 + 2] = (float) z0;
-            top[i * 3] = (float) (shell[i].x + ox);
-            top[i * 3 + 1] = (float) (shell[i].y + oy);
-            top[i * 3 + 2] = (float) z1;
+            bottom[i * 3 + 2] = sz + (float) oz;
+        }
+
+        // Compute the polygon normal from the first three bottom vertices.
+        // For non-rotated shapes this is (0,0,1) so extrusion is along global Z;
+        // for rotated shapes it follows the local face direction.
+        float nx = 0, ny = 0, nz = 1;
+        if (n >= 3) {
+            float ax = bottom[3] - bottom[0];
+            float ay = bottom[4] - bottom[1];
+            float az = bottom[5] - bottom[2];
+            float bx = bottom[6] - bottom[0];
+            float by = bottom[7] - bottom[1];
+            float bz = bottom[8] - bottom[2];
+            nx = ay * bz - az * by;
+            ny = az * bx - ax * bz;
+            nz = ax * by - ay * bx;
+            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; }
+            else { nx = 0; ny = 0; nz = 1; }
+        }
+
+        for (int i = 0; i < n; i++) {
+            top[i * 3] = bottom[i * 3] + nx * depth;
+            top[i * 3 + 1] = bottom[i * 3 + 1] + ny * depth;
+            top[i * 3 + 2] = bottom[i * 3 + 2] + nz * depth;
         }
         if (topTex != null) {
             scene3d.addTexturedPoly(top, n, envelopeUvs(top, n), topTex, tint, 0, 0);
@@ -696,11 +745,30 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         for (int i = 0; i < n - 1; i++) {
             float[] w = wall(bottom, top, i);
             if (wallTex != null) {
-                scene3d.addTexturedPoly(w, 4, envelopeUvs(w, 4), wallTex, tint, 0, 0);
+                scene3d.addTexturedPoly(w, 4, wallUvs(bottom, top, i), wallTex, tint, 0, 0);
             } else {
                 scene3d.addPoly(w, 4, fill, border, 1f, false);
             }
         }
+    }
+
+    /**
+     * UVs for a vertical side wall of a prism. Instead of mapping both axes over
+     * the wall's XY footprint (which collapses the vertical axis for a near-vertical
+     * face, garbling the texture when seen from the side), U runs across the wall's
+     * horizontal run and V runs up its actual vertical extent (bottom->top).
+     */
+    private float[] wallUvs(float[] bottom, float[] top, int i) {
+        float[] uv = new float[8];
+        float bx = bottom[i * 3] - bottom[(i + 1) * 3];
+        float by = bottom[i * 3 + 1] - bottom[(i + 1) * 3 + 1];
+        float run = (float) Math.sqrt(bx * bx + by * by);
+        if (run <= 0) run = 1f;
+        uv[0] = 0f; uv[1] = 0f;   // bottom i
+        uv[2] = 1f; uv[3] = 0f;   // bottom i+1
+        uv[4] = 1f; uv[5] = 1f;   // top i+1
+        uv[6] = 0f; uv[7] = 1f;   // top i
+        return uv;
     }
 
     private float[] wall(float[] bottom, float[] top, int i) {
@@ -1425,16 +1493,43 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             double[] center = bboxCenter3D(geom);
             double k = modelScale(geom, attributes.getSize());
             IPoint loc = attributes.getLocation() != null ? attributes.getLocation() : shape.getLocation();
+            AxisAngle rot = attributes.getRotation();
+            AxisAngle fileInitRot = file.getInitRotation();
+            int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
+
+            // Pre-pass over the model vertices using the same transform as the per-face
+            // loop below, to find the model's vertical extent (minus the at-Z offset).
+            // After the file's init-rotation the model's Z centre is NOT bboxCenter3D's z
+            // (the rotation shifts it), so anchoring on center[2] leaves the boat hovering
+            // above the surface. Anchor on the real transformed Z centre instead.
+            double mzMin = Double.POSITIVE_INFINITY, mzMax = Double.NEGATIVE_INFINITY;
+            if (file.setOfVertex != null) {
+                for (double[] c0 : file.setOfVertex) {
+                    double cx = c0[0], cy = c0[1], cz = c0[2];
+                    if (fileInitRot != null && fileInitRot.getAngle() != 0.0) {
+                        double[] r = rotateVertexOBJ(c0, fileInitRot);
+                        cx = r[0]; cy = r[1]; cz = r[2];
+                    }
+                    double pz = rotatePoint((cx - center[0]) * k, (cy + center[1]) * k, (center[2] - cz) * k, 0, 0, 0, rot)[2];
+                    double z = pz;
+                    if (z < mzMin) mzMin = z;
+                    if (z > mzMax) mzMax = z;
+                }
+            }
+            double zCenter = (mzMin + mzMax) / 2;
+
             double ox = 0, oy = 0, oz = 0;
             if (loc != null) {
                 double lift = terrainLift(loc.getX(), loc.getY());
                 ox = loc.getX() - center[0];
                 oy = loc.getY() - center[1];
-                oz = (Double.isNaN(loc.getZ()) ? 0 : loc.getZ()) + lift - center[2];
+                double az = Double.isNaN(loc.getZ()) ? 0 : loc.getZ();
+                if (az == 0 && !Double.isNaN(worldSurfaceZ)) {
+                    oz = worldSurfaceZ - zCenter;
+                } else {
+                    oz = az + lift - zCenter;
+                }
             }
-            AxisAngle rot = attributes.getRotation();
-            AxisAngle fileInitRot = file.getInitRotation();
-            int tint = ((int) (currentAlpha * 255) & 0xFF) << 24 | 0xFFFFFF;
 
             int nmat = file.matTimings.size();
             int matIndex = 0;
@@ -1942,35 +2037,89 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         Canvas c = canvas;
         if (c == null || scene3d.size() == 0) return;
         try {
-            // Apply ambient + default directional light from display data
+            // Apply ambient + every point/spot/directional light from the display
+            // data. Ambient is passed separately; all other lights are gathered
+            // into the renderer's light array so multi-light GAMA displays (the
+            // Lighting and Specular Effects recipes) shade correctly.
             int ambientARGB = 0xFFFFFFFF;
-            double ldx = 0.5, ldy = 0.5, ldz = -1;
-            int lightRGB = 0xFFFFFF;
+            java.util.List<AndroidScene3D.GamaLight> ls = new java.util.ArrayList<>();
             try {
                 java.util.Map<String, Object> lights = (java.util.Map<String, Object>) data.getClass().getMethod("getLights").invoke(data);
                 if (lights != null) {
-                    Object ambientDef = lights.get("Ambient light");
-                    if (ambientDef != null) {
-                        Object intensity = ambientDef.getClass().getMethod("getIntensity").invoke(ambientDef);
-                        ambientARGB = colorToARGB(intensity, ambientARGB);
-                    }
-                    Object defaultDef = lights.get("default");
-                    if (defaultDef != null) {
-                        Object intensity = defaultDef.getClass().getMethod("getIntensity").invoke(defaultDef);
-                        lightRGB = colorToARGB(intensity, 0xFFFFFF) & 0xFFFFFF;
-                        Object dir = defaultDef.getClass().getMethod("getDirection").invoke(defaultDef);
-                        if (dir != null) {
-                            ldx = -((Number) dir.getClass().getMethod("getX").invoke(dir)).doubleValue();
-                            ldy = -((Number) dir.getClass().getMethod("getY").invoke(dir)).doubleValue();
-                            ldz = -((Number) dir.getClass().getMethod("getZ").invoke(dir)).doubleValue();
-                        }
+                    for (java.util.Map.Entry<String, Object> e : lights.entrySet()) {
+                        Object light = e.getValue();
+                        if (light == null) continue;
+                        try {
+                            String type = String.valueOf(light.getClass().getMethod("getType").invoke(light));
+                            if (type == null) continue;
+                            String name = e.getKey() != null ? String.valueOf(e.getKey()) : "";
+                            // Ambient is identified by its NAME ("Ambient light") because
+                            // #ambient keeps the default #direction type.
+                            if (name.contains("Ambient")) {
+                                Object intensity = light.getClass().getMethod("getIntensity").invoke(light);
+                                ambientARGB = colorToARGB(intensity, ambientARGB);
+                                continue;
+                            }
+                            Object intensityObj = light.getClass().getMethod("getIntensity").invoke(light);
+                            int argb = colorToARGB(intensityObj, 0);
+                            int rr = (argb >>> 16) & 0xFF, gg = (argb >>> 8) & 0xFF, bb = argb & 0xFF;
+                            AndroidScene3D.GamaLight gl = new AndroidScene3D.GamaLight();
+                            gl.r = rr / 255f; gl.g = gg / 255f; gl.b = bb / 255f;
+                            gl.ca = 1f; gl.la = 0f; gl.qa = 0f;
+                            gl.active = (rr | gg | bb) != 0;
+                            if (!type.contains("Direction")) {
+                                try {
+                                    Object loc = light.getClass().getMethod("getLocation").invoke(light);
+                                    if (loc != null) {
+                                        gl.px = ((Number) loc.getClass().getMethod("getX").invoke(loc)).floatValue();
+                                        gl.py = ((Number) loc.getClass().getMethod("getY").invoke(loc)).floatValue();
+                                        gl.pz = ((Number) loc.getClass().getMethod("getZ").invoke(loc)).floatValue();
+                                    }
+                                } catch (Throwable ignored) { }
+                            }
+                            // Beam axis / direction (unit, toward the lit scene).
+                            try {
+                                Object dir = light.getClass().getMethod("getDirection").invoke(light);
+                                if (dir != null) {
+                                    float dx = ((Number) dir.getClass().getMethod("getX").invoke(dir)).floatValue();
+                                    float dy = ((Number) dir.getClass().getMethod("getY").invoke(dir)).floatValue();
+                                    float dz = ((Number) dir.getClass().getMethod("getZ").invoke(dir)).floatValue();
+                                    float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                                    if (len > 1e-6f) { gl.ldx = dx / len; gl.ldy = dy / len; gl.ldz = dz / len; }
+                                    else { gl.ldx = 0; gl.ldy = 0; gl.ldz = 1; }
+                                }
+                            } catch (Throwable ignored) { }
+                            if (type.contains("Spot")) {
+                                gl.type = AndroidScene3D.LT_SPOT;
+                                // A dynamic spot may expose a null direction (its
+                                // direction is a live expression not pre-evaluated).
+                                // Fall back to a downward beam so it still lights.
+                                if (gl.ldx == 0 && gl.ldy == 0 && gl.ldz == 0) {
+                                    gl.ldx = 0; gl.ldy = 0; gl.ldz = -1;
+                                }
+                                double ang = 45d;
+                                try { ang = ((Number) light.getClass().getMethod("getAngle").invoke(light)).doubleValue(); }
+                                catch (Throwable ignored) { }
+                                gl.cosSpot = (float) Math.cos(Math.toRadians(Math.max(0.0, Math.min(90.0, ang))));
+                            } else if (type.contains("Point")) {
+                                gl.type = AndroidScene3D.LT_POINT;
+                            } else if (type.contains("Direction")) {
+                                gl.type = AndroidScene3D.LT_DIR;
+                                gl.ldx = -gl.ldx; gl.ldy = -gl.ldy; gl.ldz = -gl.ldz;
+                            }
+                            try { gl.ca = ((Number) light.getClass().getMethod("getConstantAttenuation").invoke(light)).floatValue(); } catch (Throwable ignored) { }
+                            try { gl.la = ((Number) light.getClass().getMethod("getLinearAttenuation").invoke(light)).floatValue(); } catch (Throwable ignored) { }
+                            try { gl.qa = ((Number) light.getClass().getMethod("getQuadraticAttenuation").invoke(light)).floatValue(); } catch (Throwable ignored) { }
+                            ls.add(gl);
+                        } catch (Throwable t) { /* skip unreadable light */ }
                     }
                 }
             } catch (Throwable t) {
                 android.util.Log.w("ANDROID_3D", "Failed to get lights: " + t);
             }
             scene3d.setAmbientLight(ambientARGB);
-            scene3d.setDirectionalLight(ldx, ldy, ldz, lightRGB);
+            scene3d.setLights(ls.toArray(new AndroidScene3D.GamaLight[0]));
+
             // Pass the display background color to the 3D renderer so the
             // frame bitmap matches the model's background:#... instead of
             // always using white.
@@ -2010,9 +2159,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             // render (to the live prims bounds), so live agent movement outside
             // the world never pans/re-scales the ground.
             if (camPos == null || camTarget == null) {
+                scene3d.explicitCamera = false;
                 scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
                 return;
             }
+            scene3d.explicitCamera = true;
+            scene3d.setViewPos(camPos.getX(), camPos.getY(), camPos.getZ());
             scene3d.render(c,
                     camPos.getX(), camPos.getY(), camPos.getZ(),
                     camTarget.getX(), camTarget.getY(), camTarget.getZ(),

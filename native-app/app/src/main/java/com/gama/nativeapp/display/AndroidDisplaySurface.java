@@ -283,12 +283,12 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private volatile int presentIndex = -1;
     private volatile long lastCycleRenderNs;
 
-    // Cap snapshot renders (~10 fps, matching the legacy poll cadence): fast
-    // models run hundreds of cycles per second and painting every cycle-end on
-    // the SIM thread would throttle the simulation itself. Skipped cycles are
-    // simply not painted; each painted frame stays a consistent post-cycle
-    // snapshot.
-    private static final long MIN_SNAPSHOT_INTERVAL_NS = 100_000_000L;
+    // Cap snapshot renders (~30 fps): fast models run hundreds of cycles per
+    // second and painting every cycle-end on the SIM thread would throttle the
+    // simulation itself. Skipped cycles are simply not painted; each painted
+    // frame stays a consistent post-cycle snapshot. 30 fps keeps motion smooth
+    // enough to feel fluid while still leaving CPU headroom for the sim.
+    private static final long MIN_SNAPSHOT_INTERVAL_NS = 33_333_333L;
 
     /** Renders layers into the next work buffer, then publishes it (any thread). */
     private void renderSnapshot() {
@@ -714,19 +714,22 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                     if (event.getPointerCount() > 1) {
                         computeFocal(event);
                         if (output != null && output.getData().is3D()) {
+                            float dx = focalX - lastFocalX;
                             float dy = focalY - lastFocalY;
+                            // Two-finger drag orbits/tilts the 3D camera from the focal
+                            // movement. When the two fingers also twist (their connecting
+                            // line rotates), add that twist as extra yaw so pinching-twist
+                            // keeps rotating, matching the intuitive drag-to-orbit gesture.
+                            float twist = 0f;
                             if (twistTracking) {
                                 float angle = twistAngle(event);
                                 float dAngle = angle - lastTwistAngle;
-                                // Normalize to [-180, 180] to handle the -PI/PI wrap
                                 if (dAngle > 180f) dAngle -= 360f;
                                 else if (dAngle < -180f) dAngle += 360f;
-                                androidGraphics.rotateCamera3D(dAngle, -dy * 0.3f);
+                                twist = dAngle;
                                 lastTwistAngle = angle;
-                            } else {
-                                float dx = focalX - lastFocalX;
-                                androidGraphics.rotateCamera3D(-dx * 0.3f, -dy * 0.3f);
                             }
+                            androidGraphics.rotateCamera3D(-dx * 0.3f + twist, -dy * 0.3f);
                         } else {
                             float dx = focalX - lastFocalX;
                             float dy = focalY - lastFocalY;
