@@ -226,9 +226,50 @@ tasks.register('patchGamaJars') {
     }
 }
 
+// Inject the Android sensor library models (committed under src/main/assets/models/)
+// into the runtime library jar (assets/gama.library.jar) so every build — including the
+// CI release, which restores the baseline jar from the native-app-deps bundle — ships the
+// sensor models under "models/Toy Models/Android Sensors/". Source: models in
+// src/main/assets/models/ are byte-identical copies of those library entries.
+// Implemented as a Java helper (tools/JarModelInjector.java) compiled+run at build time,
+// mirroring the existing tools/*Patcher.java pattern.
+def libraryModelsDir = file("${projectDir}/src/main/assets/models")
+def assetLibraryJar = file("${projectDir}/src/main/assets/gama.library.jar")
+def injectorOutDir = file("$buildDir/tmp/jar_model_injector")
+tasks.register('injectLibraryModels') {
+    def targetModels = [
+        'AndroidSensorLab.gaml',
+        'AndroidSensorTest.gaml',
+        'AndroidDigitalTwinEnvironment.gaml',
+        'AndroidDigitalTwinFlocking.gaml',
+    ]
+    inputs.files(targetModels.collect { new File(libraryModelsDir, it) })
+    inputs.file(assetLibraryJar)
+    inputs.file(file("${projectDir}/../tools/JarModelInjector.java"))
+    doLast {
+        if (!assetLibraryJar.exists()) {
+            logger.warn('injectLibraryModels: assets/gama.library.jar not found; skipping')
+            return
+        }
+        injectorOutDir.mkdirs()
+        exec {
+            commandLine 'javac', '--release', '21',
+                '-d', injectorOutDir.absolutePath,
+                "${projectDir}/../tools/JarModelInjector.java"
+        }
+        exec {
+            commandLine(['java', '-cp', injectorOutDir.absolutePath,
+                'JarModelInjector', assetLibraryJar.absolutePath, libraryModelsDir.absolutePath])
+        }
+    }
+}
+
 tasks.configureEach { task ->
     if (task.name.startsWith('merge') && task.name.endsWith('JniLibFolders')) {
         task.dependsOn 'patchGamaJars'
+    }
+    if (task.name.equals('mergeDebugAssets') || task.name.equals('mergeReleaseAssets')) {
+        task.dependsOn 'injectLibraryModels'
     }
     if (task.name == 'compileDebugJavaWithJavac' || task.name == 'compileReleaseJavaWithJavac') {
         task.dependsOn 'patchGamaJars'
@@ -261,8 +302,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 36
-        versionName "0.1.41"
+        versionCode 37
+        versionName "0.1.42"
     }
 
     buildTypes {
