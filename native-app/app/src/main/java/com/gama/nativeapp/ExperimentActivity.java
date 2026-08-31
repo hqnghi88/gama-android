@@ -1471,6 +1471,7 @@ public class ExperimentActivity extends Activity {
         StringBuilder sb = new StringBuilder(summary).append("\n\n");
         for (Object err : errors) sb.append("\u2022 ").append(err).append("\n");
         String fullMsg = sb.toString();
+        android.util.Log.e("GamlErrors", fullMsg);
         log(fullMsg);
         postUi(() -> {
             contentArea.removeAllViews();
@@ -1870,6 +1871,7 @@ public class ExperimentActivity extends Activity {
     }
 
     private Object compileFile(File modelFile) throws Exception {
+        android.util.Log.e("GamlErrors", "COMPILING: " + modelFile.getAbsolutePath());
         Class<?> builderClass = Class.forName("gaml.compiler.validation.GamlModelBuilder");
         Object builder = builderClass.getMethod("getInstance").invoke(null);
         Class<?> uriClass = Class.forName("org.eclipse.emf.common.util.URI");
