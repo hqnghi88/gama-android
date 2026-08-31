@@ -244,12 +244,22 @@ tasks.register('injectLibraryModels') {
         'AndroidDigitalTwinFlocking.gaml',
     ]
     inputs.files(targetModels.collect { new File(libraryModelsDir, it) })
-    inputs.file(assetLibraryJar)
     inputs.file(file("${projectDir}/../tools/JarModelInjector.java"))
     doLast {
+        // assets/gama.library.jar is a gitignored artifact (not reproducible from commit).
+        // Its source of truth on CI is the baseline libs jar from the native-app-deps bundle.
+        // If the asset jar is missing, materialize it from the libs jar so the app always
+        // ships the full library. Then inject the committed sensor models.
         if (!assetLibraryJar.exists()) {
-            logger.warn('injectLibraryModels: assets/gama.library.jar not found; skipping')
-            return
+            def libsJar = fileTree("${projectDir}/libs").matching { include 'gama.library_*.jar' }.singleFile
+            if (!libsJar.exists()) {
+                logger.warn('injectLibraryModels: no libs/gama.library_*.jar and no assets/gama.library.jar; skipping')
+                return
+            }
+            assetLibraryJar.parentFile.mkdirs()
+            java.nio.file.Files.copy(libsJar.toPath(), assetLibraryJar.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.COPY_ATTRIBUTES)
+            logger.lifecycle("injectLibraryModels: created assets/gama.library.jar from ${libsJar.name}")
         }
         injectorOutDir.mkdirs()
         exec {
@@ -302,8 +312,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 37
-        versionName "0.1.42"
+        versionCode 38
+        versionName "0.1.43"
     }
 
     buildTypes {
