@@ -108,9 +108,14 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void setStroke(Stroke s) {
         trace("setStroke");
-        if (s instanceof BasicStroke) {
-            strokeWidth = 1f;
+        if (s instanceof BasicStroke bs) {
+            strokeWidth = bs.getLineWidth();
+            if (strokeWidth < 0f) strokeWidth = 0f;
             strokePaint.setStrokeWidth(strokeWidth);
+            strokePaint.setStrokeCap(bs.getEndCap() == BasicStroke.CAP_ROUND ? Paint.Cap.ROUND
+                    : bs.getEndCap() == BasicStroke.CAP_BUTT ? Paint.Cap.BUTT : Paint.Cap.SQUARE);
+            strokePaint.setStrokeJoin(bs.getLineJoin() == BasicStroke.JOIN_ROUND ? Paint.Join.ROUND
+                    : bs.getLineJoin() == BasicStroke.JOIN_BEVEL ? Paint.Join.BEVEL : Paint.Join.MITER);
         }
     }
 
