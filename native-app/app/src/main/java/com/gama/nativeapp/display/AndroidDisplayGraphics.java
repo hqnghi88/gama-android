@@ -256,7 +256,10 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         workPath.reset();
 
         // Fast path for axis-aligned rectangles (grid cells): drawRect avoids
-        // building a Path and is far cheaper than drawPath per cell.
+        // building a Path and is far cheaper than drawPath per cell. Snap the fill
+        // bounds to a half-open integer pixel grid and draw WITHOUT antialiasing so
+        // adjacent cells pack exactly edge-to-edge (no soft blended seams between
+        // neighbor cells -- otherwise a cell grid looks blurry).
         if (!isLine && geometry instanceof org.locationtech.jts.geom.Polygon
                 && ((org.locationtech.jts.geom.Polygon) geometry).isRectangle()) {
             float left = toPixelX(geometry.getEnvelopeInternal().getMinX());
@@ -266,12 +269,18 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             float fy = Math.min(top, bottom);
             rect.setRect(left + locDx, fy + locDy,
                     right - left, Math.abs(bottom - top));
-            fastRect.set((float) (left + locDx), (float) (fy + locDy),
-                    (float) (right + locDx),
-                    (float) (fy + Math.abs(bottom - top) + locDy));
-            if (!isLine && !attributes.isEmpty()) {
+            boolean hasFill = !isLine && !attributes.isEmpty();
+            if (hasFill) {
+                // Round outward on the integer pixel grid so adjacent cells tile
+                // exactly edge-to-edge (avoids soft blended seams between neighbor
+                // cells -- otherwise a cell grid looks blurry).
+                int x0 = (int) Math.floor(left + locDx);
+                int y0 = (int) Math.floor(fy + locDy);
+                int x1 = (int) Math.ceil(right + locDx);
+                int y1 = (int) Math.ceil(fy + Math.abs(bottom - top) + locDy);
+                fillPaint.setStyle(Paint.Style.FILL);
                 fillPaint.setColor(colorWithAlpha(attributes.getColor(), currentAlpha));
-                canvas.drawRect(fastRect, fillPaint);
+                canvas.drawRect(x0, y0, x1, y1, fillPaint);
             }
             if (border != null || attributes.isEmpty()) {
                 strokePaint.setColor(colorWithAlpha(
@@ -280,6 +289,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             }
             return rect;
         }
+
 
         try {
             geometryToPath(geometry, workPath, locDx, locDy);
@@ -382,14 +392,19 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return new double[]{(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2};
     }
 
-    /** Uniform model scale factor so the model's max bounding dimension matches the target size. */
+    /**
+     * Uniform model scale factor matching GAMA's desktop ObjectDrawer.applyScaling:
+     * when the geometry is flat or size.getZ()==0 (2D branch) the factor is
+     * min(sizeX/w, sizeY/h); otherwise it is the minimum of each axis ratio
+     * (sizeX/w, sizeY/h, sizeZ/d). The result is a single uniform factor applied
+     * to every dimension, so a `size: 5` keeps the model at its natural aspect
+     * rather than forcing the largest bounding dimension to 5.
+     */
     private double modelScale(Geometry geometry, Scaling3D size) {
         double k = 1;
         if (size == null) return k;
-        double target = size.getX();
-        if (size.getY() > target) target = size.getY();
-        if (size.getZ() > target) target = size.getZ();
-        if (target <= 0) return k;
+        double sx = size.getX(), sy = size.getY(), sz = size.getZ();
+        if (sx <= 0 || sy <= 0) return k;
         double minX = Double.POSITIVE_INFINITY, minY = Double.POSITIVE_INFINITY, minZ = Double.POSITIVE_INFINITY;
         double maxX = Double.NEGATIVE_INFINITY, maxY = Double.NEGATIVE_INFINITY, maxZ = Double.NEGATIVE_INFINITY;
         for (Coordinate c : geometry.getCoordinates()) {
@@ -402,8 +417,16 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             if (z > maxZ) maxZ = z;
         }
         if (minX > maxX) return k;
-        double nat = Math.max(maxX - minX, Math.max(maxY - minY, maxZ - minZ));
-        if (nat > 0) k = target / nat;
+        double w = maxX - minX, h = maxY - minY, d = maxZ - minZ;
+        if (w <= 0 || h <= 0) return k;
+        double factor;
+        boolean in2D = d <= 0 || sz == 0;
+        if (in2D) {
+            factor = Math.min(sx / w, sy / h);
+        } else {
+            factor = Math.min(Math.min(sx / w, sy / h), sz / d);
+        }
+        k = factor;
         return k;
     }
 
@@ -635,6 +658,22 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         return new double[] { nx + cx, ny + cy, nz + cz };
     }
 
+    /** Rotate a point about an arbitrary axis (unit-normalized) through a center, by angleDeg. */
+    private static double[] rotateAboutAxis(double px, double py, double pz,
+            double cx, double cy, double cz, double ax, double ay, double az, double angleDeg) {
+        double norm = Math.sqrt(ax * ax + ay * ay + az * az);
+        if (norm < 1e-9) { ax = 0; ay = 0; az = 1; norm = 1; }
+        ax /= norm; ay /= norm; az /= norm;
+        double th = Math.toRadians(angleDeg);
+        double c = Math.cos(th), s = Math.sin(th), omc = 1 - c;
+        double vx = px - cx, vy = py - cy, vz = pz - cz;
+        double dot = ax * vx + ay * vy + az * vz;
+        double nx = vx * c + (az * vy - ay * vz) * s + ax * dot * omc;
+        double ny = vy * c + (ax * vz - az * vx) * s + ay * dot * omc;
+        double nz = vz * c + (ay * vx - ax * vy) * s + az * dot * omc;
+        return new double[] { nx + cx, ny + cy, nz + cz };
+    }
+
     /** Axis-aligned box rotated about its center by the given AxisAngle (degrees). */
     private void addRotatedBox(double cx, double cy, double cz, double w, double h, double d,
                                AxisAngle rot, int fill, int border, float stroke) {
@@ -809,7 +848,16 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
 
     /** Lat/long UV-sphere centered at (cx, cy, cz) with radius r. */
     private void addSphereMesh(double cx, double cy, double cz, double r, int fill, int border, Object tex, int tint) {
-        int rings = 16, segs = 24;
+        // Tessellate adaptively to radius: tiny spheres (which appear as a few
+        // pixels on screen) need far fewer segments than a large close-up sphere.
+        // The naive fixed 16x24 = 384-prim sphere made models with many small
+        // agents (e.g. Moving3D's 250x4 agents + 1000 cells) submit hundreds of
+        // thousands of prims per frame, so the software rasterizer blocked the
+        // render thread for seconds — freezing both the sim (agents "not moving")
+        // and the UI ("laggy"). Fewer segments for small radii removes that cost
+        // with no visible quality loss for distant/tiny spheres.
+        int segs = Math.min(24, Math.max(8, (int) Math.ceil(r * 8.0)));
+        int rings = Math.min(16, Math.max(4, (segs + 1) / 2));
         float[] model = new float[12];
         float[] uv = new float[8];
         for (int i = 0; i < rings; i++) {
@@ -2043,6 +2091,33 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             // Lighting and Specular Effects recipes) shade correctly.
             int ambientARGB = 0xFFFFFFFF;
             java.util.List<AndroidScene3D.GamaLight> ls = new java.util.ArrayList<>();
+            // A live scope is needed to re-evaluate each light's dynamic facet
+            // expressions (e.g. the "Quadratic, Linear and Constant attenuation"
+            // spot light whose location/direction/intensity/attenuation/angle are
+            // all `dynamic:true` and depend on sliders). Without calling
+            // ILightDefinition.refresh(scope) the cached attribute values never
+            // change, so moving a slider has no visual effect.
+            IScope lightScope = null;
+            // The light facets reference *experiment* parameter variables (angle,
+            // height, distance, ...). Those only resolve in a scope bound to the
+            // experiment agent, so we must NOT use getSurface().getScope() here
+            // (that IGraphicsScope is bound to the simulation agent for drawing).
+            try {
+                Object surf = getSurface();
+                if (surf instanceof AndroidDisplaySurface) {
+                    Object out = ((AndroidDisplaySurface) surf).getOutput();
+                    if (out != null) {
+                        lightScope = (IScope) out.getClass().getMethod("getScope").invoke(out);
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            if (lightScope == null) {
+                try {
+                    if (lightScope == null) lightScope = getSurface().getScope();
+                } catch (Throwable ignored) {
+                }
+            }
             try {
                 java.util.Map<String, Object> lights = (java.util.Map<String, Object>) data.getClass().getMethod("getLights").invoke(data);
                 if (lights != null) {
@@ -2050,6 +2125,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         Object light = e.getValue();
                         if (light == null) continue;
                         try {
+                            if (lightScope != null) {
+                                try {
+                                    light.getClass().getMethod("refresh", IScope.class).invoke(light, lightScope);
+                                } catch (Throwable ignored) {
+                                }
+                            }
                             String type = String.valueOf(light.getClass().getMethod("getType").invoke(light));
                             if (type == null) continue;
                             String name = e.getKey() != null ? String.valueOf(e.getKey()) : "";
@@ -2163,6 +2244,31 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
                 return;
             }
+            // A display-level `rotation` facet (e.g. `rotation angle: 1.0 axis: {0,1,0}
+            // dynamic: true`) rotates the whole 3D view about the rotation center/axis.
+            // Desktop applies this as a model rotation of +angle; rotating the camera by
+            // the negative angle about the same center/axis yields the identical view.
+            // The core already accumulates the angle each cycle when dynamic is true.
+            try {
+                if (data.hasRotation()) {
+                    double ang = data.getRotationAngle();
+                    if (ang != 0) {
+                        IPoint cent = data.getRotationCenter();
+                        IPoint axis = data.getRotationAxis();
+                        double cx = cent.getX(), cy = cent.getY(), cz = cent.getZ();
+                        double ax = 0, ay = 0, az = 1;
+                        if (axis != null) { ax = axis.getX(); ay = axis.getY(); az = axis.getZ(); }
+                        double[] ep = rotateAboutAxis(camPos.getX(), camPos.getY(), camPos.getZ(),
+                                cx, cy, cz, ax, ay, az, -ang);
+                        double[] tp = rotateAboutAxis(camTarget.getX(), camTarget.getY(), camTarget.getZ(),
+                                cx, cy, cz, ax, ay, az, -ang);
+                        camPos = GamaPointFactory.create(ep[0], ep[1], ep[2]);
+                        camTarget = GamaPointFactory.create(tp[0], tp[1], tp[2]);
+                    }
+                }
+            } catch (Throwable rotErr) {
+                android.util.Log.w("ANDROID_3D", "display rotation failed: " + rotErr);
+            }
             scene3d.explicitCamera = true;
             scene3d.setViewPos(camPos.getX(), camPos.getY(), camPos.getZ());
             scene3d.render(c,
@@ -2185,6 +2291,35 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         if (is3dMode()) {
             layerPrimStart = scene3d.size();
             scene3d.nextLayer();
+            // Apply the per-layer (species) display `position` facet as a world-space
+            // translation, mirroring desktop LayerObject.computeOffset()+draw()'s
+            // translateBy(x, -y, z). Without it, species laid out with
+            // `species S position:{X,Y,Z}` (e.g. Moving3D's Complete experiment, which
+            // spreads 4 species + cells over x=0/100/200/300) all collapse to one spot.
+            try {
+                gama.api.ui.layers.ILayerData ld = layer.getData();
+                IPoint p = ld.getPosition();
+                if (p != null) {
+                    double px = p.getX(), py = p.getY(), pz = p.getZ();
+                    if (ld.isRelativePosition()) {
+                        double envW = 1, envH = 1;
+                        try {
+                            IShape sim = getSurface().getScope().getSimulation().getGeometry();
+                            if (sim != null) {
+                                IEnvelope e = sim.getEnvelope();
+                                envW = e.getWidth();
+                                envH = e.getHeight();
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                        if (Math.abs(px) <= 1) px *= envW;
+                        if (Math.abs(py) <= 1) py *= envH;
+                    }
+                    scene3d.setLayerOffset((float) px, (float) py, (float) pz);
+                }
+            } catch (Throwable offErr) {
+                android.util.Log.w("ANDROID_3D", "layer position offset failed: " + offErr);
+            }
         }
         applyLayerTransparency(layer);
     }
@@ -2214,6 +2349,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             }
         }
         layerPrimStart = -1;
+        scene3d.resetLayerOffset();
         setAlpha(1);
     }
 

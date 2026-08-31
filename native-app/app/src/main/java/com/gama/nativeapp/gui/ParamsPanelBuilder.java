@@ -129,7 +129,7 @@ public final class ParamsPanelBuilder {
                 @Override public void onItemSelected(AdapterView<?> parent, View v, int pos, long id) {
                     Object target = values.get(pos);
                     if (String.valueOf(target).equals(String.valueOf(safeValue(p, scope)))) return;
-                    try { p.setValue(scope, target); } catch (Throwable t) { logSet(t); }
+                    applyValue(p, scope, target);
                 }
                 @Override public void onNothingSelected(AdapterView<?> parent) {}
             });
@@ -156,7 +156,7 @@ public final class ParamsPanelBuilder {
                 Switch sw = new Switch(ctx);
                 sw.setChecked(Boolean.TRUE.equals(cur));
                 sw.setOnCheckedChangeListener((b, checked) -> {
-                    try { p.setValue(scope, checked); } catch (Throwable t) { logSet(t); }
+                    applyValue(p, scope, checked);
                 });
                 brow.addView(sw);
                 row.addView(brow);
@@ -212,7 +212,7 @@ public final class ParamsPanelBuilder {
                         formatNumeric(valueLabel, tid, v);
                         if (!fromUser) return;
                         try {
-                            p.setValue(scope, tid == IType.INT ? (int) Math.round(v) : v);
+                            applyValue(p, scope, tid == IType.INT ? (int) Math.round(v) : v);
                         } catch (Throwable t) { logSet(t); }
                     }
                     @Override public void onStartTrackingTouch(SeekBar s) {}
@@ -239,7 +239,7 @@ public final class ParamsPanelBuilder {
                 edit.setTextSize(14);
                 edit.setText(cur != null ? String.valueOf(cur) : "");
                 edit.setOnEditorActionListener((v, actionId, event) -> {
-                    try { p.setValue(scope, edit.getText().toString()); } catch (Throwable t) { logSet(t); }
+                    applyValue(p, scope, edit.getText().toString());
                     return false;
                 });
                 row.addView(edit);
@@ -262,8 +262,7 @@ public final class ParamsPanelBuilder {
                 crow.addView(swatch);
                 swatch.setOnClickListener(v -> showColorPicker(ctx, argb, picked -> {
                     swatch.setBackgroundColor(picked);
-                    try { p.setValue(scope, GamaColorFactory.get(picked)); }
-                    catch (Throwable t) { logSet(t); }
+                    applyValue(p, scope, GamaColorFactory.get(picked));
                 }));
                 row.addView(crow);
                 registerRefresher(refreshers, () -> {
@@ -313,8 +312,8 @@ public final class ParamsPanelBuilder {
             try {
                 String s = edit.getText().toString().trim();
                 if (s.isEmpty()) return;
-                if (tid == IType.INT) p.setValue(scope, (int) Double.parseDouble(s));
-                else p.setValue(scope, Double.parseDouble(s));
+                if (tid == IType.INT) applyValue(p, scope, (int) Double.parseDouble(s));
+                else applyValue(p, scope, Double.parseDouble(s));
             } catch (Throwable t) { logSet(t); }
         };
         edit.setOnEditorActionListener((v, actionId, event) -> {
@@ -515,6 +514,29 @@ public final class ParamsPanelBuilder {
 
     private static void logSet(Throwable t) {
         Log.w(TAG, "setParameter failed", t);
+    }
+
+    /**
+     * Applies a parameter value the way desktop GAMA does. Desktop's
+     * AbstractEditor.modifyValueOfParameterWith writes the new value into the
+     * scope agent's variable FIRST (so GAML expressions referencing that
+     * variable -- e.g. a dynamic light's facets -- re-evaluate), and only THEN
+     * calls param.setValue to update the parameter's cached value + listeners.
+     * Calling only param.setValue() leaves the agent attribute stale, which is
+     * why moving a slider had no effect on dynamic light expressions.
+     */
+    private static void applyValue(IParameter p, IScope scope, Object value) {
+        try {
+            if (scope != null && scope.getAgent() != null) {
+                scope.setAgentVarValue(scope.getAgent(), p.getName(), value);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            p.setValue(scope, value);
+        } catch (Throwable t) {
+            logSet(t);
+        }
     }
 
     private static int thc(Context ctx, int light, int dark) {

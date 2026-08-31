@@ -59,7 +59,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private static final String TAG = "AndroidDisplaySurface";
 
     private final LayeredDisplayOutput output;
-    private final ILayerManager layerManager;
+    private ILayerManager layerManager;
     private AndroidDisplayGraphics androidGraphics;
     private IGraphicsScope scope;
 
@@ -148,6 +148,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private gama.api.kernel.agent.IMacroAgent capturedSim = null;
     private int cachedAgentCount = 0;
     private boolean scopeUpdated = false;
+    private static long lastRenderDiag = 0;
 
     public AndroidDisplaySurface(Context context, LayeredDisplayOutput output) {
         super(context);
@@ -293,7 +294,10 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     /** Renders layers into the next work buffer, then publishes it (any thread). */
     private void renderSnapshot() {
         int w = getWidth(), h = getHeight();
-        if (w <= 0 || h <= 0) return;
+        if (w <= 0 || h <= 0) {
+            android.util.Log.w("ANDROID_DISPLAY", "renderSnapshot early-exit w=" + w + " h=" + h);
+            return;
+        }
         synchronized (renderLock) {
             ensureBuffers(w, h);
             try {
@@ -338,6 +342,16 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+
+        long nowD = System.nanoTime();
+        if (nowD - lastRenderDiag > 1500) {
+            lastRenderDiag = nowD;
+            android.util.Log.i("ANDROID_DISPLAY", "onDraw entry attached=" + isAttachedToWindow()
+                + " disp=" + getWidth() + "x" + getHeight()
+                + " disposed=" + disposed + " output=" + (output != null)
+                + " scope=" + (scope != null));
+        }
+
         if (disposed || output == null) return;
 
         long now = System.nanoTime();
@@ -361,6 +375,18 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private void onSimCycleUpdate() {
         renderSnapshot();
         uiHandler.post(this::invalidateSafe);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        android.util.Log.i("ANDROID_DISPLAY", "SURFACE attached to window, disp=" + getWidth() + "x" + getHeight());
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        android.util.Log.w("ANDROID_DISPLAY", "SURFACE DETACHED from window, disp=" + getWidth() + "x" + getHeight());
+        super.onDetachedFromWindow();
     }
 
     private void renderFrame(Canvas canvas) {
@@ -417,6 +443,26 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             }
         } catch (Throwable t) {
             android.util.Log.e("ANDROID_DISPLAY", "layerManager draw error: " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+        long nowD = System.currentTimeMillis();
+        if (nowD - lastRenderDiag > 1500) {
+            lastRenderDiag = nowD;
+            try {
+                String simName = "none";
+                try {
+                    if (capturedSim != null) simName = capturedSim.getSpecies().getName();
+                    else if (scope != null && scope.getSimulation() != null) simName = scope.getSimulation().getSpecies().getName();
+                } catch (Throwable t) {}
+                android.util.Log.i("ANDROID_DISPLAY", "renderFrame disp=" + getDisplayWidth() + "x" + getDisplayHeight()
+                        + " capturedSim=" + simName
+                        + " scope=" + (scope == null ? "null" : "set")
+                        + " scopeInterrupted=" + (scope == null ? "?" : scope.interrupted())
+                        + " drewShapes=" + drewShapes
+                        + " output=" + (output == null ? "null" : output.getName())
+                        + " viewSize=" + getWidth() + "x" + getHeight());
+            } catch (Throwable t) {
+                android.util.Log.w("ANDROID_DISPLAY", "renderFrame diag failed: " + t.getMessage());
+            }
         }
         if (!drewShapes) {
             gama.api.ui.layers.ILayer.Chart chartOnly = layerManager.getOnlyChart();
@@ -1003,7 +1049,70 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     @Override
     public void outputReloaded() {
-        setDisplayScope(output.getScope().copyForGraphics("in android2d display"));
+        // A reload re-opens a NEW simulation while reusing this surface and its
+        // LayeredDisplayOutput. The engine may invoke outputReloaded() on the reused
+        // LDO either (a) during teardown when the OLD scope is already dead
+        // (scope.interrupted()==true / getSimulation()==null), or (b) once the new
+        // sim is up. In case (a) there is nothing to revive: the old layers are gone
+        // and the scope is terminal, so any in-place resurrection just re-draws a
+        // blank panel for the rest of the run. Instead tear this surface down and
+        // drop the output's surface reference so the engine (or our probe) builds a
+        // brand-new surface bound to the fresh post-reload simulation -- exactly like
+        // the initial run.
+        gama.api.runtime.scope.IScope scopeNow = null;
+        try { scopeNow = output.getScope(); } catch (Throwable ignored) {}
+        boolean doomed = scopeNow == null || scopeNow.interrupted();
+        if (!doomed) {
+            try {
+                gama.api.kernel.agent.IMacroAgent sim = scopeNow.getSimulation();
+                if (sim == null) doomed = true;
+            } catch (Throwable ignored) { doomed = true; }
+        }
+        if (doomed) {
+            android.util.Log.w("ANDROID_DISPLAY",
+                    "outputReloaded on dead scope -> tearing down for fresh rebuild");
+            teardownSurfaceAndUnbind();
+            return;
+        }
+        android.util.Log.i("ANDROID_DISPLAY", "outputReloaded called, disp=" + getDisplayWidth() + "x" + getDisplayHeight());
+        // The scope is alive: rebuild the layerManager from the output's FRESH layers
+        // (the constructor locks in a hard-final ILayer[] built from the sim's layers
+        // at creation time), and reset every per-run cache that points at the OLD
+        // (now disposed) simulation/scope.
+        disposed = false;
+        if (layerManager != null) {
+            try { layerManager.dispose(); } catch (Throwable ignored) {}
+        }
+        this.layerManager = new LayerManager(this, output);
+        scopeUpdated = false;
+        capturedSim = null;
+        frozenEnv = null;
+        firstFitDone = false;
+        rendered = false;
+        isLocked = false;
+        cachedGridBitmap = null;
+        cachedSpeciesNames = null;
+        lastSpeciesCacheTime = 0;
+        cachedAgentCount = 0;
+        if (androidGraphics != null) {
+            androidGraphics.resetSceneFit();
+        }
+        setDisplayScope(null);
+        try {
+            gama.api.runtime.scope.IScope outScope = output.getScope();
+            if (outScope != null) {
+                setDisplayScope(outScope.copyForGraphics("in android2d display"));
+                scopeUpdated = true;
+                capturedSim = outScope.getSimulation();
+                android.util.Log.i("ANDROID_DISPLAY", "  outputReloaded rebound scope, sim="
+                        + (capturedSim != null ? capturedSim.getSpecies().getName() : "null")
+                        + " scopeInterrupted=" + outScope.interrupted());
+            } else {
+                android.util.Log.w("ANDROID_DISPLAY", "  outputReloaded: output.getScope()==null");
+            }
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_DISPLAY", "outputReloaded scope rebind failed: " + t.getMessage());
+        }
         layerManager.outputChanged();
         if (zoomFit) zoomFit();
         invalidateSafe();
@@ -1384,5 +1493,46 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         if (layerManager != null) layerManager.dispose();
         GAMA.releaseScope(getScope());
         setDisplayScope(null);
+    }
+
+    /**
+     * Removes this surface (a dead panel left over from a reloaded simulation) from
+     * the activity's display container and drops the output's surface field so the
+     * engine / probe build a fresh surface bound to the new simulation.
+     */
+    private void teardownSurfaceAndUnbind() {
+        disposed = true;
+        if (layerManager != null) {
+            try { layerManager.dispose(); } catch (Throwable ignored) {}
+        }
+        setDisplayScope(null);
+        // Detach from the container on the UI thread.
+        try {
+            android.app.Activity act =
+                    com.gama.nativeapp.gui.AndroidGuiHandler.getInstance().getCurrentActivity();
+            if (act != null) {
+                act.runOnUiThread(() -> {
+                    android.view.ViewGroup parent = (android.view.ViewGroup) getParent();
+                    if (parent != null) parent.removeView(this);
+                });
+            }
+        } catch (Throwable ignored) {}
+        // Null the output's surface field so createSurface()/probe build a fresh one.
+        try {
+            Class<?> cls = output.getClass();
+            java.lang.reflect.Field sf = null;
+            while (cls != null && sf == null) {
+                try { sf = cls.getDeclaredField("surface"); }
+                catch (NoSuchFieldException e) { cls = cls.getSuperclass(); }
+            }
+            if (sf != null) {
+                sf.setAccessible(true);
+                sf.set(output, null);
+            }
+        } catch (Throwable ignored) {}
+        // Remove this instance from the handler's caches so a fresh surface replaces it.
+        try {
+            com.gama.nativeapp.gui.AndroidGuiHandler.getInstance().forgetSurface(output);
+        } catch (Throwable ignored) {}
     }
 }

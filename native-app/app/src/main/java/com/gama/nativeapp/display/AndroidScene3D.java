@@ -63,10 +63,13 @@ public class AndroidScene3D {
         boolean active;
     }
 
-    // The 3D frame is rasterized at this fraction of the view resolution and then
-    // upscaled to the canvas. A software rasterizer's cost is fill-rate bound, so
-    // rendering at ~0.6x resolution cuts pixel work ~2.8x with only a mild blur.
-    private float renderScale = 0.6f;
+    // The 3D frame rasterized at this fraction of the view resolution and then
+    // upscaled to the canvas. A software rasterizer's cost is fill-rate bound, so a
+    // lower scale cuts pixel work -- but any scale < 1.0 blurs the upscaled frame
+    // (bilinear blit), and a cell grid like Life becomes visibly soft. Render at
+    // full resolution (1.0) for crisp output; the software rasterizer is still
+    // fast enough for typical models.
+    private float renderScale = 1.0f;
 
     /**
      * True when the model provides its own camera (display camera statement).
@@ -192,6 +195,11 @@ public class AndroidScene3D {
     private final java.util.LinkedHashMap<gama.api.ui.layers.ILayer, List<Prim>> staticCache =
             new java.util.LinkedHashMap<>();
     private int currentLayerIdx;
+    // Per-layer (species) display `position` offset applied to every prim emitted
+    // while that layer is active. Mirrors GAMA desktop LayerObject.computeOffset()
+    // + draw()'s gl.translateBy(x, -y, z). In model/world space this is (x, -y, z)
+    // and is ADDED to each vertex before the builder negates Y for storage.
+    private float layerOffX = 0f, layerOffY = 0f, layerOffZ = 0f;
     private final Paint fillPaint = new Paint();
     private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -278,6 +286,17 @@ public class AndroidScene3D {
      *  earlier layers (preserving GAML layer order for translucent overlays). */
     public int nextLayer() { return ++currentLayerIdx; }
 
+    /** Sets the active layer's display `position` offset (in model/world space,
+     *  already negated on Y to match desktop's translateBy(x, -y, z)). */
+    public void setLayerOffset(float ox, float oy, float oz) {
+        layerOffX = ox;
+        layerOffY = -oy;
+        layerOffZ = oz;
+    }
+
+    /** Clears the layer offset (called at endDrawingLayer). */
+    public void resetLayerOffset() { layerOffX = 0f; layerOffY = 0f; layerOffZ = 0f; }
+
     /**
      * Starts a new frame: keeps the prims of non-dynamic layers (refresh:false,
      * drawn once by the core layer logic) and drops the ones emitted by dynamic
@@ -326,10 +345,10 @@ public class AndroidScene3D {
         Prim p = new Prim();
         p.kind = POLY;
         p.v = new float[]{
-                (float) ax, (float) -ay, (float) az,
-                (float) bx, (float) -by, (float) bz,
-                (float) cx, (float) -cy, (float) cz,
-                (float) dx, (float) -dy, (float) dz
+                (float) (ax + layerOffX), (float) (-(ay + layerOffY)), (float) (az + layerOffZ),
+                (float) (bx + layerOffX), (float) (-(by + layerOffY)), (float) (bz + layerOffZ),
+                (float) (cx + layerOffX), (float) (-(cy + layerOffY)), (float) (cz + layerOffZ),
+                (float) (dx + layerOffX), (float) (-(dy + layerOffY)), (float) (dz + layerOffZ)
         };
         p.fill = fill;
         p.border = border;
@@ -345,9 +364,9 @@ public class AndroidScene3D {
         p.kind = POLY;
         p.v = new float[n * 3];
         for (int i = 0; i < n; i++) {
-            p.v[i * 3] = model[i * 3];
-            p.v[i * 3 + 1] = -model[i * 3 + 1];
-            p.v[i * 3 + 2] = model[i * 3 + 2];
+            p.v[i * 3] = model[i * 3] + layerOffX;
+            p.v[i * 3 + 1] = -(model[i * 3 + 1] + layerOffY);
+            p.v[i * 3 + 2] = model[i * 3 + 2] + layerOffZ;
         }
         float[] nn = faceNormal(model, n);
         p.lnx = nn[0]; p.lny = nn[1]; p.lnz = nn[2];
@@ -370,9 +389,9 @@ public class AndroidScene3D {
         p.kind = POLY;
         p.v = new float[n * 3];
         for (int i = 0; i < n; i++) {
-            p.v[i * 3] = model[i * 3];
-            p.v[i * 3 + 1] = -model[i * 3 + 1];
-            p.v[i * 3 + 2] = model[i * 3 + 2];
+            p.v[i * 3] = model[i * 3] + layerOffX;
+            p.v[i * 3 + 1] = -(model[i * 3 + 1] + layerOffY);
+            p.v[i * 3 + 2] = model[i * 3 + 2] + layerOffZ;
         }
         p.uv = uv != null ? uv.clone() : null;
         p.texture = texture;
@@ -391,12 +410,12 @@ public class AndroidScene3D {
         Prim p = new Prim();
         p.kind = LINE;
         p.v = new float[6];
-        p.v[0] = model[0];
-        p.v[1] = -model[1];
-        p.v[2] = model[2];
-        p.v[3] = model[3];
-        p.v[4] = -model[4];
-        p.v[5] = model[5];
+        p.v[0] = model[0] + layerOffX;
+        p.v[1] = -(model[1] + layerOffY);
+        p.v[2] = model[2] + layerOffZ;
+        p.v[3] = model[3] + layerOffX;
+        p.v[4] = -(model[4] + layerOffY);
+        p.v[5] = model[5] + layerOffZ;
         p.border = color;
         p.stroke = stroke;
         p.layerIdx = currentLayerIdx;
@@ -408,7 +427,7 @@ public class AndroidScene3D {
                              Object texture, int tint) {
         Prim p = new Prim();
         p.kind = BILLBOARD;
-        p.v = new float[]{(float) x, (float) -y, (float) z};
+        p.v = new float[]{(float) (x + layerOffX), (float) (-(y + layerOffY)), (float) (z + layerOffZ)};
         p.texture = texture;
         p.tint = tint;
         p.bbW = w;
@@ -422,7 +441,7 @@ public class AndroidScene3D {
     public void addText(double x, double y, double z, String text, int color, float size, float ax, float ay) {
         Prim p = new Prim();
         p.kind = TEXT;
-        p.v = new float[]{(float) x, (float) -y, (float) z};
+        p.v = new float[]{(float) (x + layerOffX), (float) (-(y + layerOffY)), (float) (z + layerOffZ)};
         p.text = text;
         p.border = color;
         p.textSize = size;
@@ -1394,8 +1413,13 @@ public class AndroidScene3D {
                 if (d < 1e-6f) { lx = 0; ly = 0; lz = 1; }
                 else { lx = ovx / d; ly = ovy / d; lz = ovz / d; }
                 if (l.type == LT_SPOT) {
-                    // light axis points from the light toward its target (ld = -direction)
-                    float dot = lx * l.ldx + ly * l.ldy + lz * l.ldz;
+                    // lx,ly,lz = unit vector from the surface point TOWARD the light.
+                    // The beam axis l.ld* is the direction the light POINTS (into the
+                    // scene), i.e. from the light toward its target. For the surface
+                    // point to be inside the cone, the direction FROM the light TO the
+                    // point (-lx) must align with the beam axis ld, so we test
+                    // dot(-lx, ld) = -(lx.ld) against the cone's cosine cutoff.
+                    float dot = -(lx * l.ldx + ly * l.ldy + lz * l.ldz);
                     if (dot < l.cosSpot) continue;
                 }
                 atten = Math.min(1f, 1f / (l.ca + l.la * d + l.qa * d * d));
@@ -1406,7 +1430,15 @@ public class AndroidScene3D {
             // downward normal) are lit using the flipped normal. Without this the
             // model's configured light leaves large flat surfaces (the board) in
             // near-black ambient, which reads as "the light is not working".
-            if (nd < 0) { nd = -nd; nx = -nx; ny = -ny; nz = -nz; }
+            // Spot lights are the exception: their cone already reaches the far
+            // side of an object along the beam axis, so flipping back-face normals
+            // lights the rear of e.g. a sphere too -- an opaque body must not be
+            // lit through its back, or a single spotlight appears as two sources.
+            // Back faces are therefore skipped entirely for spot lights.
+            if (nd < 0) {
+                if (l.type == LT_SPOT) continue;
+                nd = -nd; nx = -nx; ny = -ny; nz = -nz;
+            }
             float dl = Math.min(1f, nd * atten);
             fr += l.r * dl;
             fg += l.g * dl;
@@ -1490,32 +1522,20 @@ public class AndroidScene3D {
                 float uu = (w1 * uq0 + w2 * uq1 + w0 * uq2) / wsum;
                 float vv = (w1 * vq0 + w2 * vq1 + w0 * vq2) / wsum;
 
-                float fxr = uu * tw - 0.5f;
-                int x0i = (int) fxr;
-                float tx = fxr - x0i;
-                int x1i = x0i + 1;
-                if (x0i < 0) x0i = 0; else if (x0i >= tw) x0i = tw - 1;
-                if (x1i < 0) x1i = 0; else if (x1i >= tw) x1i = tw - 1;
-                float fyv = vv * th - 0.5f;
-                int y0i = (int) fyv;
-                float ty = fyv - y0i;
-                int y1i = y0i + 1;
-                if (y0i < 0) y0i = 0; else if (y0i >= th) y0i = th - 1;
-                if (y1i < 0) y1i = 0; else if (y1i >= th) y1i = th - 1;
-
-                int c00 = tex[y0i * tw + x0i];
-                int c10 = tex[y0i * tw + x1i];
-                int c01 = tex[y1i * tw + x0i];
-                int c11 = tex[y1i * tw + x1i];
-                float invTx = 1f - tx, invTy = 1f - ty;
-                int sr = (int) (((c00 >>> 16 & 0xFF) * invTx + (c10 >>> 16 & 0xFF) * tx) * invTy
-                        + ((c01 >>> 16 & 0xFF) * invTx + (c11 >>> 16 & 0xFF) * tx) * ty);
-                int sg = (int) (((c00 >>> 8 & 0xFF) * invTx + (c10 >>> 8 & 0xFF) * tx) * invTy
-                        + ((c01 >>> 8 & 0xFF) * invTx + (c11 >>> 8 & 0xFF) * tx) * ty);
-                int sb = (int) (((c00 & 0xFF) * invTx + (c10 & 0xFF) * tx) * invTy
-                        + ((c01 & 0xFF) * invTx + (c11 & 0xFF) * tx) * ty);
-                int sa = (int) (((c00 >>> 24 & 0xFF) * invTx + (c10 >>> 24 & 0xFF) * tx) * invTy
-                        + ((c01 >>> 24 & 0xFF) * invTx + (c11 >>> 24 & 0xFF) * tx) * ty);
+                // Nearest-neighbor sample. A GAMA grid (Life etc.) is a texture where
+                // each cell is one texel; bilinear interpolation across adjacent texels
+                // blends neighbouring cells at their shared edges, so every cell border
+                // gets a soft gradient and the whole grid looks blurry when magnified.
+                // Picking the texel under the sample keeps cell edges perfectly crisp.
+                int tx = (int) (uu * tw);
+                int ty = (int) (vv * th);
+                if (tx >= tw) tx = tw - 1; else if (tx < 0) tx = 0;
+                if (ty >= th) ty = th - 1; else if (ty < 0) ty = 0;
+                int c00 = tex[ty * tw + tx];
+                int sr = (c00 >>> 16) & 0xFF;
+                int sg = (c00 >>> 8) & 0xFF;
+                int sb = c00 & 0xFF;
+                int sa = (c00 >>> 24) & 0xFF;
 
                 int a = (sa * ta) >> 8;
                 if (a <= 0) continue;

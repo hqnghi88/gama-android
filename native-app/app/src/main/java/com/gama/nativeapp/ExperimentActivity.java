@@ -96,7 +96,8 @@ public class ExperimentActivity extends Activity {
     private ImageView playPauseBtn;
     private ImageView stepBtn;
     private ImageView stopBtn;
-    private int playBtnColor, stepBtnColor, stopBtnColor;
+    private ImageView reloadBtn;
+    private int playBtnColor, stepBtnColor, stopBtnColor, reloadBtnColor;
 
     // Display tabs
     private HorizontalScrollView displayTabScroll;
@@ -145,6 +146,14 @@ public class ExperimentActivity extends Activity {
     private boolean isDarkTheme = false;
     private volatile boolean isRunning = false;
     private volatile boolean isPaused = false;
+    // True while a reload is in progress. During processReload() the controller's
+    // experimentAlive flag is transiently false; the state poll must treat that as
+    // "still restarting" rather than "experiment finished" or it permanently kills
+    // rendering (blank display) after a reload.
+    private volatile boolean reloading = false;
+    // Whether the current experiment declared 'autorun:true'. Reload must preserve
+    // this (a non-autorun model must stay paused after reload, not auto-run).
+    private volatile boolean experimentAutoRun = false;
     private Object currentExpPlan;
     private volatile Object currentController;
     private Runnable statePollRunnable;
@@ -358,8 +367,12 @@ public class ExperimentActivity extends Activity {
         stopBtnColor = thc(0xFFE53935, 0xFFCF6679);
         stopBtn = makeTransportButton(R.drawable.ic_stop, "Stop",
                 stopBtnColor, v -> stopSimulation());
+        reloadBtnColor = thc(0xFF1976D2, 0xFF64B5F6);
+        reloadBtn = makeTransportButton(R.drawable.ic_reload, "Reload (re-run init with current parameters)",
+                reloadBtnColor, v -> reloadSimulation());
         transportBar.addView(playPauseBtn);
         transportBar.addView(stepBtn);
+        transportBar.addView(reloadBtn);
         transportBar.addView(stopBtn);
 
         View spacer = new View(this);
@@ -593,6 +606,7 @@ public class ExperimentActivity extends Activity {
         int marginV = vertical ? 12 : 0;
         styleTransportButton(playPauseBtn, playBtnColor, true, marginV);
         styleTransportButton(stepBtn, stepBtnColor, true, marginV);
+        styleTransportButton(reloadBtn, reloadBtnColor, true, marginV);
         styleTransportButton(stopBtn, stopBtnColor, true, marginV);
         if (transportSpacer != null) transportSpacer.setVisibility(View.GONE);
         if (transportHint != null) transportHint.setVisibility(View.GONE);
@@ -1055,25 +1069,45 @@ public class ExperimentActivity extends Activity {
             activeDisplayName = displayName;
             surface.setVisibility(View.VISIBLE);
         } else {
-            surface.setVisibility(View.GONE);
+            // A reload replaces the surface for an already-active display; that
+            // replacement must stay visible (it's the display being shown). Only
+            // secondary displays -- registered while another display is active --
+            // start hidden. Otherwise a reloaded display is set GONE and never
+            // lays out or draws -> blank screen.
+            boolean isActive = activeDisplayName.equals(displayName);
+            surface.setVisibility(isActive ? View.VISIBLE : View.GONE);
         }
 
-        MaterialButton tab = new MaterialButton(this);
-        tab.setText(displayName);
-        tab.setTextSize(11);
-        tab.setTypeface(null, Typeface.BOLD);
-        tab.setCornerRadius(dp(16));
-        tab.setPadding(dp(12), dp(4), dp(12), dp(4));
-        tab.setMinimumHeight(0);
-        tab.setMinimumWidth(0);
+        // A reload re-registers the same display name (old surface torn down, fresh
+        // one built). Don't accumulate a duplicate tab: reuse the existing one.
+        MaterialButton tab = null;
+        for (int i = 0; i < displayTabBar.getChildCount(); i++) {
+            View child = displayTabBar.getChildAt(i);
+            if (child instanceof MaterialButton && child.getTag() != null
+                    && child.getTag().equals(displayName)) {
+                tab = (MaterialButton) child;
+                break;
+            }
+        }
+        if (tab == null) {
+            tab = new MaterialButton(this);
+            tab.setText(displayName);
+            tab.setTag(displayName);
+            tab.setTextSize(11);
+            tab.setTypeface(null, Typeface.BOLD);
+            tab.setCornerRadius(dp(16));
+            tab.setPadding(dp(12), dp(4), dp(12), dp(4));
+            tab.setMinimumHeight(0);
+            tab.setMinimumWidth(0);
+            LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(WRAP_CONTENT, dp(32));
+            tabLp.setMargins(dp(4), dp(2), dp(4), dp(2));
+            tab.setLayoutParams(tabLp);
+            tab.setOnClickListener(v -> selectDisplay(displayName));
+            displayTabBar.addView(tab);
+        }
         boolean isActive = activeDisplayName.equals(displayName);
         tab.setBackgroundTintList(ColorStateList.valueOf(isActive ? thc(0xFF006847, 0xFF2E7D32) : thc(0xFFE0E0E0, 0xFF424242)));
         tab.setTextColor(isActive ? thc(0xFFFFFFFF, 0xFF1E1E2E) : thc(0xFF666666, 0xFF999999));
-        LinearLayout.LayoutParams tabLp = new LinearLayout.LayoutParams(WRAP_CONTENT, dp(32));
-        tabLp.setMargins(dp(4), dp(2), dp(4), dp(2));
-        tab.setLayoutParams(tabLp);
-        tab.setOnClickListener(v -> selectDisplay(displayName));
-        displayTabBar.addView(tab);
 
         if (displayTabBar.getChildCount() > 1) {
             displayTabScroll.setVisibility(View.VISIBLE);
@@ -1306,6 +1340,78 @@ public class ExperimentActivity extends Activity {
                 ctrlInterface.getMethod("processStep", int.class, boolean.class)
                         .invoke(ctrl, 1, true);
             } catch (Exception e) { Log.w(TAG, "Step error", e); }
+        });
+    }
+
+    /**
+     * Reloads the experiment, re-running init with the current parameter values,
+     * mirroring desktop GAMA's Reload button (controller.processReload). The app
+     * already wrote slider/editor values into the experiment agent via
+     * ParamsPanelBuilder.applyValue, so reload re-seeds globals from those values.
+     * Runs asynchronously on the controller's command thread. Because a reload
+     * re-creates the simulation/outputs in place, the activity, its params panel
+     * and the display surface are left intact -- no need to go back to the model.
+     */
+    private void reloadSimulation() {
+        if (!isRunning || currentController == null) return;
+        final Object ctrl = currentController;
+        log("Reloading experiment with current parameter values…");
+        // processReload() disposes the old agent then re-opens one. During that
+        // window the controller's experimentAlive flag is transiently false, which
+        // the state poll would otherwise read as "finished" and permanently stop the
+        // polling/rendering (blank display). Flag the reload so the poll treats the
+        // brief alive==false as "restarting" and keeps running until the new sim is
+        // back up.
+        reloading = true;
+        POLL_EXECUTOR.execute(() -> {
+            try {
+                Log.i(TAG, "reload: invoking processReload");
+                Class<?> ctrlInterface = Class.forName("gama.api.kernel.simulation.IExperimentController");
+                Object ok = ctrlInterface.getMethod("processReload", boolean.class).invoke(ctrl, false);
+                Log.i(TAG, "reload: processReload returned " + ok);
+            } catch (Exception e) { Log.w(TAG, "Reload error", e); }
+            // processReload() re-creates the simulation but leaves the controller's
+            // scheduler pause lock held, so the new sim never advances and never
+            // drives display updates -> blank display. Release the lock exactly like
+            // the initial startup does -- but ONLY for models that originally
+            // declared 'autorun:true'. A paused-start model must stay paused after
+            // reload (matching desktop GAMA), so don't release the lock for those.
+            try {
+                Class<?> absControllerClass = Class.forName("gama.api.kernel.simulation.DefaultExperimentController").getSuperclass();
+                java.lang.reflect.Field pField = absControllerClass.getDeclaredField("paused");
+                pField.setAccessible(true);
+                java.lang.reflect.Field lField = absControllerClass.getDeclaredField("lock");
+                lField.setAccessible(true);
+                Object lock = lField.get(ctrl);
+                if (experimentAutoRun) {
+                    pField.setBoolean(ctrl, false);
+                    lock.getClass().getMethod("release").invoke(lock);
+                    isPaused = false;
+                    Log.i(TAG, "reload: released scheduler pause lock (autorun)");
+                } else {
+                    // Keep the freshly reloaded (paused) model paused: just reflect
+                    // that state in the UI. The pause signal is already in place
+                    // because reload preserves the paused flag.
+                    isPaused = true;
+                    Log.i(TAG, "reload: keeping reloaded model paused (non-autorun)");
+                }
+            } catch (Exception pe) { Log.w(TAG, "reload: lock release failed: " + pe.getMessage()); }
+            // A reload re-creates the simulation but REUSES the display surfaces
+            // (and their LayeredDisplayOutputs). Force each registered surface to
+            // re-bind to the new simulation/scope so it doesn't keep drawing the
+            // disposed one (which shows a blank display). This is a safety net in
+            // case the engine doesn't invoke outputReloaded() on our surfaces.
+            handler.post(() -> {
+                if (destroyed) return;
+                try {
+                    java.util.Map<String, com.gama.nativeapp.display.AndroidDisplaySurface> surfaces =
+                            com.gama.nativeapp.gui.AndroidGuiHandler.getInstance().getDisplaySurfaces();
+                    Log.i(TAG, "reload: poking " + surfaces.size() + " surfaces");
+                    for (com.gama.nativeapp.display.AndroidDisplaySurface s : surfaces.values()) {
+                        s.outputReloaded();
+                    }
+                } catch (Exception ex) { Log.w(TAG, "Reload surface refresh error", ex); }
+            });
         });
     }
 
@@ -1965,6 +2071,7 @@ public class ExperimentActivity extends Activity {
                     Log.w(TAG, "isAutorun check failed", e);
                 }
                 log("Experiment '" + expName + "' autorun=" + autoRun);
+                experimentAutoRun = autoRun;
 
                 // Batch experiments drive many simulations internally and have no
                 // display; their progress is reported through status messages.
@@ -2081,6 +2188,11 @@ public class ExperimentActivity extends Activity {
                 if (aliveField != null) {
                     boolean alive = aliveField.getBoolean(controller);
                     if (!alive) {
+                        // A reload transiently shows alive==false while it swaps the
+                        // old simulation out for the new one. Don't treat that as
+                        // "experiment finished": keep polling until the new sim is up
+                        // (or, if this isn't a reload, do the normal finish handling).
+                        if (reloading) return; // reschedule below; keep waiting
                         handler.post(() -> {
                             toolbarTitle.setText(modelName + " (finished)");
                             cycleText.setText("Completed");
@@ -2090,6 +2202,8 @@ public class ExperimentActivity extends Activity {
                         isRunning = false;
                         return;
                     }
+                    // Once the reloaded simulation is alive again, clear the reload flag.
+                    if (reloading) reloading = false;
                 }
 
                 int cycleCount = -1;
@@ -2303,9 +2417,13 @@ public class ExperimentActivity extends Activity {
                     if (surfObj instanceof View surfView) {
                         surfView.post(surfView::invalidate);
                         hasSurface = true;
+                    } else {
+                        Log.w(TAG, "updateDisplays: output surface is not a View: "
+                                + (surfObj == null ? "null" : surfObj.getClass().getSimpleName()));
                     }
                 } catch (Exception de) { /* skip broken output */ }
             }
+            Log.i(TAG, "updateDisplays: outputs=" + outputsMap.size() + " hasSurface=" + hasSurface);
             if (!hasSurface) {
                 guiHandlerClass.getMethod("probeAndCreateSurface").invoke(null);
             }

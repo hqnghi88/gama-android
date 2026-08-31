@@ -101,6 +101,17 @@ public class AndroidGuiHandler implements IGui {
         return java.util.Collections.unmodifiableMap(displaySurfaces);
     }
 
+    /**
+     * Drop the cached surface/output for the given output (used when a reloaded run
+     * tears down a dead panel so the next createSurface()/probe builds a fresh one).
+     */
+    public void forgetSurface(IOutput output) {
+        if (output instanceof LayeredDisplayOutput ldo) {
+            displayOutputs.remove(ldo.getName());
+            displaySurfaces.remove(ldo.getName());
+        }
+    }
+
     /** Clear all display state for a new experiment run */
     public void clearDisplayState(Activity activity) {
         displayOutputs.clear();
@@ -120,7 +131,28 @@ public class AndroidGuiHandler implements IGui {
         LayeredDisplayOutput ldo = (LayeredDisplayOutput) output;
         String displayName = ldo.getName();
         if (displaySurfaces.containsKey(displayName)) {
-            return displaySurfaces.get(displayName);
+            AndroidDisplaySurface cached = displaySurfaces.get(displayName);
+            // A reload disposes the old simulation; its LayeredDisplayOutput.dispose()
+            // calls surface.dispose(), permanently disabling the cached surface. If
+            // the cached one is dead, drop it and build a fresh surface bound to the
+            // new (post-reload) output, otherwise the display stays blank (a disposed
+            // surface's onDraw returns immediately).
+            if (cached != null && cached.isDisposed()) {
+                displaySurfaces.remove(displayName);
+                displayOutputs.remove(displayName);
+                try {
+                    android.app.Activity act = currentActivity;
+                    if (act != null) {
+                        act.runOnUiThread(() -> {
+                            android.view.ViewGroup parent =
+                                    (android.view.ViewGroup) cached.getParent();
+                            if (parent != null) parent.removeView(cached);
+                        });
+                    }
+                } catch (Throwable t) { Log.w(TAG, "cleanup old surface error: " + t.getMessage()); }
+            } else {
+                return cached;
+            }
         }
 
         // Don't create surface until output has a valid scope (sim must init it first)
