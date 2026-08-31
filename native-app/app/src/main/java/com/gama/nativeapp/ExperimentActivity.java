@@ -1469,7 +1469,16 @@ public class ExperimentActivity extends Activity {
 
     private void showCompilationError(String summary, List<Object> errors) {
         StringBuilder sb = new StringBuilder(summary).append("\n\n");
-        for (Object err : errors) sb.append("\u2022 ").append(err).append("\n");
+        for (Object err : errors) {
+            String loc = "";
+            try {
+                Object uri = err.getClass().getMethod("getURI").invoke(err);
+                Object bl = err.getClass().getMethod("getBeginLine").invoke(err);
+                Object el = err.getClass().getMethod("getEndLine").invoke(err);
+                loc = " [line " + bl + ".." + el + "] " + uri;
+            } catch (Throwable t) { loc = ""; }
+            sb.append("\u2022 ").append(err).append(loc).append("\n");
+        }
         String fullMsg = sb.toString();
         android.util.Log.e("GamlErrors", fullMsg);
         log(fullMsg);
