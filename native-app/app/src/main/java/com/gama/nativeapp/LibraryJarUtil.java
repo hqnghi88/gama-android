@@ -1,6 +1,7 @@
 package com.gama.nativeapp;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.util.Log;
 
 import java.io.File;
@@ -14,6 +15,9 @@ public final class LibraryJarUtil {
     private static final String TAG = "LibraryJarUtil";
 
     private LibraryJarUtil() {}
+
+    private static final String PREFS = "gama_library_cache";
+    private static final String KEY_VERSION = "cached_version_code";
 
     public static File ensureCached(Context context) {
         File cacheJar = new File(context.getCacheDir(), JAR_NAME);
@@ -34,6 +38,12 @@ public final class LibraryJarUtil {
                 if (assetSize > 0 && assetSize != cacheJar.length()) fresh = false;
             }
         }
+        // A new app version (versionCode bump) always carries a potentially different embedded
+        // jar, so wipe any previously cached/extracted library and re-extract from scratch.
+        if (isAppVersionNew(context)) {
+            fresh = false;
+            clearLibraryCache(context);
+        }
         if (!fresh) {
             try (InputStream is = context.getAssets().open(JAR_NAME);
                  FileOutputStream fos = new FileOutputStream(cacheJar)) {
@@ -46,6 +56,48 @@ public final class LibraryJarUtil {
             }
         }
         return cacheJar.exists() ? cacheJar : null;
+    }
+
+    /** True when this app version differs from the one that populated the library cache. */
+    private static boolean isAppVersionNew(Context context) {
+        try {
+            int current = context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionCode;
+            SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            int cached = prefs.getInt(KEY_VERSION, -1);
+            if (cached != current) {
+                prefs.edit().putInt(KEY_VERSION, current).apply();
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Delete the cached jar and any previously extracted library files. */
+    private static void clearLibraryCache(Context context) {
+        try {
+            File cacheDir = context.getCacheDir();
+            File cacheJar = new File(cacheDir, JAR_NAME);
+            if (cacheJar.exists()) cacheJar.delete();
+            File stamp = stampFile(context);
+            if (stamp.exists()) stamp.delete();
+            File modelsDir = new File(cacheDir, "models");
+            if (modelsDir.exists()) deleteRecursively(modelsDir);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to clear library cache", e);
+        }
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f.isDirectory()) {
+            File[] children = f.listFiles();
+            if (children != null) {
+                for (File c : children) deleteRecursively(c);
+            }
+        }
+        f.delete();
     }
 
     private static File stampFile(Context context) {
