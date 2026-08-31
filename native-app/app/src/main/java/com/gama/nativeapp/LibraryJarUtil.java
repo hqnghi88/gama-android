@@ -22,6 +22,17 @@ public final class LibraryJarUtil {
             long apkTime = new File(context.getApplicationInfo().sourceDir).lastModified();
             long cacheTime = cacheJar.lastModified();
             fresh = cacheTime >= apkTime;
+            // Also refresh when the embedded jar's size no longer matches the cached copy,
+            // so library content changes (e.g. newly injected models) always take effect even
+            // when the APK file's modification time is preserved by `adb install -r`.
+            if (fresh) {
+                long assetSize = -1;
+                try {
+                    assetSize = context.getAssets().openFd(JAR_NAME).getLength();
+                } catch (Exception ignored) {
+                }
+                if (assetSize > 0 && assetSize != cacheJar.length()) fresh = false;
+            }
         }
         if (!fresh) {
             try (InputStream is = context.getAssets().open(JAR_NAME);
