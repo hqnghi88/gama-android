@@ -358,6 +358,20 @@ public class GamaNativeBootstrap {
             Log.w(TAG, "Failed to initialize GAMA preference classes", e);
         }
 
+        // Configure the global GIS CRS so OSM (WGS84 lat/lon) data is NOT reprojected into a projected
+        // target. GAMA's default target is EPSG:32648 (UTM zone 48N), thousands of km from typical test
+        // locations (e.g. San Francisco), which makes its Projection sanity check throw. Using WGS84
+        // (EPSG:4326) as the target equals the OSM input CRS, so no transform is created at all and no
+        // projection error occurs (geometries simply keep their WGS84 coordinates).
+        try {
+            Class<?> external = Class.forName("gama.api.utils.prefs.GamaPreferences$External");
+            setExternalPref(external, "LIB_TARGETED", false);
+            setExternalPref(external, "LIB_TARGET_CRS", 4326);
+            Log.i(TAG, "GAMA GIS CRS preference pinned to EPSG:4326 (auto-CRS off)");
+        } catch (Throwable e) {
+            Log.w(TAG, "Failed to pin GAMA GIS CRS preference", e);
+        }
+
         callback.onProgress("Initializing GAMA meta-model...");
         try {
             Class<?> metaModelClass = Class.forName("gama.api.kernel.GamaMetaModel");
@@ -560,5 +574,14 @@ public class GamaNativeBootstrap {
                 return null;
             }
         };
+    }
+
+    private static void setExternalPref(Class<?> external, String field, Object value) {
+        try {
+            Object pref = external.getField(field).get(null);
+            pref.getClass().getMethod("setValueNoCheckNoNotification", Object.class).invoke(pref, value);
+        } catch (Throwable e) {
+            Log.w(TAG, "Failed to set preference " + field, e);
+        }
     }
 }

@@ -39,11 +39,18 @@ public class AndroidSensorBridge {
 		public final float temperature;
 		public final float humidity;
 		public final float batteryLevel;
+		public final float gpsLatitude;
+		public final float gpsLongitude;
+		public final float gpsBearing;
+		public final float gpsSpeed;
+		public final float gpsAccuracy;
 
 		Snapshot(final long timestamp, final float accX, final float accY, final float accZ, final float gyrX,
 				final float gyrY, final float gyrZ, final float oriX, final float oriY, final float oriZ,
 				final float magX, final float magY, final float magZ, final float light, final float proximity,
-				final float pressure, final float temperature, final float humidity, final float batteryLevel) {
+				final float pressure, final float temperature, final float humidity, final float batteryLevel,
+				final float gpsLatitude, final float gpsLongitude, final float gpsBearing, final float gpsSpeed,
+				final float gpsAccuracy) {
 			this.timestamp = timestamp;
 			this.accelerometerX = accX;
 			this.accelerometerY = accY;
@@ -63,12 +70,18 @@ public class AndroidSensorBridge {
 			this.temperature = temperature;
 			this.humidity = humidity;
 			this.batteryLevel = batteryLevel;
+			this.gpsLatitude = gpsLatitude;
+			this.gpsLongitude = gpsLongitude;
+			this.gpsBearing = gpsBearing;
+			this.gpsSpeed = gpsSpeed;
+			this.gpsAccuracy = gpsAccuracy;
 		}
 	}
 
 	/** The current snapshot. */
 	private static final AtomicReference<Snapshot> CURRENT = new AtomicReference<>(
-			new Snapshot(0, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, Float.NaN, 0f, Float.NaN, Float.NaN, 0f));
+			new Snapshot(0, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, Float.NaN, 0f, Float.NaN, Float.NaN, 0f,
+					Float.NaN, Float.NaN, Float.NaN, Float.NaN, Float.NaN));
 
 	private AndroidSensorBridge() {}
 
@@ -87,6 +100,11 @@ public class AndroidSensorBridge {
 		private float oriX, oriY, oriZ;
 		private float magX, magY, magZ;
 		private float light, proximity, pressure, temperature, humidity, batteryLevel;
+		private float gpsLatitude = Float.NaN;
+		private float gpsLongitude = Float.NaN;
+		private float gpsBearing = Float.NaN;
+		private float gpsSpeed = Float.NaN;
+		private float gpsAccuracy = Float.NaN;
 
 		public Builder withTimestamp(final long t) { timestamp = t; return this; }
 
@@ -118,9 +136,16 @@ public class AndroidSensorBridge {
 
 		public Builder withBatteryLevel(final float v) { batteryLevel = v; return this; }
 
+		public Builder withGps(final float lat, final float lon, final float bearing, final float speed,
+				final float accuracy) {
+			gpsLatitude = lat; gpsLongitude = lon; gpsBearing = bearing; gpsSpeed = speed; gpsAccuracy = accuracy;
+			return this;
+		}
+
 		public void publish() {
 			CURRENT.set(new Snapshot(timestamp, accX, accY, accZ, gyrX, gyrY, gyrZ, oriX, oriY, oriZ, magX, magY, magZ,
-					light, proximity, pressure, temperature, humidity, batteryLevel));
+					light, proximity, pressure, temperature, humidity, batteryLevel,
+					gpsLatitude, gpsLongitude, gpsBearing, gpsSpeed, gpsAccuracy));
 		}
 	}
 }

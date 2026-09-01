@@ -242,6 +242,7 @@ tasks.register('injectLibraryModels') {
         'AndroidSensorTest.gaml',
         'AndroidDigitalTwinEnvironment.gaml',
         'AndroidDigitalTwinFlocking.gaml',
+        'AndroidDigitalTwinMap.gaml',
     ]
     inputs.files(targetModels.collect { new File(libraryModelsDir, it) })
     inputs.file(file("${projectDir}/../tools/JarModelInjector.java"))
@@ -312,8 +313,9 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 42
-        versionName "0.1.47"
+        versionCode 43
+        versionName "0.1.48"
+        // cache-bust: updated androidsensor jar with GPS fields
     }
 
     buildTypes {

@@ -4,6 +4,11 @@
 
     <!-- Required for json_file(http://...) and other URL fetching via the Webb client. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Required to read the real GPS position so the app can build a 3D city map around
+         the user's actual location. Coarse is declared alongside fine so both can be
+         requested together at runtime on Android 12+. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- Required so the workspace can be moved to a folder on shared (primary)
          storage on Android 11+ (targetSdk 30+), where scoped storage otherwise
          blocks java.io.File access to /storage/emulated/0/. The GAMA engine

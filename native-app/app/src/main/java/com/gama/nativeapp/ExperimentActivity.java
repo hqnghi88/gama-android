@@ -32,6 +32,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.PopupMenu;
 
+import androidx.annotation.NonNull;
 import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.drawable.DrawableCompat;
@@ -243,6 +244,12 @@ public class ExperimentActivity extends Activity {
 
         setContentView(root);
 
+        requestPermissions(
+                new String[]{
+                        android.Manifest.permission.ACCESS_FINE_LOCATION,
+                        android.Manifest.permission.ACCESS_COARSE_LOCATION},
+                4001);
+
         sensorBridge = new SensorBridge(this);
         sensorBridge.start();
 
@@ -255,6 +262,15 @@ public class ExperimentActivity extends Activity {
         });
 
         startEngine();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 4001 && sensorBridge != null) {
+            sensorBridge.start();
+        }
     }
 
     @Override
@@ -1881,6 +1897,7 @@ public class ExperimentActivity extends Activity {
 
     private Object compileFile(File modelFile) throws Exception {
         android.util.Log.e("GamlErrors", "COMPILING: " + modelFile.getAbsolutePath());
+        GpsBridge.setDataDir(this, modelFile.getParentFile());
         Class<?> builderClass = Class.forName("gaml.compiler.validation.GamlModelBuilder");
         Object builder = builderClass.getMethod("getInstance").invoke(null);
         Class<?> uriClass = Class.forName("org.eclipse.emf.common.util.URI");
@@ -1980,14 +1997,21 @@ public class ExperimentActivity extends Activity {
                 return;
             }
 
-            Toast.makeText(this, "Found " + expList.size() + " experiment(s)!", Toast.LENGTH_LONG).show();
-
-            // Create a simple dialog to pick experiment
+            // Create experiment names array
             String[] names = new String[expList.size()];
             for (int i = 0; i < expList.size(); i++) {
                 names[i] = (String) expList.get(i).getClass().getMethod("getName").invoke(expList.get(i));
                 log("  Experiment: " + names[i]);
             }
+
+            // Auto-run if only one experiment (no need for dialog)
+            if (expList.size() == 1) {
+                log("Auto-selecting single experiment: " + names[0]);
+                runExperiment(expList.get(0), names[0]);
+                return;
+            }
+
+            Toast.makeText(this, "Found " + expList.size() + " experiment(s)!", Toast.LENGTH_LONG).show();
 
             new androidx.appcompat.app.AlertDialog.Builder(this)
                     .setTitle("Select Experiment")

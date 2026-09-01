@@ -51,6 +51,16 @@ public class GamlAdditions extends AbstractGamlAdditions {
 				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getHumidity(a), null, null);
 		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "battery_level")),
 				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getBattery(a), null, null);
+		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "gps_lat")),
+				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getGpsLatitude(a), null, null);
+		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "gps_lon")),
+				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getGpsLongitude(a), null, null);
+		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "gps_bearing")),
+				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getGpsBearing(a), null, null);
+		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "gps_speed")),
+				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getGpsSpeed(a), null, null);
+		_var(AndroidSensorSkill.class, desc(2, S("type", "2", "name", "gps_accuracy")),
+				(s, a, t, v) -> t == null ? 0d : ((AndroidSensorSkill) t).getGpsAccuracy(a), null, null);
 		_var(AndroidSensorSkill.class, desc(1, S("type", "1", "name", "sensor_timestamp")),
 				(s, a, t, v) -> t == null ? 0 : ((AndroidSensorSkill) t).getTimestamp(a), null, null);
 	}
@@ -68,6 +78,10 @@ public class GamlAdditions extends AbstractGamlAdditions {
 				(s, a, t, v) -> ((AndroidSensorSkill) t).primInjectSensorData(s)),
 				desc(PRIM, new Children(_arg("values", 5, T)), NAME, "inject_sensor_data", TYPE, Ti(B), VIRTUAL, FALSE),
 				AndroidSensorSkill.class.getMethod("primInjectSensorData", SC));
+		_action(new GamaHelper("inject_gps", AndroidSensorSkill.class,
+				(s, a, t, v) -> ((AndroidSensorSkill) t).primInjectGps(s)),
+				desc(PRIM, new Children(_arg("values", 5, T)), NAME, "inject_gps", TYPE, Ti(B), VIRTUAL, FALSE),
+				AndroidSensorSkill.class.getMethod("primInjectGps", SC));
 	}
 
 	public void initializeSkill() {

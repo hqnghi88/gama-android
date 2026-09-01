@@ -26,8 +26,9 @@ import gama.api.types.list.GamaListFactory;
 		doc = { @doc("A skill allowing agents to read the sensors of the Android device (accelerometer, gyroscope, " +
 				"orientation, magnetic field, light, proximity, pressure, temperature, humidity and battery level). " +
 				"Provides the accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, orientation_x, orientation_y, " +
-				"orientation_z, magnetic_x, magnetic_y, magnetic_z, light, proximity, pressure, temperature, humidity " +
-				"and battery_level variables, and the get_sensor_data, is_sensor_available and inject_sensor_data actions.") })
+				"orientation_z, magnetic_x, magnetic_y, magnetic_z, light, proximity, pressure, temperature, humidity, " +
+				"battery_level, gps_lat, gps_lon, gps_bearing, gps_speed and gps_accuracy variables, and the " +
+				"get_sensor_data, inject_gps, is_sensor_available and inject_sensor_data actions.") })
 public class AndroidSensorSkill extends Skill {
 
 	public static final String SENSOR_SKILL = "android_sensor";
@@ -50,6 +51,11 @@ public class AndroidSensorSkill extends Skill {
 	public static final String HUMIDITY = "humidity";
 	public static final String BATTERY = "battery_level";
 	public static final String TIMESTAMP = "sensor_timestamp";
+	public static final String GPS_LATITUDE = "gps_lat";
+	public static final String GPS_LONGITUDE = "gps_lon";
+	public static final String GPS_BEARING = "gps_bearing";
+	public static final String GPS_SPEED = "gps_speed";
+	public static final String GPS_ACCURACY = "gps_accuracy";
 
 	public AndroidSensorSkill() {}
 
@@ -93,6 +99,16 @@ public class AndroidSensorSkill extends Skill {
 
 	public static Integer getTimestamp(final Object o) { return (int) snapshot().timestamp; }
 
+	public static Double getGpsLatitude(final Object o) { return (double) snapshot().gpsLatitude; }
+
+	public static Double getGpsLongitude(final Object o) { return (double) snapshot().gpsLongitude; }
+
+	public static Double getGpsBearing(final Object o) { return (double) snapshot().gpsBearing; }
+
+	public static Double getGpsSpeed(final Object o) { return (double) snapshot().gpsSpeed; }
+
+	public static Double getGpsAccuracy(final Object o) { return (double) snapshot().gpsAccuracy; }
+
 	public Object primGetSensorData(final IScope scope) {
 		AndroidSensorBridge.Snapshot s = snapshot();
 		return GamaListFactory.create(scope, Types.FLOAT, new double[] {
@@ -133,6 +149,42 @@ public class AndroidSensorSkill extends Skill {
 				.withTemperature(f[15])
 				.withHumidity(f[16])
 				.withBatteryLevel(f[17])
+				.withGps(snapshot().gpsLatitude, snapshot().gpsLongitude, snapshot().gpsBearing, snapshot().gpsSpeed,
+						snapshot().gpsAccuracy)
+				.publish();
+		return true;
+	}
+
+	public Boolean primInjectGps(final IScope scope) {
+		Object values = scope.getArg("values", IType.LIST);
+		if (!(values instanceof List)) {
+			throw GamaRuntimeException.error("inject_gps expects a list of 5 floats (lat, lon, bearing, speed, accuracy)",
+					scope);
+		}
+		List<?> list = (List<?>) values;
+		if (list.size() != 5) {
+			throw GamaRuntimeException.error(
+					"inject_gps expects a list of 5 floats (lat, lon, bearing, speed, accuracy) (got " + list.size() + ")",
+					scope);
+		}
+		float[] f = new float[5];
+		for (int i = 0; i < 5; i++) {
+			f[i] = ((Number) list.get(i)).floatValue();
+		}
+		AndroidSensorBridge.Snapshot s = snapshot();
+		new AndroidSensorBridge.Builder()
+				.withTimestamp(System.currentTimeMillis())
+				.withAccelerometer(s.accelerometerX, s.accelerometerY, s.accelerometerZ)
+				.withGyroscope(s.gyroscopeX, s.gyroscopeY, s.gyroscopeZ)
+				.withOrientation(s.orientationX, s.orientationY, s.orientationZ)
+				.withMagnetic(s.magneticX, s.magneticY, s.magneticZ)
+				.withLight(s.light)
+				.withProximity(s.proximity)
+				.withPressure(s.pressure)
+				.withTemperature(s.temperature)
+				.withHumidity(s.humidity)
+				.withBatteryLevel(s.batteryLevel)
+				.withGps(f[0], f[1], f[2], f[3], f[4])
 				.publish();
 		return true;
 	}

@@ -8,10 +8,19 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
 import android.os.BatteryManager;
+import android.os.Bundle;
 import android.util.Log;
 
+import androidx.core.content.ContextCompat;
+
 import java.util.List;
+
+import com.gama.nativeapp.GpsBridge;
 
 import gama.extension.androidsensor.AndroidSensorBridge;
 
@@ -69,6 +78,40 @@ public class SensorBridge {
     private volatile float temperature;
     private volatile float humidity;
     private volatile float batteryLevel;
+    private volatile float gpsLat = Float.NaN;
+    private volatile float gpsLon = Float.NaN;
+    private volatile float gpsBearing = Float.NaN;
+    private volatile float gpsSpeed = Float.NaN;
+    private volatile float gpsAccuracy = Float.NaN;
+
+    private final LocationListener locationListener = new LocationListener() {
+        @Override
+        public void onLocationChanged(Location location) {
+            if (location != null) {
+                gpsLat = (float) location.getLatitude();
+                gpsLon = (float) location.getLongitude();
+                gpsBearing = location.hasBearing() ? location.getBearing() : Float.NaN;
+                gpsSpeed = location.hasSpeed() ? location.getSpeed() : Float.NaN;
+                gpsAccuracy = location.hasAccuracy() ? location.getAccuracy() : Float.NaN;
+            }
+            if (location != null && location.hasAccuracy()) {
+                GpsBridge.onLocation(location);
+            }
+            publish();
+        }
+
+        @Override
+        public void onStatusChanged(String provider, int status, Bundle extras) {
+        }
+
+        @Override
+        public void onProviderEnabled(String provider) {
+        }
+
+        @Override
+        public void onProviderDisabled(String provider) {
+        }
+    };
 
     public SensorBridge(Context context) {
         this.context = context.getApplicationContext();
@@ -96,6 +139,26 @@ public class SensorBridge {
         }
         IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
         context.registerReceiver(batteryReceiver, filter);
+
+        LocationManager lm = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+        boolean fine = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        boolean coarse = ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                == PackageManager.PERMISSION_GRANTED;
+        if (lm != null && (fine || coarse)) {
+            try {
+                lm.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, 1000L, 5f, locationListener, context.getMainLooper());
+                if (coarse && !fine) {
+                    lm.requestLocationUpdates(
+                            LocationManager.NETWORK_PROVIDER, 1000L, 5f, locationListener, context.getMainLooper());
+                }
+            } catch (SecurityException e) {
+                Log.w(TAG, "start: location permission denied", e);
+            }
+        } else {
+            Log.w(TAG, "start: no location permission granted");
+        }
     }
 
     public void stop() {
@@ -104,6 +167,10 @@ public class SensorBridge {
             context.unregisterReceiver(batteryReceiver);
         } catch (IllegalArgumentException e) {
             Log.w(TAG, "stop: receiver not registered");
+        }
+        LocationManager lm = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+        if (lm != null) {
+            lm.removeUpdates(locationListener);
         }
     }
 
@@ -144,6 +211,7 @@ public class SensorBridge {
                 .withTemperature(temperature)
                 .withHumidity(humidity)
                 .withBatteryLevel(batteryLevel)
+                .withGps(gpsLat, gpsLon, gpsBearing, gpsSpeed, gpsAccuracy)
                 .publish();
     }
 }

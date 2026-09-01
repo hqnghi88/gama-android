@@ -26,7 +26,8 @@ public class JarModelInjector {
         "AndroidSensorLab.gaml",
         "AndroidSensorTest.gaml",
         "AndroidDigitalTwinEnvironment.gaml",
-        "AndroidDigitalTwinFlocking.gaml"
+        "AndroidDigitalTwinFlocking.gaml",
+        "AndroidDigitalTwinMap.gaml"
     };
 
     public static void main(String[] args) throws Exception {
