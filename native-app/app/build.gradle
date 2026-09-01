@@ -315,7 +315,6 @@ android {
         targetSdk 36
         versionCode 43
         versionName "0.1.48"
-        // cache-bust: updated androidsensor jar with GPS fields
     }
 
     buildTypes {
