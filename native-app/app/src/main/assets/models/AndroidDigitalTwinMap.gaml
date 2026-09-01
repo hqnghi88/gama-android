@@ -16,9 +16,8 @@ model AndroidDigitalTwinMap
 global {
 
 	// The OverpassFetcher projects raw WGS84 lat/lon onto a local metric grid anchored at the GPS
-	// fix, so the city always spans roughly +/-800m around the origin (0,0). Frame the world there
-	// at init so the 3D camera opens on the city instead of an empty default region.
-	geometry shape <- polygon([{-800,-800},{800,-800},{800,800},{-800,800}]);
+	// fix. With a 100m fetch radius the city spans roughly +/-120m around the origin.
+	geometry shape <- polygon([{-150,-150},{150,-150},{150,150},{-150,150}]);
 
 	// --- the physical twin: the phone's real GPS ---
 	float s_lat <- 0.0;
@@ -135,11 +134,12 @@ species road {
 experiment city_map type: gui autorun: true {
 	output {
 		display city type: 3d background: rgb(12, 16, 40) {
+			camera 'default' location: {0, -90, 6} target: {0, 0, 15};
 			species building aspect: map;
 			species road aspect: map;
 			graphics marker {
 				if (has_fix) {
-					draw sphere(6.0) at: {0, 0, 2.0} color: rgb(255, 80, 60);
+					draw sphere(2.5) at: {0, 0, 1.5} color: rgb(255, 80, 60);
 				}
 			}
 			graphics overlay {

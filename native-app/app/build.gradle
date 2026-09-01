@@ -313,8 +313,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 43
-        versionName "0.1.48"
+        versionCode 44
+        versionName "0.1.49"
     }
 
     buildTypes {

@@ -18,7 +18,7 @@ public final class GpsBridge {
 
     private static final String TAG = "GpsBridge";
     private static final float MIN_MOVE_METERS = 50f;
-    private static final float OVERPASS_RADIUS_METERS = 600f;
+    private static final float OVERPASS_RADIUS_METERS = 100f;
 
     /** Last position that was successfully fetched as OSM. */
     private static volatile double lastFetchedLat = Double.NaN;
