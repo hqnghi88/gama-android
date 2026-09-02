@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 # Build one or more GAMA extensions into jars for the native Android app.
 #
 # Each GAMA extension is a standalone project (like gama.extension.androidsensor/)
@@ -91,7 +91,10 @@ for p in "${PROJECTS[@]}"; do
 # annotation processor (gama.processor.jar) is auto-discovered on the classpath and
 # would otherwise also generate a stray additions class; -proc:none disables it.
   echo "== Building $name -> app/libs/gama.extension.$short.jar"
-  if ! javac --release 17 -nowarn -proc:none -classpath "$CP" -d "$out" ${=SRC} > "$BUILD_DIR/$name.log" 2>&1; then
+  # word-split SRC (newline list from find) into args (portable, bash3-compatible)
+  SRC_ARR=()
+  while IFS= read -r s; do [ -n "$s" ] && SRC_ARR+=("$s"); done <<< "$SRC"
+  if ! javac --release 17 -nowarn -proc:none -classpath "$CP" -d "$out" "${SRC_ARR[@]}" > "$BUILD_DIR/$name.log" 2>&1; then
     echo "FAILED: javac errors (see $BUILD_DIR/$name.log)" >&2
     sed -n '1,25p' "$BUILD_DIR/$name.log" >&2
     continue
