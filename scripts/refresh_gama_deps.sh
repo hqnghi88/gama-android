@@ -75,6 +75,9 @@ need curl; need unzip
 
 py() { python3 -c "$1"; }
 
+# Exit 3 means "engine already current" (a *no-op*, not an error); the caller
+# can check $? to skip the rebuild while treating anything else as a failure.
+
 echo "== GAMA engine refresh =="
 echo "   repo: $REPO_DIR"
 
@@ -108,8 +111,8 @@ fi
 
 echo "   target:  ${RESOLVED_TAG:-<(unknown)} @ ${RESOLVED_SHA:-<(unknown)}"
 if [[ "$RESOLVED_TAG" == "$current_tag" ]]; then
-    echo "== already on $RESOLVED_TAG — nothing to do (rerun with --tag to force) =="
-    exit 0
+    echo "== already on $RESOLVED_TAG — nothing to do =="
+    exit 3
 fi
 
 # --- pick the Linux zip asset --------------------------------------------------

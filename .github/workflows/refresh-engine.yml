@@ -1,0 +1,133 @@
+name: Refresh GAMA Engine
+
+# Pull a new gama-platform/gama engine build into the app, rebuild the APK, and
+# re-bundle the dependencies. Run on demand, or nightly to stay in step with
+# upstream releases.
+#
+# Behaviour:
+#   * Resolves the latest stable gama-platform/gama release (or --tag with a
+#     specific release).
+#   * If native-app/gama.engine.version already matches, the job is a no-op.
+#   * Otherwise refresh_gama_deps.sh downloads the GAMA_*_Linux.zip, swaps the
+#     engine bundle jars into app/libs (pristine + top), re-patches, rebuilds
+#     the extension and the APK.
+#   * On success a pull request is opened with the new engine pin
+#     (gama.engine.version) so the bump is reviewed/merged, and the rebuilt
+#     deps are uploaded as a per-version native-app-deps/<tag> release asset
+#     (the release flow keeps using the plain native-app-deps tarball).
+#
+# A new tag push still triggers auto-release.yml which rebuilds the APK from the
+# merged state and publishes it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      gama_tag:
+        description: 'gama-platform/gama release tag (default: latest stable)'
+        required: false
+        type: string
+
+  schedule:
+    # nightly UTC, minimal churn
+    - cron: '30 3 * * *'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-gama-engine
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: '21'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Download current dependencies (base for this build)
+        run: |
+          curl -fL --retry 3 \
+            "https://github.com/${{ github.repository }}/releases/download/native-app-deps/native-app-deps.tar.gz" \
+            -o /tmp/deps.tar.gz
+          # bundle ships app/libs/{pristine/*.jar, *.jar}; refresh_gama_deps.sh
+          # swaps the engine bundles into that same layout.
+          tar -xzf /tmp/deps.tar.gz -C native-app
+          ls native-app/app/libs/pristine/*.jar >/dev/null 2>&1 \
+            || { echo "ERROR: baseline bundle missing pristine jars"; exit 1; }
+
+      - name: Refresh GAMA engine
+        id: refresh
+        run: |
+          ARGS=()
+          if [[ -n "${{ inputs.gama_tag }}" ]]; then ARGS+=(--tag "${{ inputs.gama_tag }}"); fi
+          set +e
+          ./scripts/refresh_gama_deps.sh "${ARGS[@]}"
+          RC=$?
+          set -e
+          if [[ "$RC" -eq 3 ]]; then
+            echo "Engine already current — no change."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$RC" -eq 0 ]]; then
+            echo "Engine refreshed."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            exit "$RC"
+          fi
+
+      - name: Rebuild APK
+        if: steps.refresh.outputs.changed == 'true'
+        working-directory: native-app
+        run: ./gradlew --no-daemon app:assembleDebug
+
+      - name: Bundle + upload dependencies (per-version)
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$(awk 'NR==1 && $1!~/^#/ {print $1}' native-app/gama.engine.version)"
+          SHA="$(awk 'NR==1 && $1!~/^#/ {print $2}' native-app/gama.engine.version)"
+          REL_NAME="native-app-deps/${TAG}"
+          # refresh_gama_deps.sh restored jars into app/libs; bundle them for CI reuse
+          tar -czf "/tmp/release-${TAG}.tar.gz" -C native-app/app libs
+          if gh release view "$REL_NAME" --json tagName >/dev/null 2>&1; then
+            gh release upload "$REL_NAME" "/tmp/release-${TAG}.tar.gz" --clobber
+          else
+            gh release create "$REL_NAME" "/tmp/release-${TAG}.tar.gz" \
+              --title "GAMA deps ${TAG} (${SHA})" \
+              --notes "Engine bundle @ ${TAG} (${SHA}). Use with scripts/build_app.sh --deps-dir, or adjust the deps download in build_app.sh/auto-release.yml to this tag."
+          fi
+
+      - name: Open engine-bump PR
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ENG="$(awk 'NR==1 && $1!~/^#/ {printf "%s @ %s", $1, $2}' native-app/gama.engine.version)"
+          BR="engine/$(awk 'NR==1 && $1!~/^#/ {print $1}' native-app/gama.engine.version)-$(date +%Y%m%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BR"
+          git add native-app/gama.engine.version native-app/app/build.gradle
+          git commit -m "chore(engine): refresh GAMA to ${ENG}" || true
+          git push origin "$BR"
+          gh pr create \
+            --base main --head "$BR" \
+            --title "Refresh GAMA engine to ${ENG}" \
+            --body "Automated engine refresh from gama-platform/gama. Review and merge, then tag vX.Y.Z to publish a new APK." \
+            || true
