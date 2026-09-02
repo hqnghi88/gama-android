@@ -134,8 +134,11 @@ jobs:
           git add native-app/gama.engine.version native-app/app/build.gradle
           git commit -m "chore(engine): refresh GAMA to ${ENG}" || true
           git push origin "$BR"
-          gh pr create \
+          if gh pr create \
             --base main --head "$BR" \
             --title "Refresh GAMA engine to ${ENG}" \
-            --body "Automated engine refresh from gama-platform/gama. Review and merge, then tag vX.Y.Z to publish a new APK." \
-            || true
+            --body "Automated engine refresh from gama-platform/gama. Review and merge, then tag vX.Y.Z to publish a new APK."; then
+            echo "PR created from ${BR}."
+          else
+            echo "::warning::Could not open the PR automatically (repo disallows GitHub Actions from creating pull requests). Branch ${BR} is pushed — open it manually on the Actions logs page, or enable the setting under Settings > Actions > General."
+          fi
