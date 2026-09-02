@@ -194,6 +194,11 @@ print('stripped signatures from $(basename "$NEW")')
         NEW="$CLEANED"
     fi
     cp -f "$NEW" "$PRISTINE_DIR/$NEW_NAME"
+    # Remove any stale jar for this bundle (e.g. the previous OSGi version that is
+    # no longer in the new engine) from both pristine/ and the top level, so Gradle's
+    # single-file expectations (injectLibraryModels globs gama.library_*.jar) stay unique
+    # and patchGamaJars' pristine-restore doesn't reintroduce a duplicate.
+    find "$PRISTINE_DIR" "$LIBS_DIR" -maxdepth 1 -type f -name "${b}[_-]*.jar" ! -name "$NEW_NAME" -delete
     cp -f "$NEW" "$LIBS_DIR/$NEW_NAME"
     UPDATED=$((UPDATED+1))
     [[ "$OLD_NAME" != "$NEW_NAME" ]] && echo "   $b: $OLD_NAME -> $NEW_NAME"
