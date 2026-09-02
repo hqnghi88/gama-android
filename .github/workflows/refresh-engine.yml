@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       gama_tag:
-        description: 'gama-platform/gama release tag (default: latest stable)'
+        description: 'gama-platform/gama release tag (default: latest yyyy.MM update build)'
         required: false
         type: string
 

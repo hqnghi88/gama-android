@@ -26,6 +26,8 @@
 #     --dry-run      resolve + report only, change nothing
 #     --device       also install the rebuilt APK on a connected device/emulator
 #                    and smoke-test that the AndroidDigitalTwinMap model starts
+#     --channel CH   release channel when no --tag is given: "update" (default,
+#                    newest yyyy.MM build) or "stable" (latest non-prerelease)
 #     --jdk DIR      JDK 21 home (else auto-detected)
 #     -h, --help     show this help
 #
@@ -43,6 +45,7 @@ TAG=""
 DIST_ZIP=""
 DRY_RUN=0
 DEVICE_TEST=0
+CHANNEL="update"
 JDK_DIR=""
 BUNDLES=(
     gama.annotations gama.api gama.core gama.dependencies
@@ -64,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --dist-zip) DIST_ZIP="$2"; shift 2;;
         --dry-run) DRY_RUN=1; shift;;
         --device) DEVICE_TEST=1; shift;;
+        --channel) CHANNEL="$2"; shift 2;;
         --jdk) JDK_DIR="$2"; shift 2;;
         -h|--help) usage;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 1;;
@@ -90,8 +94,26 @@ echo "   current: ${current_tag:-<(unset)} @ ${current_sha:-<(unset)}"
 
 if [[ -z "$DIST_ZIP" ]]; then
     if [[ -z "$TAG" ]]; then
-        echo "== resolving latest stable release of $GAMA_REPO =="
-        REL_JSON="$(curl -fsSL "https://api.github.com/repos/$GAMA_REPO/releases/latest")"
+        # Default: latest 'update' build (a yyyy.MM prerelease), which is what the
+        # app's Android host code is kept in step with. --channel stable falls back
+        # to the newest non-prerelease (note: stable lags the update channel and may
+        # fail to compile against newer app source).
+        echo "== resolving latest $CHANNEL release of $GAMA_REPO =="
+        if [[ "$CHANNEL" == "stable" ]]; then
+            REL_JSON="$(curl -fsSL "https://api.github.com/repos/$GAMA_REPO/releases/latest")"
+        else
+            REL_JSON="$(curl -fsSL "https://api.github.com/repos/$GAMA_REPO/releases?per_page=20")"
+            THE_TAG="$(printf '%s' "$REL_JSON" | py '
+import json,sys
+releases=json.load(sys.stdin)
+for r in releases:
+    t=r["tag_name"]
+    # a channelized release: a date tag (yyyy.MM[.x]) regardless of prerelease flag
+    if len(t)>=7 and t[0].isdigit() and r.get("draft") is False:
+        print(t); break
+')"
+            REL_JSON="$(curl -fsSL "https://api.github.com/repos/$GAMA_REPO/releases/tags/$THE_TAG")"
+        fi
     else
         echo "== resolving release $TAG of $GAMA_REPO =="
         REL_JSON="$(curl -fsSL "https://api.github.com/repos/$GAMA_REPO/releases/tags/$TAG")" \
