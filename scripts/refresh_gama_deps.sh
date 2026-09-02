@@ -209,9 +209,6 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "!! bundles NOT found in $RESOLVED_TAG (old pristine kept): ${MISSING[*]}" >&2
 fi
 
-printf '%s %s\n' "${RESOLVED_TAG:-unknown}" "${RESOLVED_SHA:-unknown}" > "$VERSION_FILE"
-echo "== wrote $VERSION_FILE =="
-
 # --- 4. rebuild ----------------------------------------------------------------
 echo "== running patchGamaJars (restores pristine + re-patches) =="
 find_jdk() { local d="$1"; [[ -x "$d/bin/java" ]] && "$d/bin/java" -version 2>&1 | grep -q '"21' && echo "$d" && return 0; return 1; }
@@ -238,6 +235,11 @@ echo "== assembling APK =="
 
 APK="$APP_DIR/app/build/outputs/apk/debug/app-debug.apk"
 echo "== BUILD OK: $APK ($(du -h "$APK" | cut -f1))"
+
+# Only now — after a fully successful rebuild — pin the new engine. If any step
+# above failed we must NOT record a version the app source cannot build against.
+printf '%s %s\n' "${RESOLVED_TAG:-unknown}" "${RESOLVED_SHA:-unknown}" > "$VERSION_FILE"
+echo "== wrote $VERSION_FILE ($RESOLVED_TAG @ $RESOLVED_SHA)"
 
 # --- 5. optional device smoke test ---------------------------------------------
 if [[ "$DEVICE_TEST" -eq 1 ]]; then
