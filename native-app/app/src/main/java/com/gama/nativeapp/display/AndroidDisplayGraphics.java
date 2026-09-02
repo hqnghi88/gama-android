@@ -2270,6 +2270,26 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                 android.util.Log.w("ANDROID_3D", "display rotation failed: " + rotErr);
             }
             scene3d.explicitCamera = true;
+            // A camera named 'first_person' (or containing 'first person'/'immersive')
+            // switches the touch interaction to immersive look-around: the eye stays
+            // on the GPS position and rotate/pinch change the view direction/FOV.
+            boolean fp = false;
+            try {
+                String cam = data.getCameraName();
+                android.util.Log.i("ANDROID_3D", "cameraName=" + cam
+                        + " dynamic=" + data.isCameraDynamic() + " locked=" + data.isCameraLocked()
+                        + " cams=" + data.getCameraNames());
+                if (cam != null) {
+                    String lower = cam.toLowerCase();
+                    fp = lower.contains("first") || lower.contains("immersive") || lower.contains("eye")
+                            || lower.contains("person");
+                }
+            } catch (Throwable ignored) {
+            }
+            scene3d.firstPerson = fp;
+            if (fp) {
+                android.util.Log.i("ANDROID_3D", "first-person camera active");
+            }
             scene3d.setViewPos(camPos.getX(), camPos.getY(), camPos.getZ());
             scene3d.render(c,
                     camPos.getX(), camPos.getY(), camPos.getZ(),

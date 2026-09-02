@@ -522,9 +522,23 @@ public class AndroidScene3D {
     // more of the world instead of shrinking the framed area.
     private double zoomDolly = 1.0;
 
+    // First-person (immersive) camera mode, selected from the GAML camera name.
+    // The eye stays at the camera location while the user looks around (the
+    // target orbits the eye), and pinch zoom narrows/widens the field of view.
+    public boolean firstPerson = false;
+    private double fovDolly = 1.0;
+
     /** Zooms the camera in (factor > 1) or out (factor < 1) about the target. */
     public void zoomBy(float factor) {
         if (factor <= 0) return;
+        if (firstPerson) {
+            // In first-person view there is no meaningful orbit distance to
+            // scale; pinch instead changes the field of view like an FPS zoom.
+            fovDolly *= 1.0 / factor;
+            if (fovDolly < 0.3) fovDolly = 0.3;
+            if (fovDolly > 2.5) fovDolly = 2.5;
+            return;
+        }
         zoomDolly *= 1.0 / factor;
         if (zoomDolly < 0.05) zoomDolly = 0.05;
         if (zoomDolly > 100) zoomDolly = 100;
@@ -532,6 +546,7 @@ public class AndroidScene3D {
 
     public void resetZoom() {
         zoomDolly = 1.0;
+        fovDolly = 1.0;
     }
 
     // GAMA world axes (the display's axes facet): three coloured lines (X red,
@@ -718,6 +733,9 @@ public class AndroidScene3D {
         }
 
         double fovy = fovDeg > 1 && fovDeg < 179 ? fovDeg : 45;
+        if (firstPerson && fovDolly != 1.0) {
+            fovy = Math.max(1.5, Math.min(178.0, fovy * fovDolly));
+        }
         double dxc = camX - tarX, dyc = camY - tarY, dzc = camZ - tarZ;
         double dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
         if (dist < 1e-6) dist = 2 * r;
@@ -850,34 +868,45 @@ public class AndroidScene3D {
                         Math.min(Math.toRadians(85), elev + Math.toRadians(rotPitchDeg)));
                 double horiz = orbitDist * Math.cos(elev);
                 double nvz = orbitDist * Math.sin(elev);
-                double ncx = tarX + horiz * Math.cos(az);
-                double ncy = tarY + horiz * Math.sin(az);
-                double ncz = tarZ + nvz;
-                // Re-frame from the rotated view direction so the whole scene
-                // footprint stays visible. The camera was framed for the original
-                // view axis only; rotating to a steeper/more oblique angle makes
-                // parts of the scene fall outside the viewport. Skipped for models
-                // that declare their own camera (GAMA keeps the model's distance).
-                if (!explicitCamera) {
-                    double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
-                    double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
-                    if (fl > 1e-9) {
-                        double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
-                                cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
-                        if (need > orbitDist) {
-                            orbitDist = need;
-                            horiz = orbitDist * Math.cos(elev);
-                            nvz = orbitDist * Math.sin(elev);
-                            ncx = tarX + horiz * Math.cos(az);
-                            ncy = tarY + horiz * Math.sin(az);
-                            ncz = tarZ + nvz;
+                if (firstPerson) {
+                    // Immersive look-around: the eye (camera location) stays where
+                    // it is and the yaw/pitch is applied to the VIEW DIRECTION by
+                    // rotating the target around the eye. The camera stays exactly
+                    // on the GPS position while the user looks around.
+                    tarX = camX + horiz * Math.cos(az);
+                    tarY = camY + horiz * Math.sin(az);
+                    tarZ = camZ + nvz;
+                } else {
+                    double ncx = tarX + horiz * Math.cos(az);
+                    double ncy = tarY + horiz * Math.sin(az);
+                    double ncz = tarZ + nvz;
+                    // Re-frame from the rotated view direction so the whole
+                    // scene footprint stays visible. The camera was framed for
+                    // the original view axis only; rotating to a steeper/more
+                    // oblique angle makes parts of the scene fall outside the
+                    // viewport. Skipped for models that declare their own camera
+                    // (GAMA keeps the model's distance).
+                    if (!explicitCamera) {
+                        double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
+                        double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
+                        if (fl > 1e-9) {
+                            double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
+                                    cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
+                            if (need > orbitDist) {
+                                orbitDist = need;
+                                horiz = orbitDist * Math.cos(elev);
+                                nvz = orbitDist * Math.sin(elev);
+                                ncx = tarX + horiz * Math.cos(az);
+                                ncy = tarY + horiz * Math.sin(az);
+                                ncz = tarZ + nvz;
+                            }
                         }
                     }
+                    camX = ncx;
+                    camY = ncy;
+                    camZ = ncz;
+                    dist = orbitDist;
                 }
-                camX = ncx;
-                camY = ncy;
-                camZ = ncz;
-                dist = orbitDist;
             }
         }
 

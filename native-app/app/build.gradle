@@ -29,6 +29,22 @@ tasks.register('patchGamaJars') {
             logger.warn("No pristine/ dir found at ${pristineDir}; skipping restore (jars may already be patched)")
         }
 
+        // Resolve a GAMA engine bundle jar by bundle base name, ignoring the OSGi version
+        // qualifier embedded in the file name (e.g. gama.api_0.0.0.<timestamp>.jar). This lets
+        // scripts/refresh_gama_deps.sh drop a new engine build into app/libs without editing
+        // this file. gama.extension.batch is named differently (a plain SNAPSHOT jar).
+        def resolveBundle = { String base ->
+            def pats = base == 'gama.extension.batch'
+                ? ['gama.extension.batch-*.jar', 'gama.extension.batch_*.jar']
+                : [base + '_*.jar']
+            def found = fileTree(libsDir).matching { include pats }.files
+                .findAll { it.name.endsWith('.jar') && !it.name.endsWith('.original.jar') }
+            if (found.isEmpty()) {
+                throw new GradleException("GAMA bundle jar for '${base}' not found under ${libsDir}")
+            }
+            return found.first().absolutePath
+        }
+
         // Run a command, logging a warning instead of failing the build when it errors.
         def safeExec = { String label, Closure spec ->
             try {
@@ -131,7 +147,7 @@ tasks.register('patchGamaJars') {
         wrapperOutDir.mkdirs()
         safeExec('Compile AndroidTaskWrapper', {
             commandLine 'javac', '--release', '21',
-                '-cp', "${libsDir}/gama.api_0.0.0.202608091252.jar",
+                '-cp', resolveBundle('gama.api'),
                 '-d', wrapperOutDir.absolutePath,
                 "${projectDir}/../tools/AndroidTaskWrapper.java"
         })
@@ -142,39 +158,39 @@ tasks.register('patchGamaJars') {
         def asmTreeJar = fileTree("${System.getProperty('user.home')}/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm-tree/9.6")
             .matching { include '**/*.jar' }.files.first()
 
-        def gamaApiJar = "${libsDir}/gama.api_0.0.0.202608091252.jar"
-        def gamaCoreJar = "${libsDir}/gama.core_0.0.0.202608091252.jar"
+        def gamaApiJar = resolveBundle('gama.api')
+        def gamaCoreJar = resolveBundle('gama.core')
 
         // Every GAMA/GAML toolchain jar (compiled with JDK 17+, so any of them can emit
         // java.lang.runtime SwitchBootstraps invokedynamic sites that D8/ART cannot run).
         def toolchainJars = [
-            "${libsDir}/gama.annotations_0.0.0.202608091252.jar",
+            resolveBundle('gama.annotations'),
             gamaApiJar,
             gamaCoreJar,
-            "${libsDir}/gama.extension.bdi_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.batch-0.0.0-SNAPSHOT.jar",
-            "${libsDir}/gama.extension.database_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.fipa_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.image_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.maths_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.network_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.pedestrian_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.serialize_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.stats_0.0.0.202608091252.jar",
-            "${libsDir}/gama.extension.traffic_0.0.0.202608091252.jar",
-            "${libsDir}/gama.headless_0.0.0.202608091252.jar",
-            "${libsDir}/gama.library_0.0.0.202607310828.jar",
-            "${libsDir}/gama.processor_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.application_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.display.java2d_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.display.opengl_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.editor_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.experiment_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.navigator_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.shared_0.0.0.202608091252.jar",
-            "${libsDir}/gama.ui.viewers_0.0.0.202608091252.jar",
-            "${libsDir}/gama.workspace_0.0.0.202608091252.jar",
-            "${libsDir}/gaml.compiler_0.0.0.202608091252.jar"
+            resolveBundle('gama.extension.bdi'),
+            resolveBundle('gama.extension.batch'),
+            resolveBundle('gama.extension.database'),
+            resolveBundle('gama.extension.fipa'),
+            resolveBundle('gama.extension.image'),
+            resolveBundle('gama.extension.maths'),
+            resolveBundle('gama.extension.network'),
+            resolveBundle('gama.extension.pedestrian'),
+            resolveBundle('gama.extension.serialize'),
+            resolveBundle('gama.extension.stats'),
+            resolveBundle('gama.extension.traffic'),
+            resolveBundle('gama.headless'),
+            resolveBundle('gama.library'),
+            resolveBundle('gama.processor'),
+            resolveBundle('gama.ui.application'),
+            resolveBundle('gama.ui.display.java2d'),
+            resolveBundle('gama.ui.display.opengl'),
+            resolveBundle('gama.ui.editor'),
+            resolveBundle('gama.ui.experiment'),
+            resolveBundle('gama.ui.navigator'),
+            resolveBundle('gama.ui.shared'),
+            resolveBundle('gama.ui.viewers'),
+            resolveBundle('gama.workspace'),
+            resolveBundle('gaml.compiler')
         ]
 
         def patchers = [
@@ -313,8 +329,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 45
-        versionName "0.1.50"
+        versionCode 46
+        versionName "0.1.51"
     }
 
     buildTypes {
