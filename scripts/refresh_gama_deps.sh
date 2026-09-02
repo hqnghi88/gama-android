@@ -171,6 +171,28 @@ for b in "${BUNDLES[@]}" gama.extension.batch; do
     NEW_NAME="$(basename "$NEW")"
     OLD="$(ls "$PRISTINE_DIR"/"$b"*.jar 2>/dev/null | head -1 || true)"
     OLD_NAME="$(basename "$OLD" 2>/dev/null || echo "<none>")"
+    # Some upstream jars are signed; strip signature files so the ASM patchers
+    # (which open jars with java.util.jar verification) don't throw
+    # "Invalid signature file digest" after the class-version rewrite.
+    CLEANED="$WORK/$(basename "$NEW")"
+    if unzip -l "$NEW" 2>/dev/null | grep -qE 'META-INF/.*\.(SF|RSA|DSA|EC)$'; then
+        py "
+import shutil, zipfile
+src, dst = '$NEW', '$CLEANED'
+def drop(name):
+    n = name.upper()
+    return n.startswith('META-INF/') and (n.endswith('.SF') or n.endswith('.RSA')
+        or n.endswith('.DSA') or n.endswith('.EC') or n.endswith('MANIFEST.MF'))
+zin = zipfile.ZipFile(src)
+zout = zipfile.ZipFile(dst, 'w', zipfile.ZIP_DEFLATED)
+for i in zin.infolist():
+    if drop(i.filename): continue
+    zout.writestr(i, zin.read(i.filename))
+zout.close(); zin.close()
+print('stripped signatures from $(basename "$NEW")')
+"
+        NEW="$CLEANED"
+    fi
     cp -f "$NEW" "$PRISTINE_DIR/$NEW_NAME"
     cp -f "$NEW" "$LIBS_DIR/$NEW_NAME"
     UPDATED=$((UPDATED+1))

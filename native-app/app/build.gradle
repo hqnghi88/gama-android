@@ -58,6 +58,10 @@ tasks.register('patchGamaJars') {
         // 1) Rewrite class file versions > 65 (JDK 21) down to 65, and clear any preview
         //    (minor version 0xFFFF) flag, so D8/javac can read the jars.
         def maxClassVersion = 65
+        def isSignatureEntry = { String n ->
+            (n.startsWith('META-INF/') && (n.endsWith('.SF') || n.endsWith('.DSA') || n.endsWith('.RSA') || n.endsWith('.EC')
+                    || n == 'META-INF/MANIFEST.MF')) || n == 'META-INF/'
+        }
         fileTree(libsDir).matching { include '*.jar' }.each { jarFile ->
             def tmpJar = new File(jarFile.absolutePath + '.revert')
             boolean changed = false
@@ -66,6 +70,13 @@ tasks.register('patchGamaJars') {
             def entries = zin.entries()
             while (entries.hasMoreElements()) {
                 def e = entries.nextElement()
+                if (isSignatureEntry(e.name)) {
+                    // Drop stale signed-manifest / signature files: they are invalidated
+                    // by any rewrite and cause JarFile SecurityException on subsequent
+                    // ASM patchers (e.g. "Invalid signature file digest").
+                    if (!e.isDirectory()) changed = true
+                    continue
+                }
                 def outEntry = new java.util.jar.JarEntry(e.name)
                 zout.putNextEntry(outEntry)
                 byte[] bytes = new byte[0]
