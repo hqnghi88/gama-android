@@ -95,22 +95,30 @@ jobs:
         working-directory: native-app
         run: ./gradlew --no-daemon app:assembleDebug
 
-      - name: Bundle + upload dependencies (per-version)
+      - name: Bundle + upload dependencies (per-version, best-effort)
+        # Secondary artifact: versioned deps bundle for auditing / manual reuse.
+        # The engine bump + APK build already succeeded; a transient upload 500
+        # (large ~380 MB asset) must not fail the job, so errors are non-fatal.
         if: steps.refresh.outputs.changed == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="$(awk 'NR==1 && $1!~/^#/ {print $1}' native-app/gama.engine.version)"
           SHA="$(awk 'NR==1 && $1!~/^#/ {print $2}' native-app/gama.engine.version)"
           REL_NAME="native-app-deps/${TAG}"
-          # refresh_gama_deps.sh restored jars into app/libs; bundle them for CI reuse
           tar -czf "/tmp/release-${TAG}.tar.gz" -C native-app/app libs
+          up() { for i in 1 2 3; do gh release upload "$REL_NAME" "/tmp/release-${TAG}.tar.gz" --clobber && return 0; echo "upload attempt $i failed, retrying" >&2; sleep 5; done; return 1; }
           if gh release view "$REL_NAME" --json tagName >/dev/null 2>&1; then
-            gh release upload "$REL_NAME" "/tmp/release-${TAG}.tar.gz" --clobber
+            up
           else
-            gh release create "$REL_NAME" "/tmp/release-${TAG}.tar.gz" \
-              --title "GAMA deps ${TAG} (${SHA})" \
-              --notes "Engine bundle @ ${TAG} (${SHA}). Use with scripts/build_app.sh --deps-dir, or adjust the deps download in build_app.sh/auto-release.yml to this tag."
+            for i in 1 2 3; do
+              gh release create "$REL_NAME" "/tmp/release-${TAG}.tar.gz" \
+                --title "GAMA deps ${TAG} (${SHA})" \
+                --notes "Engine bundle @ ${TAG} (${SHA}). Use with scripts/build_app.sh --deps-dir, or adjust the deps download in build_app.sh/auto-release.yml to this tag." \
+                && break
+              echo "create attempt $i failed, retrying" >&2; sleep 5
+            done
           fi
 
       - name: Open engine-bump PR
