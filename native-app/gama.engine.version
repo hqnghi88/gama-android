@@ -1,5 +1,1 @@
-local 0b7d68515
-# GAMA engine pinned by this APK. One line after this header, "TAG SHA":
-#   TAG   the gama-platform/gama release tag (or "local" for a worktree build)
-#   SHA   the gama-platform/gama commit the engine jars were built from
-# scripts/refresh_gama_deps.sh compares against this and rewrites it.
+2026.08.1 main
