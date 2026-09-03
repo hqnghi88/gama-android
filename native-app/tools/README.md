@@ -35,7 +35,7 @@ tools/
 | `layers/` | display layers (3D, image, mesh, grid) | `Display3D`, `ImageLayer`, `MeshLayer`, `GridColor`, `LayerManager` |
 | `charts/` | chart rendering & text/colour | `ChartOutput`, `ColorBrewer`, `Colors`, `AwtFontMetrics`, `FontRenderContext` |
 | `projection/` | geographic projection / CRS | `Crs`, `Projection`, `MapProjection`, `Spi` |
-| `gridfile/` | ASCII grid (`.asc`) import | `GridFileFallback`, `AscEnvelope` |
+| `gridfile/` | ASCII grid (`.asc`) import | `GridFileFallback` |
 | `gambuild/` | GAML model compilation/validation | `GamlModelBuilder`, `VarValidatorNullGuard` |
 | `runtime/` | runtime globals (`world`/`simulation`) | `WorldGlobal` |
 | `workspace/` | Eclipse/workspace stubs | `EclipseCore` |

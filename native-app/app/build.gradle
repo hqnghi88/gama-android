@@ -217,7 +217,6 @@ tasks.register('patchGamaJars') {
             ['javacompat/StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
             ['charts/ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
             ['gridfile/GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]],
-            ['gridfile/AscEnvelopeFixPatcher', 'AscEnvelopeFixPatcher', [gamaCoreJar]],
             ['charts/FontRenderContextPatcher', 'FontRenderContextPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['charts/AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['charts/ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
