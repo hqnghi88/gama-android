@@ -193,47 +193,49 @@ tasks.register('patchGamaJars') {
             resolveBundle('gaml.compiler')
         ]
 
+        // Each entry: [relative .java path under tools/patchers/, main class, jars to patch].
+        // The relative path encodes both the feature group (directory) and the file name.
         def patchers = [
-            ['ParallelRunnerPatcher', 'ParallelRunnerPatcher',
+            ['parallel/ParallelRunnerPatcher', 'ParallelRunnerPatcher',
                 [gamaApiJar, "${wrapperOutDir.absolutePath}/gama/api/runtime/AndroidTaskWrapper.class"]],
-            ['Display3DPatcher', 'Display3DPatcher', [gamaCoreJar]],
-            ['TypeSwitchPatcher', 'TypeSwitchPatcher', toolchainJars],
-            ['EnumSwitchPatcher', 'EnumSwitchPatcher', toolchainJars],
-            ['CrsPatcher', 'CrsPatcher', [gamaCoreJar]],
-            ['ColorsPatcher', 'ColorsPatcher', [gamaCoreJar]],
-            ['SimulationRunnerPatcher', 'SimulationRunnerPatcher', [gamaApiJar]],
-            ['MeshLayerPatcher', 'MeshLayerPatcher', [gamaCoreJar]],
-            ['LayerManagerPatcher', 'LayerManagerPatcher', [gamaCoreJar]],
-            ['ImageLayerPatcher', 'ImageLayerPatcher', [gamaCoreJar]],
-            ['CacheBuilderPatcher', 'CacheBuilderPatcher', [gamaCoreJar]],
-            ['SpiPatcher', 'SpiPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
-            ['ProjectionPatcher', 'ProjectionPatcher', [gamaCoreJar]],
-            ['MapProjectionPatcher', 'MapProjectionPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
-            ['EclipseCorePatcher', 'EclipseCorePatcher',
+            ['layers/Display3DPatcher', 'Display3DPatcher', [gamaCoreJar]],
+            ['javacompat/TypeSwitchPatcher', 'TypeSwitchPatcher', toolchainJars],
+            ['javacompat/EnumSwitchPatcher', 'EnumSwitchPatcher', toolchainJars],
+            ['projection/CrsPatcher', 'CrsPatcher', [gamaCoreJar]],
+            ['charts/ColorsPatcher', 'ColorsPatcher', [gamaCoreJar]],
+            ['stepping/SimulationRunnerPatcher', 'SimulationRunnerPatcher', [gamaApiJar]],
+            ['layers/MeshLayerPatcher', 'MeshLayerPatcher', [gamaCoreJar]],
+            ['layers/LayerManagerPatcher', 'LayerManagerPatcher', [gamaCoreJar]],
+            ['layers/ImageLayerPatcher', 'ImageLayerPatcher', [gamaCoreJar]],
+            ['javacompat/CacheBuilderPatcher', 'CacheBuilderPatcher', [gamaCoreJar]],
+            ['projection/SpiPatcher', 'SpiPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
+            ['projection/ProjectionPatcher', 'ProjectionPatcher', [gamaCoreJar]],
+            ['projection/MapProjectionPatcher', 'MapProjectionPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
+            ['workspace/EclipseCorePatcher', 'EclipseCorePatcher',
                 ["${libsDir}/eclipse-core-stubs.jar", gamaCoreJar]],
-            ['GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
-            ['StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
-            ['ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
-            ['GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]],
-            ['AscEnvelopeFixPatcher', 'AscEnvelopeFixPatcher', [gamaCoreJar]],
-            ['FontRenderContextPatcher', 'FontRenderContextPatcher', [file("${libsDir}/awt-stubs.jar")]],
-            ['AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
-            ['ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
-            ['WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
-            ['GridColorPatcher', 'GridColorPatcher', [gamaCoreJar]],
-            ['GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]],
-            ['VarValidatorNullGuardPatcher', 'VarValidatorNullGuardPatcher', [gamaApiJar]]
+            ['javacompat/GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
+            ['javacompat/StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
+            ['charts/ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
+            ['gridfile/GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]],
+            ['gridfile/AscEnvelopeFixPatcher', 'AscEnvelopeFixPatcher', [gamaCoreJar]],
+            ['charts/FontRenderContextPatcher', 'FontRenderContextPatcher', [file("${libsDir}/awt-stubs.jar")]],
+            ['charts/AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
+            ['charts/ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
+            ['runtime/WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
+            ['layers/GridColorPatcher', 'GridColorPatcher', [gamaCoreJar]],
+            ['gambuild/GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]],
+            ['gambuild/VarValidatorNullGuardPatcher', 'VarValidatorNullGuardPatcher', [gamaApiJar]]
         ]
-        patchers.each { name, cls, args ->
-            def outDir = file("$buildDir/tmp/patch_$name")
+        patchers.each { javaPath, cls, args ->
+            def outDir = file("$buildDir/tmp/${javaPath.replace('/', '_')}")
             outDir.mkdirs()
-            safeExec("Compile $name", {
+            safeExec("Compile $cls", {
                 commandLine 'javac', '--release', '21',
                     '-cp', "${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
                     '-d', outDir.absolutePath,
-                    "${projectDir}/../tools/${name}.java"
+                    "${projectDir}/../tools/patchers/${javaPath}.java"
             })
-            safeExec("Run $name", {
+            safeExec("Run $cls", {
                 commandLine(['java', '-cp',
                     "${outDir.absolutePath}:${asmJar.absolutePath}:${asmTreeJar.absolutePath}",
                     cls] + args)
@@ -248,7 +250,7 @@ tasks.register('patchGamaJars') {
 // sensor models under "models/Toy Models/Android Sensors/". Source: models in
 // src/main/assets/models/ are byte-identical copies of those library entries.
 // Implemented as a Java helper (tools/JarModelInjector.java) compiled+run at build time,
-// mirroring the existing tools/*Patcher.java pattern.
+// mirroring the existing tools/patchers/*Patcher.java pattern.
 def libraryModelsDir = file("${projectDir}/src/main/assets/models")
 def assetLibraryJar = file("${projectDir}/src/main/assets/gama.library.jar")
 def injectorOutDir = file("$buildDir/tmp/jar_model_injector")
@@ -329,8 +331,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 46
-        versionName "0.1.51"
+        versionCode 47
+        versionName "0.1.52"
     }
 
     buildTypes {
