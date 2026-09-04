@@ -30,7 +30,6 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.PopupMenu;
 
 import androidx.cardview.widget.CardView;
 import androidx.core.content.ContextCompat;
@@ -127,8 +126,7 @@ public class ExperimentActivity extends Activity {
     private boolean isLandscape = false;
 
     // Collapsible side/bottom panel (tabs + panel). Collapsed by default so the
-    // display fills the screen; the toolbar hamburger menu toggles it in both
-    // orientations.
+    // display fills the screen.
     private boolean panelsOpen = false;
 
     // Fullscreen
@@ -247,8 +245,8 @@ public class ExperimentActivity extends Activity {
         contentFrame.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
         contentFrame.addView(contentArea, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         FrameLayout.LayoutParams speedLp = new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        speedLp.setMargins(dp(12), dp(8), dp(12), 0);
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        speedLp.setMargins(dp(12), 0, dp(12), dp(8));
         contentFrame.addView(buildSpeedOverlay(), speedLp);
         root.addView(contentFrame);
 
@@ -300,16 +298,6 @@ public class ExperimentActivity extends Activity {
         toolbarContent.setPadding(dp(4), 0, dp(8), 0);
         this.toolbarContent = toolbarContent;
 
-        TextView menuBtn = new TextView(this);
-        menuBtn.setText("\u2630");
-        menuBtn.setTextSize(20);
-        menuBtn.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
-        menuBtn.setGravity(Gravity.CENTER);
-        menuBtn.setPadding(dp(10), dp(4), dp(10), dp(4));
-        menuBtn.setMinWidth(0);
-        menuBtn.setMinHeight(0);
-        menuBtn.setOnClickListener(this::showMenu);
-
         TextView backBtn = new TextView(this);
         backBtn.setText("\u2190 Back");
         backBtn.setTextSize(14);
@@ -356,8 +344,6 @@ public class ExperimentActivity extends Activity {
         themeBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
         themeBtn.setOnClickListener(v -> toggleTheme());
         toolbarContent.addView(themeBtn);
-
-        toolbarContent.addView(menuBtn);
 
         toolbar.addView(toolbarContent);
         root.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
@@ -859,7 +845,7 @@ public class ExperimentActivity extends Activity {
 
         // --- Display tools: Zoom+, Zoom-, Fit, Fullscreen ---
         String[][] tools = {
-            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
+            {"+", "+"}, {"-", "\u2212"}, {"[ ]", "\u2195"}, {"<->", "\u26F6"}
         };
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
@@ -894,22 +880,27 @@ public class ExperimentActivity extends Activity {
 
         speedOverlayContent = contentRow;
 
-        // --- Collapse handle: the slim pill left visible when the bar is
-        //     collapsed, so the user can always tap it to bring the bar back. ---
+        // --- Collapse handle: when the bar is collapsed it shrinks down to a
+        //     small floating circular dot that stays tappable to restore. ---
         TextView handle = new TextView(this);
-        handle.setText("\u2630"); // ☰
+        handle.setText("\u2699"); // ⚙ gear (distinct from the menu's hamburger)
         handle.setTextSize(16);
         handle.setTypeface(null, Typeface.BOLD);
         handle.setGravity(Gravity.CENTER);
-        handle.setPadding(dp(18), dp(6), dp(18), dp(6));
-        handle.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        handle.setTextColor(0xFFFFFFFF);
+        handle.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_circle));
         handle.setContentDescription("Show control bar");
         handle.setOnClickListener(v -> setSpeedBarCollapsed(false));
         handle.setVisibility(View.GONE);
         speedBarHandle = handle;
 
+        // Handle as a small fixed-size circular dot (dp 46).
+        LinearLayout.LayoutParams handleLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        handle.setLayoutParams(handleLp);
+
         LinearLayout stack = new LinearLayout(this);
         stack.setOrientation(LinearLayout.VERTICAL);
+        stack.setGravity(Gravity.CENTER_HORIZONTAL);
         stack.addView(contentRow);
         stack.addView(handle);
         card.addView(stack);
@@ -920,9 +911,9 @@ public class ExperimentActivity extends Activity {
         return card;
     }
 
-    /** Collapses/expands the floating control bar. When collapsed, only a slim
-     *  handle pill remains visible (tap it to restore); the full bar — speed
-     *  slider and display tools — is hidden so the sim is unobstructed. */
+    /** Collapses/expands the floating control bar. When collapsed, the whole
+     *  bar shrinks into a small floating circular dot (tap it to restore); the
+     *  speed slider and display tools are hidden so the sim is unobstructed. */
     private void setSpeedBarCollapsed(boolean collapsed) {
         speedBarCollapsed = collapsed;
         if (speedOverlayContent != null) {
@@ -931,11 +922,37 @@ public class ExperimentActivity extends Activity {
         if (speedBarHandle != null) {
             speedBarHandle.setVisibility(collapsed ? View.VISIBLE : View.GONE);
         }
-    }
-
-    /** Convenience toggle for the menu. */
-    private void toggleSpeedOverlay() {
-        setSpeedBarCollapsed(!speedBarCollapsed);
+        if (speedOverlay != null && speedOverlay.getLayoutParams() != null) {
+            ViewGroup.LayoutParams lp = speedOverlay.getLayoutParams();
+            lp.width = collapsed ? ViewGroup.LayoutParams.WRAP_CONTENT
+                    : ViewGroup.LayoutParams.MATCH_PARENT;
+            if (lp instanceof FrameLayout.LayoutParams) {
+                // Collapsed dot sits bottom-right (Gravity.END); expanded bar centers.
+                ((FrameLayout.LayoutParams) lp).gravity = collapsed
+                        ? Gravity.BOTTOM | Gravity.END
+                        : Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+            }
+            speedOverlay.setLayoutParams(lp);
+            if (speedOverlay instanceof MaterialCardView) {
+                MaterialCardView card = (MaterialCardView) speedOverlay;
+                if (collapsed) {
+                    // Collapse tracks: the card becomes a bare floating dot. Drop the
+                    // card's near-opaque fill + elevation so the dot stays transparent
+                    // (just the translucent bg_circle), matching the expanded bar's
+                    // see-through look instead of an opaque blob.
+                    card.setCardBackgroundColor(0x00000000);
+                    card.setCardElevation(dp(0));
+                    card.setStrokeWidth(dp(0));
+                    card.setContentPadding(dp(2), dp(2), dp(2), dp(2));
+                } else {
+                    card.setCardBackgroundColor(thc(0xF7FFFFFF, 0xF2262735));
+                    card.setCardElevation(dp(8));
+                    card.setStrokeColor(thc(0x22000000, 0x55FFFFFF));
+                    card.setStrokeWidth(dp(1));
+                    card.setContentPadding(dp(12), dp(6), dp(10), dp(6));
+                }
+            }
+        }
     }
 
     private void showPanel(int position) {
@@ -950,7 +967,7 @@ public class ExperimentActivity extends Activity {
             if (displayColumnLp != null) displayColumnLp.weight = displayTab ? (openPanel ? 3f : 1f) : 2f;
         } else {
             // Portrait: the panels follow the selected tab unless the user hid them
-            // via the hamburger menu (panelsOpen), which lets the display fill up.
+            // (panelsOpen), which lets the display fill up.
             // The tab strip (Display/Console/Layers/Params) is part of the panel
             // chrome, so it collapses with the panels too.
             if (tabLayout != null) tabLayout.setVisibility(panelsOpen ? View.GONE : View.VISIBLE);
@@ -965,13 +982,6 @@ public class ExperimentActivity extends Activity {
         displayColumn.setVisibility(View.VISIBLE);
 
         displayColumn.requestLayout();
-    }
-
-    /** Toggles the panels (side column in landscape, bottom panel in portrait).
-     *  Works from the toolbar hamburger menu in both orientations. */
-    private void togglePanels() {
-        panelsOpen = !panelsOpen;
-        showPanel(tabLayout.getSelectedTabPosition());
     }
 
     private void refreshLayerList() {
@@ -1252,28 +1262,6 @@ public class ExperimentActivity extends Activity {
         }
     }
 
-    /** Shows the toolbar hamburger menu. The same menu is available in portrait
-     *  and landscape since the button lives in the shared toolbar content. */
-    private void showMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(this, anchor);
-        menu.getMenu().add(0, 1, 0, panelsOpen ? "Show panels" : "Hide panels");
-        menu.getMenu().add(0, 2, 1, isDarkTheme ? "Light theme" : "Dark theme");
-        menu.getMenu().add(0, 3, 2, isFullscreen ? "Exit fullscreen" : "Fullscreen");
-        menu.getMenu().add(0, 5, 3, speedBarCollapsed ? "Show control bar" : "Hide control bar");
-        menu.getMenu().add(0, 4, 4, "Back to models");
-        menu.setOnMenuItemClickListener(item -> {
-            switch (item.getItemId()) {
-                case 1: togglePanels(); break;
-                case 2: toggleTheme(); break;
-                case 3: toggleFullscreen(); break;
-                case 5: toggleSpeedOverlay(); break;
-                case 4: finish(); break;
-            }
-            return true;
-        });
-        menu.show();
-    }
-
     /** Expands the display so it fills the whole phone screen, hiding the app
      *  toolbar, tabs, bottom panel, FABs and system bars. Tapping again restores. */
     private void toggleFullscreen() {
@@ -1386,8 +1374,10 @@ public class ExperimentActivity extends Activity {
         if (logView != null) logView.setBackgroundColor(thc(0xFF0D0D0D, 0xFF000000));
         // Floating control bar (theme-aware so text stays readable in both themes).
         if (speedOverlay instanceof MaterialCardView) {
-            ((MaterialCardView) speedOverlay).setCardBackgroundColor(thc(0xF7FFFFFF, 0xF2262735));
-            ((MaterialCardView) speedOverlay).setStrokeColor(thc(0x22000000, 0x55FFFFFF));
+            if (!speedBarCollapsed) {
+                ((MaterialCardView) speedOverlay).setCardBackgroundColor(thc(0xF7FFFFFF, 0xF2262735));
+                ((MaterialCardView) speedOverlay).setStrokeColor(thc(0x22000000, 0x55FFFFFF));
+            }
         }
         if (speedLabel != null) speedLabel.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
         if (fullscreenBtn != null) {
