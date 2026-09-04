@@ -172,7 +172,6 @@ public class ExperimentActivity extends Activity {
     private Slider speedOverlaySlider;
     private TextView speedLabel;
     private boolean speedBarCollapsed = false;
-    private TextView speedBarToggle;
     private java.util.List<TextView> speedToolButtons = new java.util.ArrayList<>();
 
     // Redirect target for System.out/System.err, stored so onDestroy can restore
@@ -807,28 +806,6 @@ public class ExperimentActivity extends Activity {
         card.setStrokeColor(thc(0x22000000, 0x55FFFFFF));
         card.setStrokeWidth(dp(1));
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-
-// --- Collapse toggle (handle): always visible so the bar can always
-        //    be restored, even in fullscreen. Collapsing hides just the
-        //    controls below while the slim handle stays tappable. ---
-        TextView toggle = new TextView(this);
-        toggle.setText("\u2630"); // ☰ expanded (collapsed shows ▸)
-        toggle.setContentDescription("Hide control bar");
-        toggle.setTextSize(14);
-        toggle.setTypeface(null, Typeface.BOLD);
-        toggle.setGravity(Gravity.CENTER);
-        toggle.setPadding(dp(8), dp(4), dp(8), dp(4));
-        toggle.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
-        toggle.setOnClickListener(v -> setSpeedBarCollapsed(!speedBarCollapsed));
-        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
-        toggleLp.setMargins(0, 0, dp(6), 0);
-        speedToolButtons.add(toggle);
-        row.addView(toggle, toggleLp);
-        speedBarToggle = toggle;
-
         LinearLayout contentRow = new LinearLayout(this);
         contentRow.setOrientation(LinearLayout.HORIZONTAL);
         contentRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -848,14 +825,15 @@ public class ExperimentActivity extends Activity {
         slider.setValueTo(500);
         slider.setValue(50);
         slider.setStepSize(1);
-        slider.setTrackHeight(dp(3));
-        slider.setThumbRadius(dp(8));
+        slider.setTrackHeight(dp(6));
+        slider.setThumbRadius(dp(10));
         slider.setContentDescription("Simulation speed");
         slider.setLabelFormatter(value -> ((int) value) + " ms");
         slider.setThumbTintList(android.content.res.ColorStateList.valueOf(
                 ContextCompat.getColor(this, R.color.primary)));
         slider.setTrackActiveTintList(android.content.res.ColorStateList.valueOf(
                 ContextCompat.getColor(this, R.color.primary)));
+        slider.setMinimumWidth(dp(120));
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
         sliderLp.setMargins(dp(8), 0, dp(8), 0);
         slider.setLayoutParams(sliderLp);
@@ -909,9 +887,8 @@ public class ExperimentActivity extends Activity {
             contentRow.addView(btn, btnLp);
         }
 
-        row.addView(contentRow, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        card.addView(contentRow);
         speedOverlayContent = contentRow;
-        card.addView(row);
 
         speedOverlayValue = value;
         speedOverlaySlider = slider;
@@ -924,12 +901,8 @@ public class ExperimentActivity extends Activity {
      *  handle pill always stays visible). Used by both the handle and menu. */
     private void setSpeedBarCollapsed(boolean collapsed) {
         speedBarCollapsed = collapsed;
-        if (speedOverlayContent != null) {
-            speedOverlayContent.setVisibility(collapsed ? View.GONE : View.VISIBLE);
-        }
-        if (speedBarToggle != null) {
-            speedBarToggle.setText(collapsed ? "\u25B8" : "\u2630"); // ▸ / ☰
-            speedBarToggle.setContentDescription(collapsed ? "Show control bar" : "Hide control bar");
+        if (speedOverlay != null) {
+            speedOverlay.setVisibility(collapsed ? View.GONE : View.VISIBLE);
         }
     }
 
