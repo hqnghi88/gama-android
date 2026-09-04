@@ -949,3 +949,40 @@ Params-tab speed slider + legacy display toolbar. Done as a UI/UX change; no pat
 ### Pending (unchanged)
 - Remaining 12 patchers still in build.gradle + sources (see prior sessions).
 - Release + next version bump on hold per user.
+
+---
+
+## Session 13 — Control bar: readable theme colors + collapse toggle (UI)
+
+Two UI follow-ups to the Session 12 single control bar.
+
+### 1. Readable text in both themes (`ExperimentActivity.buildSpeedOverlay`)
+The bug: the card background was hardcoded near-white (`0xE6FFFFFF`) while text used
+`thc(light, dark)` — so in dark theme the card stayed white-ish but text flipped light
+gray, making it illegible.
+- Card background now theme-aware: `thc(0xF7FFFFFF, 0xF2262735)` (near-opaque white in
+  light, near-opaque dark blue-gray in dark); stroke `thc(0x22000000, 0x55FFFFFF)`.
+- Label / tool buttons / toggle: `thc(0xFF333333, 0xFFE6E6E6)` (dark-gray on white, near-white
+  on dark). Value text: `thc(0xFF006847, 0xFF81C784)` (dark-green / light-green).
+- Slider tinted with `R.color.primary` for both thumb + active track.
+- `applyThemeColors()` now re-skins the bar (card bg/stroke, `speedLabel`, `speedOverlayValue`,
+  `fullscreenBtn`, all `speedToolButtons`) on theme toggle; `onConfigurationChanged` exit-fullscreen
+  resets `fullscreenBtn` to the matching color.
+
+### 2. Collapsible control bar (hide style)
+- Added an always-visible **handle** (`☰`, a pill) at the bar's left edge. Tapping it collapses
+  the controls (`contentRow` → GONE), leaving just the slim `☰`/`▸` handle so the sim stays
+  unobstructed while the bar is still one tap away (works in fullscreen too).
+- Field `speedOverlayContent` holds the control row; `setSpeedBarCollapsed(boolean)` toggles it
+  and flips handle glyph/content-desc; `toggleSpeedOverlay()` is the menu convenience.
+- Toolbar hamburger menu gained "Hide/Show control bar" item (uses `speedBarCollapsed`).
+
+### Verification status
+- `./gradlew app:assembleDebug` (Java 25) → **BUILD SUCCESS**.
+- Compiled `ExperimentActivity.class` and installed APK contain the new code (string extraction
+  confirmed `speedBarCollapsed`/content-desc literals in the dex/class).
+- **On-device visual check NOT possible this session**: the emulator was severely degraded
+  (systemui + launcher ANRs, stuck screen-sleep state persisting even after reboot; window dumps
+  showed only `ModelNavigatorActivity` with an empty/not-rendering app window). The real device /
+  a healthy emulator should be used to confirm rendering.
+- Committed to `gama-android` (`14900bf`).
