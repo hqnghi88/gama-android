@@ -163,6 +163,12 @@ public class ExperimentActivity extends Activity {
     private LinearLayout paramList;
     private final List<Runnable> paramRefreshers = new ArrayList<>();
 
+    // Floating simulation-speed control overlaid on top of the display, always
+    // visible in both orientations and in fullscreen.
+    private View speedOverlay;
+    private TextView speedOverlayValue;
+    private Slider speedOverlaySlider;
+
     // Redirect target for System.out/System.err, stored so onDestroy can restore
     // the originals. Capturing the live System.out each launch chained the
     // anonymous OutputStreams together, and each stream pinned a destroyed
@@ -235,6 +241,10 @@ public class ExperimentActivity extends Activity {
         contentFrame = new FrameLayout(this);
         contentFrame.setLayoutParams(new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
         contentFrame.addView(contentArea, new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
+        FrameLayout.LayoutParams speedLp = new FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        speedLp.setMargins(dp(12), dp(8), dp(12), 0);
+        contentFrame.addView(buildSpeedOverlay(), speedLp);
         root.addView(contentFrame);
 
         isLandscape = getResources().getConfiguration().orientation
@@ -437,23 +447,9 @@ public class ExperimentActivity extends Activity {
         displayToolbar.setVisibility(View.GONE);
         this.displayToolbar = displayToolbar;
 
-        View toolbarSpacer = new View(this);
-        displayToolbar.addView(toolbarSpacer, new LinearLayout.LayoutParams(0, 0, 1f));
-
-        String[][] tools = {
-            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
-        };
-        for (String[] tool : tools) {
-            TextView btn = new TextView(this);
-            btn.setText(" " + tool[0] + " ");
-            btn.setTextColor(thc(0xFF555555, 0xFFAAAAAA));
-            btn.setTextSize(11);
-            btn.setPadding(dp(6), dp(4), dp(6), dp(4));
-            btn.setGravity(Gravity.CENTER);
-            btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
-            if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
-            displayToolbar.addView(btn);
-        }
+        // Display tools (Zoom+/Zoom-/Fit/Fullscreen) now live in the floating
+        // consolidated control bar (buildSpeedOverlay); this legacy toolbar stays
+        // empty to avoid duplicate controls.
         displayToolbar.setTag("displayToolbar");
         displayColumn.addView(displayToolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
@@ -788,56 +784,60 @@ public class ExperimentActivity extends Activity {
         paramScroll.addView(paramListLayout);
         paramList = paramListLayout;
 
-        addSpeedCard(paramList);
-
         paramsPanel.addView(paramScroll, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
         bottomPanel.addView(paramsPanel, new LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT));
     }
 
-    /** Rebuilds the simulation-speed card at the top of the Params list.
-     *  Must be re-applied after ParamsPanelBuilder.populate() clears the list. */
-    private void addSpeedCard(LinearLayout list) {
-        if (list == null) return;
-        MaterialCardView speedCard = new MaterialCardView(this);
-        speedCard.setRadius(dp(8));
-        speedCard.setCardElevation(dp(1));
-        speedCard.setContentPadding(dp(16), dp(12), dp(16), dp(12));
-        speedCard.setCardBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
-        LinearLayout.LayoutParams speedCardLp = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
-        speedCardLp.setMargins(0, dp(4), 0, dp(4));
-        speedCard.setLayoutParams(speedCardLp);
+    /** Builds the floating consolidated control bar overlaid on top of the display.
+     *  One bar holds the speed slider and the display tools (zoom in/out, fit,
+     *  fullscreen) so they are always one tap away in portrait, landscape and
+     *  fullscreen. Returns a themed, elevated card. */
+    private View buildSpeedOverlay() {
+        MaterialCardView card = new MaterialCardView(this);
+        card.setRadius(dp(14));
+        card.setCardElevation(dp(6));
+        card.setContentPadding(dp(10), dp(6), dp(8), dp(6));
+        card.setCardBackgroundColor(0xE6FFFFFF);
+        card.setStrokeColor(thc(0x22000000, 0x33FFFFFF));
+        card.setStrokeWidth(dp(1));
 
-        LinearLayout speedRow = new LinearLayout(this);
-        speedRow.setOrientation(LinearLayout.HORIZONTAL);
-        speedRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView speedLabel = new TextView(this);
-        speedLabel.setText("Speed");
-        speedLabel.setTextSize(14);
-        speedLabel.setTextColor(thc(0xFF333333, thc(0xFFE0E0E0, 0xFF424242)));
-        speedLabel.setTypeface(null, Typeface.BOLD);
-        speedLabel.setLayoutParams(new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
-        speedRow.addView(speedLabel);
+        // --- Speed section ---
+        TextView label = new TextView(this);
+        label.setText("Speed");
+        label.setTextSize(13);
+        label.setTextColor(thc(0xFF555555, 0xFFBBBBBB));
+        label.setTypeface(null, Typeface.BOLD);
+        label.setLayoutParams(new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
+        row.addView(label);
 
-        TextView speedValue = new TextView(this);
-        speedValue.setText("50 ms");
-        speedValue.setTextSize(12);
-        speedValue.setTextColor(thc(0xFF006847, 0xFF2E7D32));
-        speedValue.setTypeface(Typeface.MONOSPACE);
-        speedRow.addView(speedValue);
-        speedCard.addView(speedRow);
+        Slider slider = new Slider(this);
+        slider.setValueFrom(1);
+        slider.setValueTo(500);
+        slider.setValue(50);
+        slider.setStepSize(1);
+        slider.setTrackHeight(dp(3));
+        slider.setThumbRadius(dp(8));
+        slider.setContentDescription("Simulation speed");
+        slider.setLabelFormatter(value -> ((int) value) + " ms");
+        LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
+        sliderLp.setMargins(dp(8), 0, dp(8), 0);
+        slider.setLayoutParams(sliderLp);
 
-        Slider speedSlider = new Slider(this);
-        speedSlider.setValueFrom(1);
-        speedSlider.setValueTo(500);
-        speedSlider.setValue(50);
-        speedSlider.setStepSize(1);
-        speedSlider.setTrackHeight(dp(3));
-        speedSlider.setThumbRadius(dp(8));
-        speedSlider.setContentDescription("Simulation speed");
-        speedSlider.addOnChangeListener((slider, value, fromUser) -> {
-            int ms = (int) value;
-            speedValue.setText(ms + " ms");
+        TextView value = new TextView(this);
+        value.setText("50 ms");
+        value.setTextSize(12);
+        value.setTextColor(thc(0xFF006847, 0xFF2E7D32));
+        value.setTypeface(Typeface.MONOSPACE);
+        value.setMinWidth(dp(44));
+        value.setGravity(Gravity.END);
+
+        slider.addOnChangeListener((s, val, fromUser) -> {
+            int ms = (int) val;
+            value.setText(ms + " ms");
             if (currentController != null) {
                 try {
                     setSimulationSpeedMs(currentController, ms);
@@ -846,8 +846,42 @@ public class ExperimentActivity extends Activity {
                 }
             }
         });
-        speedCard.addView(speedSlider);
-        list.addView(speedCard);
+
+        row.addView(slider, sliderLp);
+        row.addView(value);
+        View divider = new View(this);
+        divider.setBackgroundColor(thc(0x22000000, 0x33FFFFFF));
+        LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(dp(1), dp(24));
+        dividerLp.setMargins(dp(6), 0, dp(6), 0);
+        divider.setLayoutParams(dividerLp);
+        row.addView(divider);
+
+        // --- Display tools: Zoom+, Zoom-, Fit, Fullscreen ---
+        String[][] tools = {
+            {"Zoom+", "+"}, {"Zoom-", "\u2212"}, {"Fit", "\u2195"}, {"Fullscreen", "\u26F6"}
+        };
+        for (String[] tool : tools) {
+            TextView btn = new TextView(this);
+            btn.setText(tool[0]);
+            btn.setTextColor(thc(0xFF555555, 0xFFAAAAAA));
+            btn.setTextSize(11);
+            btn.setGravity(Gravity.CENTER);
+            btn.setPadding(dp(8), dp(6), dp(8), dp(6));
+            btn.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+            btn.setOnClickListener(v -> handleDisplayAction(tool[1]));
+            if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
+            LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+            btnLp.setMargins(dp(3), 0, dp(3), 0);
+            row.addView(btn, btnLp);
+        }
+
+        card.addView(row);
+
+        speedOverlayValue = value;
+        speedOverlaySlider = slider;
+        speedOverlay = card;
+        card.setVisibility(View.VISIBLE);
+        return card;
     }
 
     private void showPanel(int position) {
@@ -1112,8 +1146,6 @@ public class ExperimentActivity extends Activity {
         if (displayTabBar.getChildCount() > 1) {
             displayTabScroll.setVisibility(View.VISIBLE);
         }
-        View dt = displayColumn.findViewWithTag("displayToolbar");
-        if (dt != null) dt.setVisibility(View.VISIBLE);
     }
 
     private void selectDisplay(String displayName) {
@@ -2137,8 +2169,6 @@ public class ExperimentActivity extends Activity {
                         paramRefreshers.clear();
                         com.gama.nativeapp.gui.ParamsPanelBuilder.populate(
                                 this, paramList, esp, paramRefreshers);
-                        // populate() clears the list, so re-append the speed slider.
-                        addSpeedCard(paramList);
                     });
                 }
             } catch (Exception e) {
