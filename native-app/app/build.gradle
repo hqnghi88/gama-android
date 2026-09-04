@@ -2,6 +2,18 @@ plugins {
     id 'com.android.application'
 }
 
+// ASM toolchain for patching GAMA jars. Declared as a resolvable configuration rather
+// than a hardcoded Gradle-cache path so fresh CI runners (and --offline builds) resolve it
+// consistently from the centralized dependency repositories.
+configurations {
+    asmDeps
+}
+dependencies {
+    asmDeps 'org.ow2.asm:asm:9.6'
+    asmDeps 'org.ow2.asm:asm-tree:9.6'
+    asmDeps 'org.ow2.asm:asm-util:9.6'
+}
+
 // Inject ExecOperations so the patchGamaJars task can run external processes (Project#exec
 // was removed in Gradle 9.0; ExecOperations is the supported execution-time replacement).
 interface InjectedExecOps {
@@ -162,10 +174,11 @@ tasks.register('patchGamaJars') {
         })
 
         // 4) ASM patchers: compile each, then run it, never failing the build.
-        def asmJar = fileTree("${System.getProperty('user.home')}/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm/9.6")
-            .matching { include '**/*.jar' }.files.first()
-        def asmTreeJar = fileTree("${System.getProperty('user.home')}/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm-tree/9.6")
-            .matching { include '**/*.jar' }.files.first()
+        def asmJar = configurations.asmDeps.files.find { it.name.startsWith('asm-9.6') && it.name.endsWith('.jar') }
+        def asmTreeJar = configurations.asmDeps.files.find { it.name.startsWith('asm-tree-9.6') && it.name.endsWith('.jar') }
+        if (asmJar == null || asmTreeJar == null) {
+            throw new GradleException("Could not resolve org.ow2.asm:asm:9.6 / asm-tree:9.6 from asmDeps configuration")
+        }
 
         def gamaApiJar = resolveBundle('gama.api')
         def gamaCoreJar = resolveBundle('gama.core')
