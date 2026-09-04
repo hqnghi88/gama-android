@@ -871,3 +871,48 @@ Expected frame instruction`.
 - Third-party jar patchers (Spi, MapProjection, GuavaJreCompat, StaxNewFactory,
   ColorBrewer, FontRenderContext, AwtFontMetrics) cannot be fixed in GAMA source; decide
   separately.
+
+## Session 11 (2026-09-04) — Release v0.1.55 (15 patchers eliminated + ASM CI fix)
+
+### What shipped
+- **v0.1.55** published via the `auto-release` GitHub workflow (JDK 21, Gradle 9.1.0, AGP 9.0.0).
+  Tag `v0.1.55` → APK `app-debug.apk` attached.
+- Total ASM patchers removed this session: **15** (Display3D, Colors, LayerManager, ImageLayer,
+  MeshLayer, GridColor, CacheBuilder, ChartOutput, Crs, Projection, GridFileFallback,
+  SimulationRunner, VarValidator, GamlModelBuilder). Effects moved into engine source
+  (fork commits `ea6b07479`, `12c6950c1`). Remaining source patchers: ParallelRunner,
+  WorldGlobal, EclipseCore. Remaining third-party jar patchers: Spi, MapProjection,
+  GuavaJreCompat, StaxNewFactory, ColorBrewer, FontRenderContext, AwtFontMetrics.
+
+### CI risk discovered + fixed
+- `app/libs` is gitignored; CI downloads engine jars from the `native-app-deps` **release
+  asset**. That asset was stale (2026-08-22, pre-Session engine) and lacked the new
+  `gama.extension.dataframe` bundle → `patchGamaJars` crashed with
+  "Cannot access first() element from an empty Iterable".
+- **Fix**: regenerated `native-app-deps.tar.gz` from the verified local `app/libs`
+  (306 MB, contains all 29 GAMA/GAML bundles at 202608032313/202609032346 + dataframe) and
+  uploaded it (`gh release upload native-app-deps ... --clobber`).
+- Second CI failure: `patchGamaJars` resolved ASM from a hardcoded Gradle-cache path
+  (`~/.gradle/caches/modules-2/files-2.1/org.ow2.asm/asm/9.6`) that fresh runners don't have.
+  **Fix** (`53275c0`): added an `asmDeps` project configuration
+  (`org.ow2.asm:asm/asm-tree/asm-util:9.6`) and use `configurations.asmDeps.files`.
+  Verified: with ASM cache dir removed, networked build resolves it fine.
+
+### Release workflow notes
+- Release is **tag-triggered** (`on: push: tags: 'v*'`); can't re-push same tag to re-trigger,
+  so to rebuild a failed release with fixes: delete+recreate the tag at the fixed commit
+  (`git tag -d`, `git push --delete`, `git tag -a`, `git push`).
+- CI-build APK (160 MB) is smaller than local (183 MB) but contains the *same* verified fresh
+  engine jars (confirmed via log: `Downgraded class versions in gama.api/core_...202609032346`,
+  dataframe bundle present and TypeSwitch-patched).
+
+### Build status
+Local `./gradlew app:patchGamaJars app:assembleDebug` (Java 25) → **BUILD SUCCESS**; all 8
+active patchers run OK. CI release run → **success in 5m36s**.
+
+### To do (next)
+- Drive a functional model run on emulator to smoke-test GridColor/Colors/LayerManager engine
+  source fixes (deferred from Session 10).
+- Evaluate WorldGlobal (codegen), ParallelRunner (gama.api threading), EclipseCore for source
+  migration; decide third-party patcher fate.
+- Next version bump 0.1.56 after model-run verification.
