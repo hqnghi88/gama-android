@@ -168,7 +168,7 @@ public class ExperimentActivity extends Activity {
     // and includes a collapse toggle so the user can hide the bar to view the sim.
     private View speedOverlay;
     private LinearLayout speedOverlayContent;
-    private TextView speedOverlayValue;
+    private TextView speedBarHandle;
     private Slider speedOverlaySlider;
     private TextView speedLabel;
     private boolean speedBarCollapsed = false;
@@ -838,17 +838,8 @@ public class ExperimentActivity extends Activity {
         sliderLp.setMargins(dp(8), 0, dp(8), 0);
         slider.setLayoutParams(sliderLp);
 
-        TextView value = new TextView(this);
-        value.setText("50 ms");
-        value.setTextSize(12);
-        value.setTextColor(thc(0xFF006847, 0xFF81C784));
-        value.setTypeface(Typeface.MONOSPACE);
-        value.setMinWidth(dp(44));
-        value.setGravity(Gravity.END);
-
         slider.addOnChangeListener((s, val, fromUser) -> {
             int ms = (int) val;
-            value.setText(ms + " ms");
             if (currentController != null) {
                 try {
                     setSimulationSpeedMs(currentController, ms);
@@ -859,7 +850,6 @@ public class ExperimentActivity extends Activity {
         });
 
         contentRow.addView(slider, sliderLp);
-        contentRow.addView(value);
         View divider = new View(this);
         divider.setBackgroundColor(thc(0x22000000, 0x55FFFFFF));
         LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(dp(1), dp(24));
@@ -887,22 +877,59 @@ public class ExperimentActivity extends Activity {
             contentRow.addView(btn, btnLp);
         }
 
-        card.addView(contentRow);
+        // --- Hide toolbar button: collapses the whole bar away. ---
+        TextView hideBtn = new TextView(this);
+        hideBtn.setText("\u2715"); // ✕
+        hideBtn.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
+        hideBtn.setTextSize(13);
+        hideBtn.setGravity(Gravity.CENTER);
+        hideBtn.setPadding(dp(6), dp(4), dp(6), dp(4));
+        hideBtn.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        hideBtn.setContentDescription("Hide control bar");
+        hideBtn.setOnClickListener(v -> setSpeedBarCollapsed(true));
+        LinearLayout.LayoutParams hideLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        hideLp.setMargins(dp(4), 0, 0, 0);
+        speedToolButtons.add(hideBtn);
+        contentRow.addView(hideBtn, hideLp);
+
         speedOverlayContent = contentRow;
 
-        speedOverlayValue = value;
+        // --- Collapse handle: the slim pill left visible when the bar is
+        //     collapsed, so the user can always tap it to bring the bar back. ---
+        TextView handle = new TextView(this);
+        handle.setText("\u2630"); // ☰
+        handle.setTextSize(16);
+        handle.setTypeface(null, Typeface.BOLD);
+        handle.setGravity(Gravity.CENTER);
+        handle.setPadding(dp(18), dp(6), dp(18), dp(6));
+        handle.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        handle.setContentDescription("Show control bar");
+        handle.setOnClickListener(v -> setSpeedBarCollapsed(false));
+        handle.setVisibility(View.GONE);
+        speedBarHandle = handle;
+
+        LinearLayout stack = new LinearLayout(this);
+        stack.setOrientation(LinearLayout.VERTICAL);
+        stack.addView(contentRow);
+        stack.addView(handle);
+        card.addView(stack);
+
         speedOverlaySlider = slider;
         speedOverlay = card;
         card.setVisibility(View.VISIBLE);
         return card;
     }
 
-    /** Collapses/expands the floating control bar's controls (the collapse
-     *  handle pill always stays visible). Used by both the handle and menu. */
+    /** Collapses/expands the floating control bar. When collapsed, only a slim
+     *  handle pill remains visible (tap it to restore); the full bar — speed
+     *  slider and display tools — is hidden so the sim is unobstructed. */
     private void setSpeedBarCollapsed(boolean collapsed) {
         speedBarCollapsed = collapsed;
-        if (speedOverlay != null) {
-            speedOverlay.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        if (speedOverlayContent != null) {
+            speedOverlayContent.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        }
+        if (speedBarHandle != null) {
+            speedBarHandle.setVisibility(collapsed ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -1363,7 +1390,6 @@ public class ExperimentActivity extends Activity {
             ((MaterialCardView) speedOverlay).setStrokeColor(thc(0x22000000, 0x55FFFFFF));
         }
         if (speedLabel != null) speedLabel.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
-        if (speedOverlayValue != null) speedOverlayValue.setTextColor(thc(0xFF006847, 0xFF81C784));
         if (fullscreenBtn != null) {
             fullscreenBtn.setTextColor(isFullscreen
                     ? thc(0xFF006847, 0xFF81C784)
