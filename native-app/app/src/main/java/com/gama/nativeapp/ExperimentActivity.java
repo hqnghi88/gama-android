@@ -163,11 +163,17 @@ public class ExperimentActivity extends Activity {
     private LinearLayout paramList;
     private final List<Runnable> paramRefreshers = new ArrayList<>();
 
-    // Floating simulation-speed control overlaid on top of the display, always
-    // visible in both orientations and in fullscreen.
+    // Floating simulation-speed + display-tools control overlaid on top of the
+    // display. Holds themed text views so the bar can re-skin on theme toggle,
+    // and includes a collapse toggle so the user can hide the bar to view the sim.
     private View speedOverlay;
+    private LinearLayout speedOverlayContent;
     private TextView speedOverlayValue;
     private Slider speedOverlaySlider;
+    private TextView speedLabel;
+    private boolean speedBarCollapsed = false;
+    private TextView speedBarToggle;
+    private java.util.List<TextView> speedToolButtons = new java.util.ArrayList<>();
 
     // Redirect target for System.out/System.err, stored so onDestroy can restore
     // the originals. Capturing the live System.out each launch chained the
@@ -278,7 +284,7 @@ public class ExperimentActivity extends Activity {
             View decor = getWindow().getDecorView();
             decor.setSystemUiVisibility(0);
             if (fullscreenBtn != null) {
-                fullscreenBtn.setTextColor(thc(0xFFAAAAAA, 0xFF999999));
+                fullscreenBtn.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
             }
         }
         applyOrientation();
@@ -795,24 +801,47 @@ public class ExperimentActivity extends Activity {
     private View buildSpeedOverlay() {
         MaterialCardView card = new MaterialCardView(this);
         card.setRadius(dp(14));
-        card.setCardElevation(dp(6));
-        card.setContentPadding(dp(10), dp(6), dp(8), dp(6));
-        card.setCardBackgroundColor(0xE6FFFFFF);
-        card.setStrokeColor(thc(0x22000000, 0x33FFFFFF));
+        card.setCardElevation(dp(8));
+        card.setContentPadding(dp(12), dp(6), dp(10), dp(6));
+        card.setCardBackgroundColor(thc(0xF7FFFFFF, 0xF2262735));
+        card.setStrokeColor(thc(0x22000000, 0x55FFFFFF));
         card.setStrokeWidth(dp(1));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        // --- Speed section ---
+// --- Collapse toggle (handle): always visible so the bar can always
+        //    be restored, even in fullscreen. Collapsing hides just the
+        //    controls below while the slim handle stays tappable. ---
+        TextView toggle = new TextView(this);
+        toggle.setText("\u2630"); // ☰ expanded (collapsed shows ▸)
+        toggle.setContentDescription("Hide control bar");
+        toggle.setTextSize(14);
+        toggle.setTypeface(null, Typeface.BOLD);
+        toggle.setGravity(Gravity.CENTER);
+        toggle.setPadding(dp(8), dp(4), dp(8), dp(4));
+        toggle.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        toggle.setOnClickListener(v -> setSpeedBarCollapsed(!speedBarCollapsed));
+        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
+        toggleLp.setMargins(0, 0, dp(6), 0);
+        speedToolButtons.add(toggle);
+        row.addView(toggle, toggleLp);
+        speedBarToggle = toggle;
+
+        LinearLayout contentRow = new LinearLayout(this);
+        contentRow.setOrientation(LinearLayout.HORIZONTAL);
+        contentRow.setGravity(Gravity.CENTER_VERTICAL);
+
+         // --- Speed section ---
         TextView label = new TextView(this);
         label.setText("Speed");
         label.setTextSize(13);
-        label.setTextColor(thc(0xFF555555, 0xFFBBBBBB));
+        label.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
         label.setTypeface(null, Typeface.BOLD);
         label.setLayoutParams(new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
-        row.addView(label);
+        speedLabel = label;
+        contentRow.addView(label);
 
         Slider slider = new Slider(this);
         slider.setValueFrom(1);
@@ -823,6 +852,10 @@ public class ExperimentActivity extends Activity {
         slider.setThumbRadius(dp(8));
         slider.setContentDescription("Simulation speed");
         slider.setLabelFormatter(value -> ((int) value) + " ms");
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.primary)));
+        slider.setTrackActiveTintList(android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.primary)));
         LinearLayout.LayoutParams sliderLp = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
         sliderLp.setMargins(dp(8), 0, dp(8), 0);
         slider.setLayoutParams(sliderLp);
@@ -830,7 +863,7 @@ public class ExperimentActivity extends Activity {
         TextView value = new TextView(this);
         value.setText("50 ms");
         value.setTextSize(12);
-        value.setTextColor(thc(0xFF006847, 0xFF2E7D32));
+        value.setTextColor(thc(0xFF006847, 0xFF81C784));
         value.setTypeface(Typeface.MONOSPACE);
         value.setMinWidth(dp(44));
         value.setGravity(Gravity.END);
@@ -847,14 +880,14 @@ public class ExperimentActivity extends Activity {
             }
         });
 
-        row.addView(slider, sliderLp);
-        row.addView(value);
+        contentRow.addView(slider, sliderLp);
+        contentRow.addView(value);
         View divider = new View(this);
-        divider.setBackgroundColor(thc(0x22000000, 0x33FFFFFF));
+        divider.setBackgroundColor(thc(0x22000000, 0x55FFFFFF));
         LinearLayout.LayoutParams dividerLp = new LinearLayout.LayoutParams(dp(1), dp(24));
         dividerLp.setMargins(dp(6), 0, dp(6), 0);
         divider.setLayoutParams(dividerLp);
-        row.addView(divider);
+        contentRow.addView(divider);
 
         // --- Display tools: Zoom+, Zoom-, Fit, Fullscreen ---
         String[][] tools = {
@@ -863,7 +896,7 @@ public class ExperimentActivity extends Activity {
         for (String[] tool : tools) {
             TextView btn = new TextView(this);
             btn.setText(tool[0]);
-            btn.setTextColor(thc(0xFF555555, 0xFFAAAAAA));
+            btn.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
             btn.setTextSize(11);
             btn.setGravity(Gravity.CENTER);
             btn.setPadding(dp(8), dp(6), dp(8), dp(6));
@@ -872,9 +905,12 @@ public class ExperimentActivity extends Activity {
             if ("\u26F6".equals(tool[1])) fullscreenBtn = btn;
             LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT);
             btnLp.setMargins(dp(3), 0, dp(3), 0);
-            row.addView(btn, btnLp);
+            speedToolButtons.add(btn);
+            contentRow.addView(btn, btnLp);
         }
 
+        row.addView(contentRow, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        speedOverlayContent = contentRow;
         card.addView(row);
 
         speedOverlayValue = value;
@@ -882,6 +918,24 @@ public class ExperimentActivity extends Activity {
         speedOverlay = card;
         card.setVisibility(View.VISIBLE);
         return card;
+    }
+
+    /** Collapses/expands the floating control bar's controls (the collapse
+     *  handle pill always stays visible). Used by both the handle and menu. */
+    private void setSpeedBarCollapsed(boolean collapsed) {
+        speedBarCollapsed = collapsed;
+        if (speedOverlayContent != null) {
+            speedOverlayContent.setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        }
+        if (speedBarToggle != null) {
+            speedBarToggle.setText(collapsed ? "\u25B8" : "\u2630"); // ▸ / ☰
+            speedBarToggle.setContentDescription(collapsed ? "Show control bar" : "Hide control bar");
+        }
+    }
+
+    /** Convenience toggle for the menu. */
+    private void toggleSpeedOverlay() {
+        setSpeedBarCollapsed(!speedBarCollapsed);
     }
 
     private void showPanel(int position) {
@@ -1205,12 +1259,14 @@ public class ExperimentActivity extends Activity {
         menu.getMenu().add(0, 1, 0, panelsOpen ? "Show panels" : "Hide panels");
         menu.getMenu().add(0, 2, 1, isDarkTheme ? "Light theme" : "Dark theme");
         menu.getMenu().add(0, 3, 2, isFullscreen ? "Exit fullscreen" : "Fullscreen");
-        menu.getMenu().add(0, 4, 3, "Back to models");
+        menu.getMenu().add(0, 5, 3, speedBarCollapsed ? "Show control bar" : "Hide control bar");
+        menu.getMenu().add(0, 4, 4, "Back to models");
         menu.setOnMenuItemClickListener(item -> {
             switch (item.getItemId()) {
                 case 1: togglePanels(); break;
                 case 2: toggleTheme(); break;
                 case 3: toggleFullscreen(); break;
+                case 5: toggleSpeedOverlay(); break;
                 case 4: finish(); break;
             }
             return true;
@@ -1328,6 +1384,21 @@ public class ExperimentActivity extends Activity {
         if (layersPanel != null) layersPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         if (paramsPanel != null) paramsPanel.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         if (logView != null) logView.setBackgroundColor(thc(0xFF0D0D0D, 0xFF000000));
+        // Floating control bar (theme-aware so text stays readable in both themes).
+        if (speedOverlay instanceof MaterialCardView) {
+            ((MaterialCardView) speedOverlay).setCardBackgroundColor(thc(0xF7FFFFFF, 0xF2262735));
+            ((MaterialCardView) speedOverlay).setStrokeColor(thc(0x22000000, 0x55FFFFFF));
+        }
+        if (speedLabel != null) speedLabel.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
+        if (speedOverlayValue != null) speedOverlayValue.setTextColor(thc(0xFF006847, 0xFF81C784));
+        if (fullscreenBtn != null) {
+            fullscreenBtn.setTextColor(isFullscreen
+                    ? thc(0xFF006847, 0xFF81C784)
+                    : thc(0xFF333333, 0xFFE6E6E6));
+        }
+        for (TextView b : speedToolButtons) {
+            if (b != fullscreenBtn) b.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
+        }
     }
 
     // ---- Simulation Controls ----
