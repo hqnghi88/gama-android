@@ -42,7 +42,7 @@ public class GamaNativeBootstrap {
         List<String> pluginNames = Arrays.asList(
             "gama.api", "gama.core", "gama.library", "gama.headless", "gaml.compiler",
             "gama.processor", "gama.annotations", "gama.dependencies",
-            "gama.extension.bdi", "gama.extension.database", "gama.extension.fipa",
+            "gama.extension.bdi", "gama.extension.dataframe", "gama.extension.database", "gama.extension.fipa",
             "gama.extension.image", "gama.extension.maths", "gama.extension.network",
             "gama.extension.pedestrian", "gama.extension.serialize",
             "gama.extension.stats", "gama.extension.traffic",

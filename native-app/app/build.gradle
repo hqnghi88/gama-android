@@ -2,6 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
+// Inject ExecOperations so the patchGamaJars task can run external processes (Project#exec
+// was removed in Gradle 9.0; ExecOperations is the supported execution-time replacement).
+interface InjectedExecOps {
+    @javax.inject.Inject
+    org.gradle.process.ExecOperations getExecOps()
+}
+
 // Patch jars for Android:
 //  1. Downgrade class file versions > 65 (produced by JDK 25) down to 65 so AGP 8.5.2's
 //     D8 and the JDK 21 javac can read the new GAMA jars.
@@ -9,6 +16,8 @@ plugins {
 //  3. Compile AndroidTaskWrapper (replaces ForkJoinTask.join() on Android).
 //  4. Run ASM patchers for Android-specific runtime fixes (each fail-soft).
 tasks.register('patchGamaJars') {
+    def execOps = project.objects.newInstance(InjectedExecOps).getExecOps()
+
     doLast {
         def libsDir = file("$buildDir/../../app/libs")
 
@@ -48,7 +57,7 @@ tasks.register('patchGamaJars') {
         // Run a command, logging a warning instead of failing the build when it errors.
         def safeExec = { String label, Closure spec ->
             try {
-                exec(spec)
+                execOps.exec(spec)
                 logger.lifecycle("${label}: OK")
             } catch (Exception e) {
                 logger.warn("${label} failed (continuing): ${e.message}")
@@ -108,7 +117,7 @@ tasks.register('patchGamaJars') {
         fileTree(libsDir).matching { include '*.jar' }.each { jarFile ->
             def tmpDir = file("$buildDir/tmp/jar_patch/${jarFile.name}")
             tmpDir.mkdirs()
-            exec {
+            execOps.exec {
                 commandLine 'jar', 'xf', jarFile.absolutePath
                 workingDir tmpDir
             }
@@ -118,7 +127,7 @@ tasks.register('patchGamaJars') {
                 if (f.exists()) { f.delete(); removed = true }
             }
             if (removed) {
-                exec {
+                execOps.exec {
                     commandLine 'jar', 'cf', jarFile.absolutePath, '-C', tmpDir, '.'
                 }
                 logger.lifecycle("Patched JAR: ${jarFile.name}")
@@ -170,6 +179,7 @@ tasks.register('patchGamaJars') {
             resolveBundle('gama.extension.bdi'),
             resolveBundle('gama.extension.batch'),
             resolveBundle('gama.extension.database'),
+            resolveBundle('gama.extension.dataframe'),
             resolveBundle('gama.extension.fipa'),
             resolveBundle('gama.extension.image'),
             resolveBundle('gama.extension.maths'),
@@ -198,32 +208,18 @@ tasks.register('patchGamaJars') {
         def patchers = [
             ['parallel/ParallelRunnerPatcher', 'ParallelRunnerPatcher',
                 [gamaApiJar, "${wrapperOutDir.absolutePath}/gama/api/runtime/AndroidTaskWrapper.class"]],
-            ['layers/Display3DPatcher', 'Display3DPatcher', [gamaCoreJar]],
             ['javacompat/TypeSwitchPatcher', 'TypeSwitchPatcher', toolchainJars],
             ['javacompat/EnumSwitchPatcher', 'EnumSwitchPatcher', toolchainJars],
-            ['projection/CrsPatcher', 'CrsPatcher', [gamaCoreJar]],
-            ['charts/ColorsPatcher', 'ColorsPatcher', [gamaCoreJar]],
-            ['stepping/SimulationRunnerPatcher', 'SimulationRunnerPatcher', [gamaApiJar]],
-            ['layers/MeshLayerPatcher', 'MeshLayerPatcher', [gamaCoreJar]],
-            ['layers/LayerManagerPatcher', 'LayerManagerPatcher', [gamaCoreJar]],
-            ['layers/ImageLayerPatcher', 'ImageLayerPatcher', [gamaCoreJar]],
-            ['javacompat/CacheBuilderPatcher', 'CacheBuilderPatcher', [gamaCoreJar]],
             ['projection/SpiPatcher', 'SpiPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
-            ['projection/ProjectionPatcher', 'ProjectionPatcher', [gamaCoreJar]],
             ['projection/MapProjectionPatcher', 'MapProjectionPatcher', ["${libsDir}/gt-referencing-33.4.jar"]],
             ['workspace/EclipseCorePatcher', 'EclipseCorePatcher',
                 ["${libsDir}/eclipse-core-stubs.jar", gamaCoreJar]],
             ['javacompat/GuavaJreCompatPatcher', 'GuavaJreCompatPatcher', ["${libsDir}/guava-patched.jar"]],
             ['javacompat/StaxNewFactoryPatcher', 'StaxNewFactoryPatcher', ["${libsDir}/jsvg-2.0.0.jar"]],
             ['charts/ColorBrewerPatcher', 'ColorBrewerPatcher', ["${libsDir}/gt-brewer-33.4.jar"]],
-            ['gridfile/GridFileFallbackPatcher', 'GridFileFallbackPatcher', [gamaCoreJar]],
             ['charts/FontRenderContextPatcher', 'FontRenderContextPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['charts/AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
-            ['charts/ChartOutputPatcher', 'ChartOutputPatcher', [gamaCoreJar]],
-            ['runtime/WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
-            ['layers/GridColorPatcher', 'GridColorPatcher', [gamaCoreJar]],
-            ['gambuild/GamlModelBuilderPatcher', 'GamlModelBuilderPatcher', ["${libsDir}/gaml.compiler_0.0.0.202608091252.jar"]],
-            ['gambuild/VarValidatorNullGuardPatcher', 'VarValidatorNullGuardPatcher', [gamaApiJar]]
+            ['runtime/WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]]
         ]
         patchers.each { javaPath, cls, args ->
             def outDir = file("$buildDir/tmp/${javaPath.replace('/', '_')}")
@@ -278,8 +274,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 48
-        versionName "0.1.53"
+        versionCode 55
+        versionName "0.1.55"
     }
 
     buildTypes {

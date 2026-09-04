@@ -751,3 +751,123 @@ entry up directly in the cached `gama.library.jar`, whose entries are `models/..
 - Screenshots 4-5 s apart: 74k-104k pixels changed in the viewport (boids flock moving);
   connected components show a dense swarm blob (~486x368 px) plus ~20 smaller boid
   clusters. New AlphaComposite confirmed in classes12.dex with both int + mixed-case fields.
+
+## Session 9 (2026-09-03) — `.asc` grid envelope fix + `jdk.incubator.vector` Android compat (engine source, v0.1.54)
+
+### Goals
+Fix two Android-facing engine problems **in the engine source** (fork `~/git/mygama/gama`,
+remote `hqnghi88/gama`), then drop the bytecode `AscEnvelopeFixPatcher` from this repo:
+
+1. `GamaGridFile.customAscReader` computed the grid envelope with swapped axes
+   (`of(xC, yC, xC+cols*dX, ascInfo[3], ...)`), producing a degenerate envelope for real
+   `.asc` files. Correct order is **(x1, x2, y1, y2)**.
+2. The newer engine build (`gama.core_0.0.0.20260903*`) uses the **jdk.incubator.vector**
+   JVM Vector API in core math/matrix/diffusion code. Android's ART does not bundle
+   `jdk.incubator.vector`, so the `GamaFloatMatrix` static initializer
+   (`DoubleVector.SPECIES_PREFERRED`) threw `NoClassDefFoundError` whenever a float/int
+   matrix or grid field was allocated (e.g. any `grid_file` test).
+
+### Engine fork commits (`~/git/mygama/gama`, pushed to `hqnghi88/gama@main`)
+- `78f3ac99e` — `GamaGridFile.customAscReader` envelope axis order:
+  `GamaEnvelopeFactory.of(xC, xC + nbCols * dX, yC, ascInfo[3], 0, 0)`.
+- `84d497e33` — Replace `jdk.incubator.vector` (VectorSpecies/DoubleVector/IntVector/
+  VectorMask/VectorOperators/lanewise) with existing scalar fallbacks in:
+  `FieldDiffuser` (`fastDiffusionWithConvolution`), `GamaField`, `GamaFloatMatrix`,
+  `GamaIntMatrix`, `Maths` (`pow`, `abs`, `cos`, `sin`), `Comparison` (`>`, `<`, `==`
+  on matrices), `Logic` (`ifelse`). Removed every `SPECIES` static + vector import.
+  Net -360/+38 lines; behavior unchanged, now JVM- and Android-compatible.
+
+### Rebuild / integration
+- Engine: `bash travis/build.sh` → `BUILD SUCCESS`, produced
+  `gama.core_0.0.0.202609031525.jar`. Verified the jar has **zero** `jdk.incubator.vector`
+  strings and still calls `GamaEnvelopeFactory.of` in `GamaGridFile`.
+- Android: dropped old `202609031425` jar, added new pristine
+  `app/libs/pristine/gama.core_0.0.0.202609031525.jar`. `patchGamaJars` restores newest
+  pristine → working jar and runs patchers (GridFileFallback, TypeSwitch, etc.).
+  **`AscEnvelopeFixPatcher` removed** (committed `c16804d`). Build with Java 25
+  (`JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home`),
+  `./gradlew -p app assembleDebug` → SUCCESS.
+- Version bumped to **0.1.54** (`versionCode 49`, `versionName "0.1.54"`) in
+  `app/build.gradle`.
+
+### Verified on emulator (`ASC File Import` → `gridloading` experiment)
+- ZERO `DoubleVector` / `jdk.incubator` / `NoClassDefFoundError`.
+- Grid read via the GeoTools path fails with the benign (Android) gap
+  `javax.imageio.stream.MemoryCacheImageInputStream`; `GridFileFallbackPatcher` catches
+  it (catch `Throwable`) and the model falls through to `customAscReader` — now with the
+  corrected envelope — and the grid loads/renders.
+- UI shows `gridloading` at 1 cycle, stable, with **"As DEM / As 2D grid"** + Zoom
+  render options (proving a valid, non-degenerate envelope).
+
+### Notes / state
+- Engine jars are **not** git-tracked (`*.jar` in `.gitignore`); the swap is a build
+  artifact only. Tracked changes: patcher removal (`c16804d`), version bump (`0.1.54`).
+- `gama.engine.version` is empty; engine bundle version is carried by the jar filename
+  (`gama.core_0.0.0.<timestamp>.jar`), globbed by `resolveBundle`.
+- `app/build.gradle` still pins `gaml.compiler_0.0.0.202608091252.jar` (different bundle,
+  untouched).
+
+## Session 10 (2026-09-04) — Eliminate `gambuild` patchers into engine source + full bundle refresh (Gradle 9 / Java 25)
+
+### Goals
+Per directive, stop using bytecode ASM patchers and move each patcher's effect into real
+GAMA engine source (fork `~/git/mygama/gama`), then remove the patcher. Start with the
+`gambuild` group, then refresh the whole engine so old/new bundle version-skew doesn't
+recur.
+
+### gambuild patchers → engine source
+- `VarValidatorNullGuardPatcher` (gama.api): in
+  `AttributeDeclaration$VarValidator.validate()`, `cd.getFacetExpr(INIT)` can return `null`
+  when the INIT facet fails to compile (e.g. `float step <- 1 #s;`), and
+  `expr.isTimeDependent()` NPE'd on Android. Fixed in source — engine fork commit
+  `ea6b07479`: `if (expr != null && expr.isTimeDependent())`. Verified in the rebuilt
+  `gama.api` bytecode: `astore 6 / aload 6 / ifnull skip / isTimeDependent()`.
+- `GamlModelBuilderPatcher` (gaml.compiler): the newer engine source ALREADY discards
+  validation contexts in `buildModelDescription`'s `finally`
+  (`getResources()...forEach(GamlResourceServices::discardValidationContext)`); confirmed
+  present in the rebuilt `gaml.compiler` (stream `.filter().map().forEach()`).
+- Deleted both `tools/patchers/gambuild/*.java` and removed their two entries from the
+  `patchers` list in `app/build.gradle`.
+
+### Gradle 9 / Java 25 build fix (unblocker)
+`Project#exec`/`Project#javaexec` were **removed in Gradle 9.0**. `patchGamaJars` called
+bare `exec {}` (class-version downgrade, D8-strip via `jar`, ASM patcher compile/run) and
+failed with `Could not find method exec()`. Fixed by injecting `ExecOperations`:
+- Added top-level `InjectedExecOps` interface (`@Inject ExecOperations getExecOps()`),
+  instantiated via `project.objects.newInstance(...)` inside the task; replaced all
+  `exec`/`project.exec` call sites with `execOps.exec(...)`.
+
+### Full engine refresh (all bundles -> one consistent build)
+The mixed state (fresh `gama.api`/`core`/`gaml.compiler` + old everything-else) was
+**broken**: fresh `gama.api` moved `IDataFrame` out of `gama.api.types.dataframe` into a
+new `gama.extension.dataframe` bundle (package `gama.extension.dataframe`). The old
+`gama.extension.database` still referenced the old location → `NoClassDefFoundError:
+Lgama/api/types/dataframe/IDataFrame;` at bootstrap.
+- Rebuilt the whole engine via `bash travis/build.sh` → `BUILD SUCCESS` (1m42s); all
+  bundles produced at `0.0.0.202609032313`.
+- Swapped **all** GAMA/GAML bundles in `app/libs/pristine/` to `202609032313` (29 jars),
+  plus added the new `gama.extension.dataframe_0.0.0.202609032313.jar`.
+- Added `gama.extension.dataframe` to: `GamaNativeBootstrap.pluginNames` (before
+  `database`, so df operators resolve) and `build.gradle` `toolchainJars` (so
+  TypeSwitch/EnumSwitch patch its SwitchBootstrap sites).
+- Verified `IDataFrame`/database `NoClassDefFoundError` is gone at runtime; app reaches
+  the main menu (`ModelNavigatorActivity`) with no fatal bootstrap errors.
+- Note: batched extension is now `gama.extension.batch_0.0.0.202609032313.jar` (was
+  `-0.0.0-SNAPSHOT.jar`); `resolveBundle` already matches both `-*`/`_*` patterns.
+
+### Build status
+`./gradlew :app:assembleDebug` (Java 25, Gradle 9.1.0, AGP 9.0.0) → **BUILD SUCCESS**
+(~2 min). APK `app/build/outputs/apk/debug/app-debug.apk` (227 MB) rebuilt + reinstalled
+on emulator-5554. Remaining D8 warnings (non-fatal, pre-existing pattern):
+`guice-5.1.0-patched.jar` and `gama.core_...202609032313.jar: Invalid stack map table …
+Expected frame instruction`.
+
+### Still to do (next sessions)
+- Eliminate remaining GAMA-source patchers (started: `GridFileFallbackPatcher` is now a
+  **no-op** on the fresh `gama.core` — "Target not found or not patched" — so it can be
+  dropped next): Display3D, Crs, Colors, SimulationRunner, MeshLayer, LayerManager,
+  ImageLayer, CacheBuilder, Projection, EclipseCore, ChartOutput, WorldGlobal, GridColor,
+  ParallelRunner, TypeSwitch, EnumSwitch, GridFileFallback.
+- Third-party jar patchers (Spi, MapProjection, GuavaJreCompat, StaxNewFactory,
+  ColorBrewer, FontRenderContext, AwtFontMetrics) cannot be fixed in GAMA source; decide
+  separately.
