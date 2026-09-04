@@ -916,3 +916,36 @@ active patchers run OK. CI release run → **success in 5m36s**.
 - Evaluate WorldGlobal (codegen), ParallelRunner (gama.api threading), EclipseCore for source
   migration; decide third-party patcher fate.
 - Next version bump 0.1.56 after model-run verification.
+
+---
+
+## Session 12 — Consolidated single floating control bar (UI)
+
+Consolidated the experiment screen's top controls into **one floating bar** replacing the old
+Params-tab speed slider + legacy display toolbar. Done as a UI/UX change; no patcher/engine work.
+
+### Change (`ExperimentActivity.java`)
+- `buildSpeedOverlay()` now renders a single floating `MaterialCardView` (`0xE6FFFFFF`, radius
+  `dp(14)`, elevation `dp(6)`) anchored `Gravity.TOP | CENTER_HORIZONTAL` inside `contentFrame`.
+- Bar contents (left→right): **Speed** label → **Slider** (flex 1f, 1..500 ms, step 1, label
+  format "N ms") → live **value** TextView (monospace, green, `dp(44)` min) → vertical divider →
+  4 pill buttons **Zoom+ / Zoom- / Fit / Fullscreen** (`R.drawable.bg_pill`).
+- Reorder: **label → slider → value** (value moved right after slider, slider gets max flex width).
+- `fullscreenBtn` now references the Fullscreen pill; Zoom±/Fit/Fullscreen delegate to the existing
+  `handleDisplayAction` reflection mapping (zoomIn/zoomOut/zoomFit/toggleFullscreen).
+- Removed `addSpeedCard(paramList)` calls (line ~791 and refresher re-add ~2161) + deleted the
+  method. Legacy `displayToolbar` buttons (Zoom+/Zoom-/Fit/Fullscreen) + `toolbarSpacer` removed;
+  field/tag retained for orientation handling, no longer set VISIBLE.
+- Speed slider listener calls `setSimulationSpeedMs(currentController, ms)`.
+
+### Verification
+- `./gradlew app:assembleDebug` (Java 25) → **BUILD SUCCESS** (~55s).
+- Emulator (Game of Life, Life.gaml): one bar at y≈426-519 confirmed via UI dump:
+  Speed [57,432][152,479], slider "Simulation speed" [288,393][421,519], "50 ms" value
+  [327,434][442,477], divider, then Zoom+ [481,426][613,485], Zoom- [627,426][751,485],
+  Fit [765,426][838,485], Fullscreen [852,426][1021,485].
+- Committed to `gama-android` (`5642582`).
+
+### Pending (unchanged)
+- Remaining 12 patchers still in build.gradle + sources (see prior sessions).
+- Release + next version bump on hold per user.
