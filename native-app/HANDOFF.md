@@ -986,3 +986,51 @@ gray, making it illegible.
   showed only `ModelNavigatorActivity` with an empty/not-rendering app window). The real device /
   a healthy emulator should be used to confirm rendering.
 - Committed to `gama-android` (`14900bf`).
+
+---
+
+## Session 14 (2026-09-05) — GEOTIFF grid finally renders on Android (engine `mygama` fork)
+
+Root cause + fix for the blank GEOTIFF display (`GEOTIFF File Import.gaml` / `show_example`, `bogota_grid.tif`).
+
+### Root cause #1 (the real bug): `tiffDouble` endianness
+`GamaGridFile.tiffDouble()` only reversed bytes for **big-endian** TIFFs, but always assembled the
+long with `b[0]` as the MSB. For the little-endian `bogota_grid.tif` this turned `240.0` into
+`0x6E40` (`1.39445E-319`, a denormal) and tiepoint `440720.0/100000.0` into denormals too. The
+envelope then degenerated to `0..1.78E-317`, zero-size cells were built, nothing drew (and, before
+the `isMissingClass` fix, the CRS path surfaced a false "Inconsistency between the data and the
+CRS..." runtime error).
+- Fix: reverse the 8 read bytes when `little` is true as well (`if (little)` instead of
+  `if (!little)`). Verified against the raw bytes: `ps=[240.0,240.0,0.0]`, `tp=[0,0,0,440720,100000,0]`.
+
+### Root cause #2 (secondary): absolute tiepoint offsets through the world projection
+Even with valid values, feeding the absolute metre tiepoint envelope (440720..471440,
+69280..130720) through GAMA's UK CRS projection machinery collapses on Android (EPSG WKT database
+limitations). Since `WorldProjection` re-anchors the world at its own origin and the model camera
+is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `target {15510.96,18019.92,0}`),
+`customTiffReader` now normalizes the envelope to the local origin:
+`GamaEnvelopeFactory.of(0, width*sx, 0, height*sy, 0, 0)` with `ascInfo={sx, sy, 0, height*sy}`
+(one maxX arg was `0` in an earlier iteration — fixed). Result: grid spans `0..30720`, `cellW=cellH=240`,
+`firstXY=(120,30600)`, `lastXY=(30600,120)`.
+
+### Other engine changes carried in
+- `isMissingClass(Throwable)` + silent `getOwnCRS` linkage-error swallow: no more spurious
+  "Runtime error" in the console when the GeoTiffReader stack is absent on Android.
+- `imageio-ext-tiff-1.4.16.jar` + geotools jars shipped flat in `app/libs/`/`pristine/` (real
+  packages per user directive); real `GeoTiffReader` still can't run on Android (skeletal
+  `javax.imageio` stubs, `STANDARD_INPUT_TYPE` missing) — benign ART "Rejecting re-init" noise,
+  `createCoverage` -> `customTiffReader` fallback is the working path.
+
+### Verification (emulator)
+- Run: `getOwnCRS epsg=null`; `createCoverage caught GamaRuntimeException isTiff=true` →
+  `customTiffReader` parses `128×128`, strip decode `8192+8192` bytes ok.
+- Display tab (pause at 1 cycle): region below y≈340 has **254 gray shades, 46% white,
+  non-white mean 128.8** (vs 0% content before). No `AndroidGuiHandler: Runtime error`.
+- All `GGDEBUG` instrumentation removed before the final build; bundle seed
+  `0.0.0.202609050134`, APK `app-debug.apk`.
+
+### Pending
+- Engine fork (`/Users/hqnghi/git/mygama`) changes are **uncommitted**: `GamaGridFile.tiffDouble`
+  endianness, `customTiffReader` localized envelope, `isMissingClass`/`getOwnCRS` suppression.
+  Awaiting user approval to commit.
+- Unchanged from prior sessions: remaining patchers, release/version bump on hold per user.
