@@ -1035,5 +1035,5 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   Awaiting user approval to commit.
 - Released **v0.1.56** (2026-09-05, tag `v0.1.56`) — APK built from engine jars at
   `0.0.0.202609050134` (confirmed via CI log); `native-app-deps` asset refreshed (307 MB).
-- Engine fork (`mygama`) changes still **uncommitted** awaiting user approval: `tiffDouble`
-  endianness, `customTiffReader` localized envelope, `isMissingClass`/`getOwnCRS` suppression.
+- Engine fork (`mygama`) changes **committed** as `cb6b272f5` ("Android: read little-endian
+  GeoTIFF quantities correctly + render GEOTIFF grids") and pushed to `origin/main`.
