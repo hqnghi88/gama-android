@@ -249,6 +249,17 @@ tasks.register('patchGamaJars') {
                     cls] + args)
             })
         }
+
+        // 5) Ship the patched library bundle as the runtime model asset. LibraryJarUtil reads
+        //    assets/gama.library.jar at app start and extracts it into the app cache, where the
+        //    built-in model library (gaml files + hooks) is loaded from. The asset is gitignored,
+        //    so it MUST be regenerated here after patching — otherwise CI-built APKs install with
+        //    an EMPTY model library (0 items under "GAMA Library").
+        def libraryBundle = resolveBundle('gama.library')
+        def assetFile = file("${projectDir}/src/main/assets/gama.library.jar")
+        java.nio.file.Files.copy(file(libraryBundle).toPath(), assetFile.toPath(),
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        logger.lifecycle("Library asset: copied ${file(libraryBundle).name} -> ${assetFile}")
     }
 }
 
@@ -259,6 +270,10 @@ tasks.configureEach { task ->
     if (task.name == 'compileDebugJavaWithJavac' || task.name == 'compileReleaseJavaWithJavac') {
         task.dependsOn 'patchGamaJars'
         task.options.compilerArgs += ['-Xmaxerrs', '2000']
+    }
+    if (task.name.startsWith('merge') && task.name.endsWith('Assets')) {
+        // merge*Assets packages assets/gama.library.jar, which patchGamaJars regenerates.
+        task.dependsOn 'patchGamaJars'
     }
 }
 
