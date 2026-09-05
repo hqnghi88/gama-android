@@ -1030,10 +1030,21 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   `0.0.0.202609050134`, APK `app-debug.apk`.
 
 ### Pending
-- Engine fork (`/Users/hqnghi/git/mygama`) changes are **uncommitted**: `GamaGridFile.tiffDouble`
-  endianness, `customTiffReader` localized envelope, `isMissingClass`/`getOwnCRS` suppression.
-  Awaiting user approval to commit.
-- Released **v0.1.56** (2026-09-05, tag `v0.1.56`) — APK built from engine jars at
-  `0.0.0.202609050134` (confirmed via CI log); `native-app-deps` asset refreshed (307 MB).
-- Engine fork (`mygama`) changes **committed** as `cb6b272f5` ("Android: read little-endian
-  GeoTIFF quantities correctly + render GEOTIFF grids") and pushed to `origin/main`.
+- Engine fork (`/Users/hqnghi/git/mygama`) changes are **committed** as `cb6b272f5`
+  ("Android: read little-endian GeoTIFF quantities correctly + render GEOTIFF grids") and pushed
+  to `origin/main`.
+- **v0.1.56** released (2026-09-05): engine jars `0.0.0.202609050134`, `native-app-deps` refreshed
+  (307 MB), and the production APK now includes the built-in model library (see follow-up).
+
+### Follow-up (same day): released APK had an EMPTY model library
+- Symptom: v0.1.56 installed with "GAMA Library / 0 items". Root cause: the runtime model library
+  (`LibraryJarUtil`) reads **`assets/gama.library.jar`** from the APK, and that asset is **gitignored**
+  (only existed on dev machines) — so CI-checkout builds shipped without it.
+- Fix (`fe2041e`): `patchGamaJars` regenerates `app/src/main/assets/gama.library.jar` from the
+  patched `gama.library` bundle (step 5), and `merge*Assets` depends on `patchGamaJars` for ordering.
+- Verified: clean install → "763 files, 208 folders (16.25 MB)", categories incl. Ant
+  Foraging/Data/Toy Models.
+- Release redone: deleted + re-created tag `v0.1.56` at `fe2041e`; CI `release` success (5m36s);
+  republished APK (168.7 MB) contains `assets/gama.library.jar`.
+- Note: `GamaNativeBootstrap` logs "Failed to register save delegates: NoSuchMethodException:
+  GamaAdditionRegistry.getSaveDelegates" — pre-existing and non-fatal.
