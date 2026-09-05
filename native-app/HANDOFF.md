@@ -948,7 +948,7 @@ Params-tab speed slider + legacy display toolbar. Done as a UI/UX change; no pat
 
 ### Pending (unchanged)
 - Remaining 12 patchers still in build.gradle + sources (see prior sessions).
-- Release + next version bump on hold per user.
+- Released **v0.1.56** (2026-09-05) with the GEOTIFF fix; release was previously on hold per user.
 
 ---
 
@@ -1033,4 +1033,7 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
 - Engine fork (`/Users/hqnghi/git/mygama`) changes are **uncommitted**: `GamaGridFile.tiffDouble`
   endianness, `customTiffReader` localized envelope, `isMissingClass`/`getOwnCRS` suppression.
   Awaiting user approval to commit.
-- Unchanged from prior sessions: remaining patchers, release/version bump on hold per user.
+- Released **v0.1.56** (2026-09-05, tag `v0.1.56`) — APK built from engine jars at
+  `0.0.0.202609050134` (confirmed via CI log); `native-app-deps` asset refreshed (307 MB).
+- Engine fork (`mygama`) changes still **uncommitted** awaiting user approval: `tiffDouble`
+  endianness, `customTiffReader` localized envelope, `isMissingClass`/`getOwnCRS` suppression.
