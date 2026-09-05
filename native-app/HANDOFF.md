@@ -1048,3 +1048,21 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   republished APK (168.7 MB) contains `assets/gama.library.jar`.
 - Note: `GamaNativeBootstrap` logs "Failed to register save delegates: NoSuchMethodException:
   GamaAdditionRegistry.getSaveDelegates" — pre-existing and non-fatal.
+
+### Session 16 (v0.1.57): "separated" hexagon cells fixed on Android
+- Symptom: library model "Hexagonal Grid.gaml" rendered hexagon cells separated from each other
+  (colored neighbor cells appeared as isolated islands with half-cell gaps on white).
+- Root cause (`AndroidDisplayGraphics.drawShape`): 2D shapes are passed in **absolute model
+  coordinates**, but the app was re-applying `attributes.getLocation()` (the cell's own center) as
+  an x/y offset. Each cell was therefore drawn shifted by its center — spacing doubled and gaps
+  opened between neighbors. Verified via temporary debug build: hex cells deliberately shifted
+  (cell(0,0) drawn at 6.45..19.35 instead of 0..12.9; colored rosette showed one-cell gaps).
+  GEOTIFF grids were unaffected (they use the `drawImage`/`drawField` path, not per-cell drawShape).
+- Fix (`9fe73bb`, v0.1.57): drop the location re-offset in the 2D path (`locDx=locDy=0`), and
+  stroke rectangular cell borders from the snapped integer fill bounds instead of a stale `fastRect`
+  (which was never set in that branch, so rect cell borders never rendered).
+- Verified on emulator: packed honeycomb rosette (red + green neighbors touching, no gaps), black
+  borders render across the lattice (near-black pixel count 2.5K -> ~140K), no runtime errors.
+- Release **v0.1.57** published: tag triggered auto-release (run 33946228008, success 5m36s);
+  APK 168,738,367 bytes, contains `assets/gama.library.jar`.
+- Debug instrumentation (HEX-DBG) removed before release.
