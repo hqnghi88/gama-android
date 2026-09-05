@@ -1066,3 +1066,64 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
 - Release **v0.1.57** published: tag triggered auto-release (run 33946228008, success 5m36s);
   APK 168,738,367 bytes, contains `assets/gama.library.jar`.
 - Debug instrumentation (HEX-DBG) removed before release.
+
+### Session 17: OSGi-style extension discovery + OSM integration
+- Goal: replicate desktop GAMA where every engine bundle is discovered at startup (GamaBundleLoader
+  loads `gaml.additions.<short>.GamlAdditions` from each bundle) so new/missing extensions become
+  drop-in, starting with `gama.extension.osm`.
+- Extension audit: correct GAMA = gama.parent pom builds 18 extensions; app previously shipped 12
+  (bdi, batch, database, dataframe, fipa, image, maths, network, pedestrian, serialize, stats,
+  traffic) + custom `androidsensor`. Missing were dxf, gml, kml, osm, physics, sound (+ opengl4 UI).
+- Build-time manifest: `patchGamaJars` now scans `app/libs` for `gama*.jar` (excluding
+  `gama.dependencies`/`.original`) and emits `assets/gama.bundles` (api/core first, rest sorted);
+  per-bundle `toolchainJars` is also derived by scanning libs so any new `gama.*` bundle is
+  automatically JDK switch-bootstrap-patched ((no hardcoded list remains).
+- Runtime: `GamaNativeBootstrap` reads `assets/gama.bundles` at bootstrap (falls back to the old
+  hardcoded list if missing) and registers each bundle, loading its `gaml.additions.<short>.
+  GamlAdditions` exactly like desktop. Verified boot log: "Bundle manifest: 29 bundles discovered".
+- Bundle-models merge: engine bundles that ship sample models (Image, maths, network, pedestrian,
+  serialize, stats, traffic, osm...) are merged into `assets/gama.library.jar` at build time
+  (desktop behavior: plugins contribute models). Library went 763 -> 2449 files, 17 model groups.
+  Requires explicit directory entries for every prefix, because `ModelNavigatorActivity.buildTree`
+  only shows files whose parent directory entry exists (found via instrumentation; fixed).
+- OSM bundle: built `app/libs/gama.extension.osm_0.0.0.202609050134.jar` (own classes:
+  GamlAdditions/GamaOsmFile/OSMInfo, plus models/OpenStreetMap incl. `rouen.gz`). Third-party deps
+  are NOT flattened into the bundle (osmosis-core/xml + osmpbf + protobuf already ship as app libs);
+  added `commons-compress-1.26.1.jar` for bzip2. Removed crosby/ duplicate vs osmpbf-1.6.0.jar.
+- End-to-end verified on emulator: Library -> OpenStreetMap -> "OSM File Import.gaml" -> experiment
+  "Load OSM" runs; display renders roads/buildings (grey buildings ~550K px, red node markers,
+  many-colour roads), no parse/class errors.
+- Status: working on dev build; libs/ jars + assets/gama.library.jar are gitignored (CI regenerates
+  from seed — native-app-deps refresh needed before a release). gama.bundles now gitignored too.
+  Debug instrumentation (LIBDEBUG) removed and verified gone (clean boot, no LIBDEBUG logs).
+- If the user pushes further: integrate the remaining bundles (dxf, gml, kml, physics, sound),
+  gama.ui.display.opengl4, and refresh native-app-deps for CI before tagging the next release.
+- Integration status: OSM verified, remaining 5 bundles were still missing; user said "yes all, and release".
+
+### Session 18: integrate dxf, gml, kml, physics, sound (+ release prep)
+- Investigated third-party deps via `javap -verbose` constant-pool scan of each fork bundle jar and
+  its `libs/` folder. Findings: dxf -> Kabeja 0.5 (`org.kabeja`); gml -> geotools 33.4 xsd/wfs stack
+  (`org.geotools.wfs`, gt-xsd-*, net.opengis.*, commons-digester/jxpath, jaxb-api, xml-commons-
+  resolver, xpp3, org.w3.xlink); kml -> Java API for KML (`de.micromata` javaapiforkml-3.0.11);
+  physics -> jbox2d 2.2.1.1 + jbullet 1.0.3 + vecmath 1.5.2 + Libbulletjme 21.2.1 (com.jme3);
+  sound -> basicplayer 3.0.0.0 + jlayer-decoder + mp3spi + tritonus-share (references javax.sound,
+  which Android lacks -- classes/statements register fine; actual playback will fault at runtime).
+- Built 5 bundle jars in `app/libs` (own gama/gaml classes + models/ only, no nested libs/ or OSGi
+  metadata, no dotfiles/.settings). Cleaned: physics kept all 30 classes (incl. native_version
+  wrappers; native bullet needs a .so so only the box2d/jbullet paths work on Android), dxf 2,
+  gml 3, kml 6, sound 15 classes. Removed physics jar from the `fileTree` exclude in
+  `app/build.gradle` so it is dexed and its models/ merge.
+- Copied the extra dependency jars flat into `app/libs` (they are all `*.jar` and dexed; none match
+  the `gama*.jar` glob so they don't pollute the bundle manifest). Verified no cross-jar class
+  duplicates (com/jme3 in Libbulletjme only, org/kabeja in kabeja only, etc.).
+- Packaging `.resources` excludes and the duplicated `de/micromata/.../jaxb.index` are handled by the
+  merge step's filename-level dedup; built 34-bundle manifest (dxf/gml/kml/osm/physics/sound all
+  present), merged library asset now 2494 files / 291 folders / 43.55 MB with new groups
+  (Physics Engine 31, KML 12, Models with Sound 10, GML 6, DXF under KML group).
+- Verified on emulator: boot log "Bundle manifest: 34 bundles", no class-load errors; Library shows
+  all new groups; physics experiment "Disturbance" (Box2D Library.gaml) actually starts and runs
+  (jbox2d classes resolve; later OOM is an Android heap limit, not an integration failure);
+  searches confirm GML/KML/DXF/sound models/bundles. Relaunch boots clean.
+- Status: dev APK built & verified; NOT yet committed, seed NOT refreshed, version NOT bumped
+  (currently 0.1.57). Next: commit, refresh native-app-deps seed tarball (now ~34+34 jars incl.
+  pristine + all new dep jars), bump to 0.1.58, tag + publish to trigger release.yml.

@@ -6,3 +6,4 @@ local.properties
 keystore.properties
 *.class
 *.bak
+app/src/main/assets/gama.bundles

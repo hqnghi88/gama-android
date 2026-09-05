@@ -39,19 +39,27 @@ public class GamaNativeBootstrap {
 
         ClassLoader appClassLoader = context.getClassLoader();
 
-        List<String> pluginNames = Arrays.asList(
-            "gama.api", "gama.core", "gama.library", "gama.headless", "gaml.compiler",
-            "gama.processor", "gama.annotations", "gama.dependencies",
-            "gama.extension.bdi", "gama.extension.dataframe", "gama.extension.database", "gama.extension.fipa",
-            "gama.extension.image", "gama.extension.maths", "gama.extension.network",
-            "gama.extension.pedestrian", "gama.extension.serialize",
-            "gama.extension.stats", "gama.extension.traffic",
-            "gama.extension.batch",
-            "gama.extension.androidsensor",
-            "gama.ui.application", "gama.ui.display.java2d", "gama.ui.display.opengl",
-            "gama.ui.editor", "gama.ui.experiment", "gama.ui.navigator",
-            "gama.ui.shared", "gama.ui.viewers"
-        );
+        // Discover the engine bundles from assets/gama.bundles (generated at build time from
+        // libs/ by patchGamaJars). This mirrors desktop OSGi discovery (GamaBundleLoader):
+        // every bundle present is registered below and its gaml.additions.<short>.GamlAdditions
+        // class is loaded+initialized, so adding a new gama.* jar to libs/ integrates it with no
+        // code changes. Falls back to the classic list if the manifest is missing.
+        List<String> pluginNames = readBundleManifest(context);
+        if (pluginNames.isEmpty()) {
+            pluginNames = Arrays.asList(
+                "gama.api", "gama.core", "gama.library", "gama.headless", "gaml.compiler",
+                "gama.processor", "gama.annotations", "gama.dependencies",
+                "gama.extension.bdi", "gama.extension.dataframe", "gama.extension.database", "gama.extension.fipa",
+                "gama.extension.image", "gama.extension.maths", "gama.extension.network",
+                "gama.extension.pedestrian", "gama.extension.serialize",
+                "gama.extension.stats", "gama.extension.traffic",
+                "gama.extension.batch",
+                "gama.extension.androidsensor",
+                "gama.ui.application", "gama.ui.display.java2d", "gama.ui.display.opengl",
+                "gama.ui.editor", "gama.ui.experiment", "gama.ui.navigator",
+                "gama.ui.shared", "gama.ui.viewers"
+            );
+        }
 
         for (String pluginName : pluginNames) {
             Bundle bundle = createBundle(pluginName, appClassLoader);
@@ -524,6 +532,22 @@ public class GamaNativeBootstrap {
 
         initialized = true;
         callback.onSuccess("GAMA engine initialized! " + loaded + " plugins loaded.");
+    }
+
+    private static List<String> readBundleManifest(Context context) {
+        List<String> names = new ArrayList<>();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(context.getAssets().open("gama.bundles")))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty()) names.add(line);
+            }
+            Log.i(TAG, "Bundle manifest: " + names.size() + " bundles discovered from assets/gama.bundles");
+        } catch (java.io.IOException e) {
+            Log.w(TAG, "No assets/gama.bundles found; falling back to the classic bundle list", e);
+        }
+        return names;
     }
 
     private static Bundle createBundle(String name, ClassLoader loader) {

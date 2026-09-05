@@ -185,36 +185,17 @@ tasks.register('patchGamaJars') {
 
         // Every GAMA/GAML toolchain jar (compiled with JDK 17+, so any of them can emit
         // java.lang.runtime SwitchBootstraps invokedynamic sites that D8/ART cannot run).
-        def toolchainJars = [
-            resolveBundle('gama.annotations'),
-            gamaApiJar,
-            gamaCoreJar,
-            resolveBundle('gama.extension.bdi'),
-            resolveBundle('gama.extension.batch'),
-            resolveBundle('gama.extension.database'),
-            resolveBundle('gama.extension.dataframe'),
-            resolveBundle('gama.extension.fipa'),
-            resolveBundle('gama.extension.image'),
-            resolveBundle('gama.extension.maths'),
-            resolveBundle('gama.extension.network'),
-            resolveBundle('gama.extension.pedestrian'),
-            resolveBundle('gama.extension.serialize'),
-            resolveBundle('gama.extension.stats'),
-            resolveBundle('gama.extension.traffic'),
-            resolveBundle('gama.headless'),
-            resolveBundle('gama.library'),
-            resolveBundle('gama.processor'),
-            resolveBundle('gama.ui.application'),
-            resolveBundle('gama.ui.display.java2d'),
-            resolveBundle('gama.ui.display.opengl'),
-            resolveBundle('gama.ui.editor'),
-            resolveBundle('gama.ui.experiment'),
-            resolveBundle('gama.ui.navigator'),
-            resolveBundle('gama.ui.shared'),
-            resolveBundle('gama.ui.viewers'),
-            resolveBundle('gama.workspace'),
-            resolveBundle('gaml.compiler')
-        ]
+        // Discovered from libs/ instead of a hardcoded list so freshly added engine
+        // bundles (e.g. a new gama.extension.*) are automatically patched too.
+        def toolchainJars = []
+        def toolchainGlobs = ['gama.*_*.jar', 'gama.extension.batch-*.jar',
+            'gama.extension.androidsensor.jar', 'gaml.compiler_*.jar']
+        fileTree(libsDir).matching { include toolchainGlobs }.files
+            .findAll { it.name.endsWith('.jar') && !it.name.endsWith('.original.jar')
+                      && !it.name.startsWith('gama.dependencies') }
+            .sort { it.name }
+            .each { toolchainJars.add(it.absolutePath) }
+        toolchainJars.add("${wrapperOutDir.absolutePath}/gama/api/runtime/AndroidTaskWrapper.class")
 
         // Each entry: [relative .java path under tools/patchers/, main class, jars to patch].
         // The relative path encodes both the feature group (directory) and the file name.
@@ -260,6 +241,84 @@ tasks.register('patchGamaJars') {
         java.nio.file.Files.copy(file(libraryBundle).toPath(), assetFile.toPath(),
             java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         logger.lifecycle("Library asset: copied ${file(libraryBundle).name} -> ${assetFile}")
+
+        // 5b) Merge the sample models that engine bundles ship inside their jars (e.g.
+        //     gama.extension.osm provides models/OpenStreetMap with OSM demo data) into the
+        //     library asset, mirroring desktop GAMA where each plugin contributes models.
+        //     NOTE: explicit directory entries must be present for every path prefix, because
+        //     the app's model navigator only shows files whose parent directory entry it saw
+        //     (it walks zip directory entries).
+        def entryBins = new LinkedHashMap<String, byte[]>()
+        new java.util.zip.ZipFile(assetFile).withCloseable { zf ->
+            zf.entries().each { e -> entryBins.put(e.name, zf.getInputStream(e).bytes) }
+        }
+        def modelBundles = fileTree(libsDir).matching { include 'gama*.jar' }.files
+            .findAll { it.name.endsWith('.jar') && !it.name.startsWith('gama.dependencies')
+                      && it.name != file(libraryBundle).name }
+            .sort { it.name }
+        def addedModels = []
+        modelBundles.each { b ->
+            try {
+                new java.util.zip.ZipFile(b).withCloseable { zf ->
+                    zf.entries().each { e ->
+                        if (e.name.startsWith('models/') && !e.name.endsWith('/')) {
+                            if (!entryBins.containsKey(e.name)) {
+                                entryBins.put(e.name, zf.getInputStream(e).bytes)
+                                addedModels.add("${b.name} -> " + e.name)
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                logger.warn("Bundle models: skipping ${b.name} (${ex.message})")
+            }
+        }
+        def dirNames = new TreeSet<String>()
+        entryBins.keySet().each { n ->
+            int idx = n.lastIndexOf('/')
+            while (idx >= 0) {
+                dirNames.add(n.substring(0, idx + 1))
+                idx = n.lastIndexOf('/', idx - 1)
+            }
+        }
+        def allNames = (entryBins.keySet() + dirNames).toSorted()
+        new java.util.zip.ZipOutputStream(new java.io.FileOutputStream(assetFile)).withCloseable { zos ->
+            allNames.each { name ->
+                zos.putNextEntry(new java.util.zip.ZipEntry(name))
+                byte[] data = entryBins[name]
+                if (data != null) zos.write(data)
+                zos.closeEntry()
+            }
+        }
+        if (addedModels.isEmpty()) {
+            logger.lifecycle("Bundle models: none found")
+        } else {
+            logger.lifecycle("Bundle models merged: ${addedModels.size()} files [${addedModels.join(', ')}]")
+        }
+
+        // 6) Emit the ordered bundle manifest consumed by GamaNativeBootstrap. This mirrors the
+        //    OSGi discovery that desktop GAMA performs at startup (GamaBundleLoader): every engine
+        //    bundle present in libs/ is registered and its gaml.additions.<short>.GamlAdditions
+        //    class is loaded+initialized, so a new gama.* jar dropped into libs/ is integrated
+        //    without editing any code. gama.dependencies is excluded (no additions of its own).
+        def bundleManifest = []
+        def bundleNameFromFile = { File f ->
+            def n = f.name.replaceAll(/\.jar$/, '')
+            n = n.replaceAll(/_(?:\d.*)$/, '').replaceAll(/-(?:\d.*)$/, '')
+            return n
+        }
+        fileTree(libsDir).matching { include 'gama*.jar' }.files
+            .findAll { it.name.endsWith('.jar') && !it.name.startsWith('gama.dependencies')
+                      && !it.name.endsWith('.original.jar') }
+            .collect { bundleNameFromFile(it) }
+            .unique()
+            .sort()
+            .each { bundleManifest.add(it) }
+        // api/core first (they must initialize before everything else)
+        def ordered = (['gama.api', 'gama.core'] + (bundleManifest - ['gama.api', 'gama.core']))
+        def manifestFile = file("${projectDir}/src/main/assets/gama.bundles")
+        manifestFile.text = String.join('\n', ordered) + '\n'
+        logger.lifecycle("Bundle manifest: ${manifestFile.name} lists ${ordered.size()} bundles [${ordered.join(', ')}]")
     }
 }
 
@@ -359,7 +418,7 @@ configurations.all {
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 
-    implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['gama.extension.physics*', '*.original.jar'])
+    implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['*.original.jar'])
 
     implementation 'org.locationtech.jts:jts-core:1.19.0'
     implementation 'org.jgrapht:jgrapht-core:1.5.2'
