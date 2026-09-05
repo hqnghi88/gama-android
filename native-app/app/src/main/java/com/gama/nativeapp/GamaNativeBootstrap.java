@@ -67,6 +67,30 @@ public class GamaNativeBootstrap {
             Platform.registerBundle(pluginName, bundle);
         }
 
+        // Load user-installed external plugins (runtime extension jars in app files/plugins/).
+        // These use a per-plugin DexClassLoader so their classes.dex is loaded separately.
+        // They must be loaded BEFORE the additions loop below so they can register
+        // operators/types/skills at the same point as engine bundles.
+        List<PluginManager.Plugin> externalPlugins = new ArrayList<>();
+        try {
+            externalPlugins = PluginManager.load(context);
+            for (PluginManager.Plugin p : externalPlugins) {
+                if (registeredBundles.containsKey(p.name)) {
+                    Log.w(TAG, "Skipping external plugin '" + p.name + "' – same-named engine bundle already registered");
+                    continue;
+                }
+                Bundle b = createBundle(p.name, p.classLoader);
+                registeredBundles.put(p.name, b);
+                Platform.registerBundle(p.name, b);
+                Log.i(TAG, "Registered external plugin: " + p.name);
+            }
+        } catch (Throwable t) {
+            Log.e(TAG, "Failed to load external plugins", t);
+        }
+        if (!externalPlugins.isEmpty()) {
+            callback.onProgress("Loaded " + externalPlugins.size() + " external plugin(s)");
+        }
+
         callback.onProgress("Registered " + registeredBundles.size() + " plugin bundles");
 
         // Install an Android workspace manager. The desktop implementation tracks

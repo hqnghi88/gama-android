@@ -1127,3 +1127,60 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
 - Status: dev APK built & verified; NOT yet committed, seed NOT refreshed, version NOT bumped
   (currently 0.1.57). Next: commit, refresh native-app-deps seed tarball (now ~34+34 jars incl.
   pristine + all new dep jars), bump to 0.1.58, tag + publish to trigger release.yml.
+
+### Session 19: runtime plugin system (install GAMA extensions without rebuilding)
+- Goal (user request): behave like desktop GAMA's plugin install — add new extensions at runtime
+  without rebuilding the APK. UX chosen by user: an in-app "Import/Install" button.
+- Mechanism: an extension becomes a *plugin jar* carrying `classes.dex` + a manifest with
+  `Bundle-SymbolicName`. At engine start the app now loads any `*.jar`/`*.dex` found in
+  `{filesDir}/plugins` via a per-file `DexClassLoader` (parent = app classloader, optimized dir =
+  cache), registers them as bundles through the existing `Platform.registerBundle`, and appends them
+  to the additions load order so `gaml.additions.<short>.GamlAdditions.initialize()` runs alongside
+  engine bundles (before the meta-model is built). GAML types/operators/skills/statements therefore
+  register exactly like build-time bundles.
+- New files:
+  - `app/src/main/java/com/gama/nativeapp/PluginManager.java` — plugins dir, discovery, symbolic
+    name from Bundle-SymbolicName (fallback: filename heuristic), per-file read-only
+    (`DexClassLoader` refuses writable inputs on API 28+ → `setReadOnly()` before load),
+    `install(Context, Uri)` for SAF copy + validate (jar must contain `classes.dex`) + rename to
+    `plugin_<symbolic>.jar`, `isValidPlugin`.
+  - `app/src/main/res/drawable/ic_extension.xml` — puzzle-piece toolbar icon.
+  - `native-app/plugins/build_plugin.sh` — packages an extension for the app: `javac --release 17`
+    against the engine jars in `app/libs`, `d8 --min-api 26 --lib android.jar` → `classes.dex`,
+    jars it with a `Bundle-SymbolicName`/`Bundle-Version` manifest; optional `resources/` merged.
+    Usage: `./build_plugin.sh <bundle-symbolic-name> <version> <src-dir> [extra classpath...]`.
+  - `native-app/plugins/demo/` — working sample `gama.extension.demo` registering `demo_square(int)`,
+    `demo_cube(int)`, `demo_greet(string)` via explicit `_operator(...)` calls (the annotation
+    processor generates these for engine bundles; plugins must call `_operator` directly — verified
+    the `gaml.additions.core.GamlAdditions` bytecode does 812 explicit `_operator` calls, and
+    `OperatorArtefact` only reads @operator annotations, so runtime registration is call-driven).
+- Changes:
+  - `GamaNativeBootstrap.initialize()`: after the built-in bundle loop, load external plugins and
+    register them (skips same-named engine bundles); they then flow through the existing additions
+    loop because it iterates `registeredBundles`.
+  - `ModelNavigatorActivity`: puzzle icon in the toolbar → `ActivityResultContracts.OpenDocument`
+    (mime `application/java-archive|zip|octet-stream`) → background copy+validate → dialog
+    "Extension '<sym>' will be active after the app restarts." with **Restart now** (launch intent
+    + `Runtime.exit(0)`, simplest reliable reload) / **Later**.
+- Dev pitfalls hit: (1) `DexClassLoader` throws SecurityException "Writable dex file is not allowed"
+  if the input jar is writable → `setReadOnly()` each file before load, restore writability on
+  reinstall overwrites; (2) d8 (this version) rejects a directory input → pass the `.class` files
+  explicitly.
+- End-to-end verified on emulator (drop-in and in-app paths):
+  1. Built demo plugin, pushed jar into `{filesDir}/plugins/plugin_gama.extension.demo.jar`,
+     relaunched → "Built DexClassLoader …", "Registered external plugin: gama.extension.demo".
+  2. Added a workspace model using `demo_square(4)`, `demo_cube(3)`, `demo_greet("GAMA")`; ran
+     experiment → Console: "demo_square(4) = 16", "Hello, GAMA!", "demo_cube(3) = 27". The operator
+     hierarchy compiles and runs through the standard engine pipeline.
+  3. In-app button: tapped puzzle icon → DocumentsUI picker → Downloads → `gama.extension.demo.jar`
+     → "Extension installed" dialog → Restart now → fresh process re-registered the plugin; installed
+     file renamed to `plugin_gama.extension.demo.jar` and set read-only. Both paths fully work.
+- Cleaned device test artifacts; plugin loaders now per-file so one corrupt plugin can't break others.
+- Status: app source only — NO new app/libs jars, so the native-app-deps seed does NOT need a
+  refresh; no version bump done (still 0.1.58). Uncommitted changes (4 new + 2 modified files) +
+  stray META-INF//gama/ unzip leftovers in repo root removed. Next: commit + push (no release
+  expected unless requested).
+- If the user pushes further: zip-vs-jar (`.zip` SAF picker entries) not needed; multi-plugin
+  coexistence is designed (per-file loaders) but not yet tested; a plugin jar cannot yet ship its
+  own `models/` into the Library (library asset is sealed at build time — plugin models would need
+  their own discovery); consider surface the active plugin list (settings) and an uninstall action.

@@ -15,6 +15,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
@@ -37,6 +38,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.cardview.widget.CardView;
 import androidx.core.app.ActivityCompat;
@@ -96,6 +99,10 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     private static final int SOURCE_LIBRARY = 0;
     private static final int SOURCE_WORKSPACE = 1;
     private boolean isDarkTheme = false;
+    private final ActivityResultLauncher<String[]> pluginPicker =
+            registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+                if (uri != null) onPluginPicked(uri);
+            });
     private static final int REQUEST_PICK_WORKSPACE_FOLDER = 1001;
     private static final int REQUEST_MANAGE_ACCESS = 1002;
     private static final int REQUEST_WRITE_STORAGE = 1003;
@@ -143,6 +150,14 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         settingsIcon.setOnClickListener(v -> showWorkspaceLocationDialog());
         settingsIcon.setContentDescription("Workspace location");
         toolbar.addView(settingsIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
+
+        ImageView installIcon = new ImageView(this);
+        installIcon.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_extension));
+        installIcon.setColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN);
+        installIcon.setPadding(dp(12), dp(8), dp(12), dp(8));
+        installIcon.setOnClickListener(v -> installExtension());
+        installIcon.setContentDescription("Install extension");
+        toolbar.addView(installIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         TextView themeIcon = new TextView(this);
         themeIcon.setText(isDarkTheme ? "\u2600" : "\u263E");
@@ -362,6 +377,52 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                     else { WorkspaceManager.resetWorkspaceRoot(this); applyWorkspaceLocationChange(); }
                 })
                 .show();
+    }
+
+    private void installExtension() {
+        pluginPicker.launch(new String[]{
+                "application/java-archive",
+                "application/zip",
+                "application/octet-stream"
+        });
+    }
+
+    private void onPluginPicked(Uri uri) {
+        String name = "extension";
+        try (android.database.Cursor c = getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) name = c.getString(idx);
+            }
+        } catch (Exception ignored) {}
+
+        Toast.makeText(this, "Installing " + name + "...", Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            try {
+                File installed = PluginManager.install(this, uri);
+                String sym = PluginManager.symbolicName(installed);
+                mainHandler.post(() -> new MaterialAlertDialogBuilder(this)
+                        .setTitle("Extension installed")
+                        .setMessage("Extension '" + sym + "' will be active after the app restarts.")
+                        .setPositiveButton("Restart now", (d, w) -> restartApp())
+                        .setNegativeButton("Later", null)
+                        .show());
+            } catch (Exception e) {
+                Log.e(TAG, "Plugin install failed", e);
+                final String msg = e.getMessage() != null ? e.getMessage() : "Install failed";
+                mainHandler.post(() -> Toast.makeText(this, "Install failed: " + msg, Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void restartApp() {
+        Intent i = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (i != null) {
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(i);
+        }
+        Runtime.getRuntime().exit(0);
     }
 
     private void applyWorkspaceLocationChange() {
