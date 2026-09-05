@@ -246,12 +246,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             if (border != null) border = attributes.getColor();
         }
 
-        IPoint loc = attributes.getLocation();
+        // The engine passes each shape in absolute model coordinates (the cell
+        // polygons above already span their final envelope). Do NOT re-apply
+        // attributes.getLocation() here: for grid/agent cells that location is the
+        // shape's own center, so adding it would push every cell away from its
+        // neighbor by half a cell (rendering honeycomb lattices as separated cells).
         double locDx = 0, locDy = 0;
-        if (loc != null) {
-            locDx = toPixelX(loc.getX()) - getXOffsetInPixels();
-            locDy = toPixelY(loc.getY()) - getYOffsetInPixels();
-        }
 
         workPath.reset();
 
@@ -269,15 +269,15 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             float fy = Math.min(top, bottom);
             rect.setRect(left + locDx, fy + locDy,
                     right - left, Math.abs(bottom - top));
+            // Round outward on the integer pixel grid so adjacent cells tile
+            // exactly edge-to-edge (avoids soft blended seams between neighbor
+            // cells -- otherwise a cell grid looks blurry).
+            int x0 = (int) Math.floor(left + locDx);
+            int y0 = (int) Math.floor(fy + locDy);
+            int x1 = (int) Math.ceil(right + locDx);
+            int y1 = (int) Math.ceil(fy + Math.abs(bottom - top) + locDy);
             boolean hasFill = !isLine && !attributes.isEmpty();
             if (hasFill) {
-                // Round outward on the integer pixel grid so adjacent cells tile
-                // exactly edge-to-edge (avoids soft blended seams between neighbor
-                // cells -- otherwise a cell grid looks blurry).
-                int x0 = (int) Math.floor(left + locDx);
-                int y0 = (int) Math.floor(fy + locDy);
-                int x1 = (int) Math.ceil(right + locDx);
-                int y1 = (int) Math.ceil(fy + Math.abs(bottom - top) + locDy);
                 fillPaint.setStyle(Paint.Style.FILL);
                 fillPaint.setColor(colorWithAlpha(attributes.getColor(), currentAlpha));
                 canvas.drawRect(x0, y0, x1, y1, fillPaint);
@@ -285,7 +285,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             if (border != null || attributes.isEmpty()) {
                 strokePaint.setColor(colorWithAlpha(
                         border != null ? border : attributes.getColor(), currentAlpha));
-                canvas.drawRect(fastRect, strokePaint);
+                canvas.drawRect(x0, y0, x1, y1, strokePaint);
             }
             return rect;
         }
