@@ -155,12 +155,8 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         installIcon.setImageDrawable(ContextCompat.getDrawable(this, R.drawable.ic_extension));
         installIcon.setColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN);
         installIcon.setPadding(dp(12), dp(8), dp(12), dp(8));
-        installIcon.setOnClickListener(v -> installExtension());
-        installIcon.setOnLongClickListener(v -> {
-            manageExtensions();
-            return true;
-        });
-        installIcon.setContentDescription("Install extension");
+        installIcon.setOnClickListener(v -> manageExtensions());
+        installIcon.setContentDescription("Installed extensions");
         toolbar.addView(installIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         TextView themeIcon = new TextView(this);
