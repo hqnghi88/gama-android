@@ -1,1 +1,6 @@
 */out/
+
+# Re-include the compiled extension jar kept as the source for the androidsensor
+# plugin (no Java sources exist for it; the jar IS the extension, lifted from the
+# engine set when it moved out of the core bundles).
+!androidsensor/gama.extension.androidsensor.jar

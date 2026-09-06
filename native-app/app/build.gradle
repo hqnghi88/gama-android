@@ -189,7 +189,7 @@ tasks.register('patchGamaJars') {
         // bundles (e.g. a new gama.extension.*) are automatically patched too.
         def toolchainJars = []
         def toolchainGlobs = ['gama.*_*.jar', 'gama.extension.batch-*.jar',
-            'gama.extension.androidsensor.jar', 'gaml.compiler_*.jar']
+            'gaml.compiler_*.jar']
         fileTree(libsDir).matching { include toolchainGlobs }.files
             .findAll { it.name.endsWith('.jar') && !it.name.endsWith('.original.jar')
                       && !it.name.startsWith('gama.dependencies') }

@@ -11,7 +11,9 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -34,6 +36,25 @@ public class PluginManager {
 
     private static final String TAG = "PluginManager";
     private static final String PLUGINS_DIR = "plugins";
+    private static final Map<String, Plugin> loadedPlugins = new LinkedHashMap<>();
+
+    /** Returns the plugin registered under the given symbolic name, or null. */
+    public static Plugin find(String symbolicName) {
+        synchronized (loadedPlugins) {
+            return loadedPlugins.get(symbolicName);
+        }
+    }
+
+    /** Returns the classloader of an installed plugin, or null when not installed. */
+    public static ClassLoader classLoaderOf(String symbolicName) {
+        Plugin plugin = find(symbolicName);
+        return plugin == null ? null : plugin.classLoader;
+    }
+
+    /** True when an external plugin with the given symbolic name is installed. */
+    public static boolean isInstalled(String symbolicName) {
+        return find(symbolicName) != null;
+    }
 
     public static File pluginsDir(Context context) {
         File dir = new File(context.getFilesDir(), PLUGINS_DIR);
@@ -59,6 +80,9 @@ public class PluginManager {
     }
 
     public static List<Plugin> load(Context context) {
+        synchronized (loadedPlugins) {
+            loadedPlugins.clear();
+        }
         List<File> files = installedFiles(context);
         if (files.isEmpty()) return new ArrayList<>();
 
@@ -83,7 +107,11 @@ public class PluginManager {
                 Log.e(TAG, "Skipping unloadable plugin " + f.getName() + ": " + t.getMessage());
                 continue;
             }
-            plugins.add(new Plugin(name, f, loader));
+            Plugin plugin = new Plugin(name, f, loader);
+            plugins.add(plugin);
+            synchronized (loadedPlugins) {
+                loadedPlugins.put(name, plugin);
+            }
         }
         return plugins;
     }

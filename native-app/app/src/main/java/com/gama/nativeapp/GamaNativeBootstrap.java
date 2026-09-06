@@ -54,7 +54,6 @@ public class GamaNativeBootstrap {
                 "gama.extension.pedestrian", "gama.extension.serialize",
                 "gama.extension.stats", "gama.extension.traffic",
                 "gama.extension.batch",
-                "gama.extension.androidsensor",
                 "gama.ui.application", "gama.ui.display.java2d", "gama.ui.display.opengl",
                 "gama.ui.editor", "gama.ui.experiment", "gama.ui.navigator",
                 "gama.ui.shared", "gama.ui.viewers"

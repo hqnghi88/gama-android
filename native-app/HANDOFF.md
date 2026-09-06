@@ -1201,3 +1201,45 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   addPluginRow/confirmRemovePlugin/removePlugin). No new jars -> no seed refresh, no version bump.
 - If the user pushes further: show active plugin list would be more discoverable than a long-press
   (e.g. a "plugins" section), and consider auto-hiding the oat/ cache dir.
+
+### Session 19c: androidsensor moved out of the core into an external plugin
+- Moved `gama.extension.androidsensor` out of the bundled engine set and repackaged it as a
+  runtime-installable plugin. It was previously compiled INTO the app: `SensorBridge.java`
+  (ExperimentActivity) imported `gama.extension.androidsensor.AndroidSensorBridge.Builder` directly.
+- What changed:
+  1. `app/libs/gama.extension.androidsensor.jar` removed from `libs/` and `libs/pristine/` (engine
+     set 41 -> 40; `assets/gama.bundles` now 33 bundles, no androidsensor). The jar is preserved as
+     `plugins/androidsensor/gama.extension.androidsensor.jar` (+ a `!.` exception in
+     `plugins/.gitignore`) so the plugin can be rebuilt — no Java sources exist for this extension.
+  2. `plugins/build_plugin_from_jar.sh` (new): repackages an existing engine-style extension jar
+     into a dexed runtime plugin (d8 the classes, stamp `Bundle-SymbolicName`/`Bundle-Version`
+     manifest) — the "no source available" counterpart of `build_plugin.sh`. Production jar:
+     `plugins/androidsensor/out/plugin_0.1.0.jar` (7.4KB, gama.extension.androidsensor v0.1.0).
+     Its classes only use lambdas + string-concat (desugared by d8, no SwitchBootstraps), so no
+     toolchain patchers are needed — unlike the engine jars.
+  3. `SensorBridge.java`: no longer imports the extension. `publish()` reaches the plugin's
+     `AndroidSensorBridge$Builder` reflectively through `PluginManager.classLoaderOf(EXTENSION)`;
+     no-ops when the plugin is absent (installed without the plugin = sensors register, publish
+     silently skipped). Cache of reflection handles; resets on failure.
+  4. `PluginManager.java`: `load()` now keeps a static `loadedPlugins` registry (name -> Plugin);
+     added `find()`/`classLoaderOf()`/`isInstalled()` accessors.
+  5. `build.gradle` `toolchainGlobs` and the `GamaNativeBootstrap` fallback bundle list: dropped the
+     androidsensor entry (it is no longer a build-time bundle).
+- Verified on emulator (API 17 image via emulator-5554):
+  - WITHOUT plugin: `AndroidSensorTest.gaml` compile fails - "android_sensor is not defined or
+    accessible...", "Unknown operator or action: get_sensor_data", "accel_x is not defined" (6
+    errors). Core removal confirmed end-to-end.
+  - WITH plugin (`plugin_gama.extension.androidsensor.jar` in files/plugins): "Registered external
+    plugin: gama.extension.androidsensor", model compiles, `sensor_test` experiment runs (tens of
+    thousands cycles), no SensorBridge "publish failed" and no crashes -> reflection bridge resolves
+    and publishes into the plugin-own snapshot that `AndroidSensorSkill` reads. Left installed on
+    the emulator (plus a copy in /sdcard/Download for the in-app SAF install test) so the user can
+    test install/uninstall themselves:
+      - tap puzzle icon = install picker; long-press = "Installed extensions" manage/uninstall.
+- DEV APK for the user's manual install/uninstall test: `app/build/outputs/apk/debug/app-debug.apk`
+  (this is the build WITHOUT the bundled extension). Plugin jar: `plugins/androidsensor/out/plugin_0.1.0.jar`.
+- IMPORTANT - seed/CI: the native-app-deps seed still contains `gama.extension.androidsensor.jar`
+  (41 jars). A CI release build would re-bundle the extension unless the seed is refreshed by
+  dropping that jar. No seed refresh / version bump done yet (dev APK is fine for the manual test).
+- Uncommitted changes at end of session: see repo status; commit message suggestion: "Remove
+  androidsensor from core bundles; ship it as a runtime-installable plugin".

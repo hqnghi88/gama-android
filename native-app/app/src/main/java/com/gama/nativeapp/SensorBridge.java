@@ -11,20 +11,86 @@ import android.hardware.SensorManager;
 import android.os.BatteryManager;
 import android.util.Log;
 
-import java.util.List;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 
-import gama.extension.androidsensor.AndroidSensorBridge;
+import java.util.List;
 
 /**
  * Registers Android {@link SensorManager} listeners and publishes the latest readings into the
- * GAMA {@link AndroidSensorBridge}, where the {@code android_sensor} GAML skill reads them.
+ * GAMA {@code gama.extension.androidsensor.AndroidSensorBridge}, where the {@code android_sensor}
+ * GAML skill reads them. The bridge class lives in the androidsensor *extension*, which since the
+ * runtime-plugin move ships as an installable plugin; it is reached reflectively through the
+ * plugin's classloader so the app stays compilable (and publish becomes a no-op) without it.
  */
 public class SensorBridge {
 
     private static final String TAG = "SensorBridge";
+    private static final String EXTENSION = "gama.extension.androidsensor";
+
+    /** Cached reflection handles into the androidsensor extension's AndroidSensorBridge.Builder. */
+    private static final class Bridge {
+        final Constructor<?> constructor;
+        final Method timestamp;
+        final Method accelerometer;
+        final Method gyroscope;
+        final Method orientation;
+        final Method magnetic;
+        final Method light;
+        final Method proximity;
+        final Method pressure;
+        final Method temperature;
+        final Method humidity;
+        final Method battery;
+        final Method publish;
+
+        Bridge(Constructor<?> constructor, Method timestamp, Method accelerometer,
+               Method gyroscope, Method orientation, Method magnetic, Method light,
+               Method proximity, Method pressure, Method temperature, Method humidity,
+               Method battery, Method publish) {
+            this.constructor = constructor;
+            this.timestamp = timestamp;
+            this.accelerometer = accelerometer;
+            this.gyroscope = gyroscope;
+            this.orientation = orientation;
+            this.magnetic = magnetic;
+            this.light = light;
+            this.proximity = proximity;
+            this.pressure = pressure;
+            this.temperature = temperature;
+            this.humidity = humidity;
+            this.battery = battery;
+            this.publish = publish;
+        }
+
+        static Bridge forLoader(ClassLoader loader) {
+            try {
+                Class<?> builder = Class.forName(
+                        "gama.extension.androidsensor.AndroidSensorBridge$Builder", false, loader);
+                return new Bridge(
+                        builder.getConstructor(),
+                        builder.getMethod("withTimestamp", long.class),
+                        builder.getMethod("withAccelerometer", float.class, float.class, float.class),
+                        builder.getMethod("withGyroscope", float.class, float.class, float.class),
+                        builder.getMethod("withOrientation", float.class, float.class, float.class),
+                        builder.getMethod("withMagnetic", float.class, float.class, float.class),
+                        builder.getMethod("withLight", float.class),
+                        builder.getMethod("withProximity", float.class),
+                        builder.getMethod("withPressure", float.class),
+                        builder.getMethod("withTemperature", float.class),
+                        builder.getMethod("withHumidity", float.class),
+                        builder.getMethod("withBatteryLevel", float.class),
+                        builder.getMethod("publish"));
+            } catch (Throwable t) {
+                Log.w(TAG, "android_sensor extension not usable: " + t);
+                return null;
+            }
+        }
+    }
 
     private final SensorManager sensorManager;
     private final Context context;
+    private volatile Bridge bridge;
     private final SensorEventListener listener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
@@ -132,18 +198,29 @@ public class SensorBridge {
     }
 
     private void publish() {
-        new AndroidSensorBridge.Builder()
-                .withTimestamp(System.currentTimeMillis())
-                .withAccelerometer(accX, accY, accZ)
-                .withGyroscope(gyrX, gyrY, gyrZ)
-                .withOrientation(oriX, oriY, oriZ)
-                .withMagnetic(magX, magY, magZ)
-                .withLight(light)
-                .withProximity(proximity)
-                .withPressure(pressure)
-                .withTemperature(temperature)
-                .withHumidity(humidity)
-                .withBatteryLevel(batteryLevel)
-                .publish();
+        Bridge b = bridge;
+        if (b == null) {
+            b = Bridge.forLoader(PluginManager.classLoaderOf(EXTENSION));
+            bridge = b;
+            if (b == null) return;
+        }
+        try {
+            Object builder = b.constructor.newInstance();
+            b.timestamp.invoke(builder, System.currentTimeMillis());
+            b.accelerometer.invoke(builder, accX, accY, accZ);
+            b.gyroscope.invoke(builder, gyrX, gyrY, gyrZ);
+            b.orientation.invoke(builder, oriX, oriY, oriZ);
+            b.magnetic.invoke(builder, magX, magY, magZ);
+            b.light.invoke(builder, light);
+            b.proximity.invoke(builder, proximity);
+            b.pressure.invoke(builder, pressure);
+            b.temperature.invoke(builder, temperature);
+            b.humidity.invoke(builder, humidity);
+            b.battery.invoke(builder, batteryLevel);
+            b.publish.invoke(builder);
+        } catch (Throwable t) {
+            Log.w(TAG, "publish failed: " + t);
+            bridge = null;
+        }
     }
 }
