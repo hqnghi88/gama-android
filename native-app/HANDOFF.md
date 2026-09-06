@@ -1184,3 +1184,20 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   coexistence is designed (per-file loaders) but not yet tested; a plugin jar cannot yet ship its
   own `models/` into the Library (library asset is sealed at build time — plugin models would need
   their own discovery); consider surface the active plugin list (settings) and an uninstall action.
+
+### Session 19b: uninstall extensions (in-app)
+- Follow-up to the runtime plugin system: added an uninstall/manage flow. Long-press the puzzle
+  (Install extension) icon to open "Installed extensions" — lists each plugin's symbolic name,
+  file name and size, with a red "Remove" per row (confirm dialog), an "Install new extension..."
+  link, and "Close". Removing deletes the jar from files/plugins (sets writable first since loaded
+  files are made read-only), removes the row (falls back to "No extensions installed yet." when
+  empty), then offers "Restart now" to stop loading it. No plugin rows -> empty-state text.
+- Verified on emulator: plant demo plugin -> long-press icon -> dialog lists gama.extension.demo
+  with Remove -> confirm -> file gone, "Extension removed / Restart the app..." -> Restart now ->
+  fresh process logs no PluginManager lines (plugin no longer loaded); empty manage dialog shows
+  "No extensions installed yet.". Cleared leftover oat/ dir too (DexClassLoader optimized dex
+  cache under plugins/; harmless but tidy).
+- Changes: ModelNavigatorActivity (long-press action + manageExtensions/showManageExtensionsDialog/
+  addPluginRow/confirmRemovePlugin/removePlugin). No new jars -> no seed refresh, no version bump.
+- If the user pushes further: show active plugin list would be more discoverable than a long-press
+  (e.g. a "plugins" section), and consider auto-hiding the oat/ cache dir.

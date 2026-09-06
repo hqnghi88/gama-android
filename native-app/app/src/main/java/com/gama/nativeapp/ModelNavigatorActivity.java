@@ -156,6 +156,10 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         installIcon.setColorFilter(0xFFFFFFFF, PorterDuff.Mode.SRC_IN);
         installIcon.setPadding(dp(12), dp(8), dp(12), dp(8));
         installIcon.setOnClickListener(v -> installExtension());
+        installIcon.setOnLongClickListener(v -> {
+            manageExtensions();
+            return true;
+        });
         installIcon.setContentDescription("Install extension");
         toolbar.addView(installIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
@@ -423,6 +427,124 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             startActivity(i);
         }
         Runtime.getRuntime().exit(0);
+    }
+
+    private void manageExtensions() {
+        executor.execute(() -> {
+            List<File> installed = PluginManager.installedFiles(this);
+            mainHandler.post(() -> showManageExtensionsDialog(installed));
+        });
+    }
+
+    private void showManageExtensionsDialog(List<File> installed) {
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(dp(16), dp(8), dp(16), 0);
+
+        if (installed.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText("No extensions installed yet.");
+            empty.setTextColor(isDarkTheme ? 0xFF999999 : 0xFF888888);
+            empty.setPadding(0, dp(8), 0, dp(8));
+            container.addView(empty);
+        } else {
+            for (File f : installed) {
+                addPluginRow(container, f);
+            }
+        }
+
+        TextView installNew = new TextView(this);
+        installNew.setText("Install new extension...");
+        installNew.setTextColor(ContextCompat.getColor(this, R.color.primary));
+        installNew.setPadding(0, dp(12), 0, dp(4));
+        installNew.setOnClickListener(v -> installExtension());
+        container.addView(installNew);
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Installed extensions")
+                .setView(container)
+                .setPositiveButton("Close", null)
+                .show();
+    }
+
+    private void addPluginRow(LinearLayout container, File f) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+
+        LinearLayout textCol = new LinearLayout(this);
+        textCol.setOrientation(LinearLayout.VERTICAL);
+        textCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView name = new TextView(this);
+        name.setText(PluginManager.symbolicName(f));
+        name.setTextColor(isDarkTheme ? 0xFFEEEEEE : 0xFF333333);
+        name.setTextSize(14);
+        textCol.addView(name);
+
+        TextView fileTv = new TextView(this);
+        fileTv.setText(f.getName() + " \u00B7 " + Formatter.formatFileSize(this, f.length()));
+        fileTv.setTextColor(isDarkTheme ? 0xFF777777 : 0xFF888888);
+        fileTv.setTextSize(12);
+        textCol.addView(fileTv);
+        row.addView(textCol);
+
+        TextView remove = new TextView(this);
+        remove.setText("Remove");
+        remove.setTextColor(0xFFD32F2F);
+        remove.setPadding(dp(12), dp(8), 0, dp(8));
+        remove.setOnClickListener(v -> confirmRemovePlugin(f, container, row));
+        row.addView(remove);
+        container.addView(row);
+    }
+
+    private void confirmRemovePlugin(File f, LinearLayout container, LinearLayout row) {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Remove extension")
+                .setMessage("Remove '" + PluginManager.symbolicName(f) + "'? You can reinstall it later.")
+                .setPositiveButton("Remove", (d, w) -> removePlugin(f, container, row))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void removePlugin(File f, LinearLayout container, LinearLayout row) {
+        executor.execute(() -> {
+            boolean ok = false;
+            try {
+                if (f.exists()) {
+                    if (!f.canWrite()) f.setWritable(true);
+                    ok = f.delete();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to remove plugin " + f.getName(), e);
+            }
+            final boolean deleted = ok;
+            mainHandler.post(() -> {
+                if (container != null && row != null) {
+                    container.removeView(row);
+                }
+                if (container.getChildCount() <= 1) {
+                    TextView empty = new TextView(this);
+                    empty.setText("No extensions installed yet.");
+                    empty.setTextColor(isDarkTheme ? 0xFF999999 : 0xFF888888);
+                    empty.setPadding(0, dp(8), 0, dp(8));
+                    container.addView(empty, 0);
+                }
+                MaterialAlertDialogBuilder confirm = new MaterialAlertDialogBuilder(this)
+                        .setTitle(deleted ? "Extension removed" : "Could not remove extension")
+                        .setMessage(deleted
+                                ? "Restart the app to stop loading it?"
+                                : "The file could not be removed (error logged).");
+                if (deleted) {
+                    confirm.setPositiveButton("Restart now", (d, w) -> restartApp())
+                            .setNegativeButton("Later", null);
+                } else {
+                    confirm.setPositiveButton("OK", null);
+                }
+                confirm.show();
+            });
+        });
     }
 
     private void applyWorkspaceLocationChange() {
