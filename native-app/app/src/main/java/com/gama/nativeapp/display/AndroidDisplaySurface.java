@@ -322,12 +322,14 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                     || frameBuffers[i].getHeight() != h) { ok = false; break; }
         }
         if (ok) return;
+        // Invalidate presentIndex BEFORE nulling buffers so the UI thread
+        // never sees a valid index pointing to a recycled bitmap.
+        presentIndex = -1;
         for (int i = 0; i < FRAME_BUFFERS; i++) {
             if (frameBuffers[i] != null) frameBuffers[i].recycle();
             frameBuffers[i] = null;
             frameCanvases[i] = null;
         }
-        presentIndex = -1;
         try {
             for (int i = 0; i < FRAME_BUFFERS; i++) {
                 frameBuffers[i] = android.graphics.Bitmap.createBitmap(w, h,
@@ -365,8 +367,13 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             p = presentIndex;
         }
 
-        if (p >= 0 && frameBuffers[p] != null) {
+        if (p >= 0 && p < FRAME_BUFFERS && frameBuffers[p] != null) {
             canvas.drawBitmap(frameBuffers[p], 0, 0, null);
+        } else {
+            // No valid buffer (e.g. buffer reallocation race on View resize).
+            // Fill with the simulation background colour so the window's default
+            // theme background (white / near-white) never flashes through.
+            canvas.drawColor(bgPaint.getColor());
         }
     }
 
