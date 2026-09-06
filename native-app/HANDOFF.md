@@ -1243,3 +1243,40 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   dropping that jar. No seed refresh / version bump done yet (dev APK is fine for the manual test).
 - Uncommitted changes at end of session: see repo status; commit message suggestion: "Remove
   androidsensor from core bundles; ship it as a runtime-installable plugin".
+
+### Session 19d: installed plugins' models appear in the app Library ("Extensions")
+- New behavior: plugins that ship a `models/` tree in their jar get a Library section. On
+  `extractLibraryInternal()` the app walks every installed plugin (`PluginManager.all()`), extracts
+  the plugin's `models/` files into `<cacheDir>/extensions/<symbolic-name>/...` (mtime-guarded vs
+  the jar, so jars are re-extracted only when they change), and `buildTree()` adds an "Extensions"
+  top-level category with one branch per plugin (models only — a plugin with no `models/`, e.g.
+  androidsensor, does not appear). Dir of an uninstalled plugin is removed (stale cleanup).
+- CRITICAL routing fix: Library rows with an absolute on-disk path (plugin models) must NOT go
+  through the built-in-library jar compile (`compileModelFromLibrary` -> "Entry not found in
+  library"). `launchEditor()` / `launchExperiment()` in `ModelNavigatorActivity` now detect
+  `new File(jarPath).isFile()` and pass `file_path` instead of `jar_path`+`from_library`, so Open
+  and long-press Run use `compileModelFromFilePath` (plugin classloader is active there). Built-in
+  library entries (relative jar paths) are unaffected.
+- Test vector: the demo plugin now ships `plugins/demo/resources/models/PluginDemo.gaml` (canonical
+  source; rebuilt into `demo/out/plugin_0.1.0.jar`). Note: `autorun: true` is NOT a valid experiment
+  facet in this compiler ("Unwanted or misplaced character ' : '" at that line) — removed; the
+  experiment loads paused and the app prompts "press Play to run", consistent with library models.
+- Verified end-to-end on emulator-5554: with `plugin_gama.extension.demo.jar` installed, Library
+  shows `Extensions > gama.extension.demo > PluginDemo.gaml`; long-press -> Run -> console shows
+  "Compiling: .../cache/extensions/gama.extension.demo/models/PluginDemo.gaml", "Compiled:
+  PluginDemo_model", "Found 1 experiment(s) ... plugin_demo", "Starting: plugin_demo", and
+  "PLUGIN DEMO: demo_square(4)=16 demo_cube(3)=27 demo_greet(GAMA)=Hello, GAMA!" (plugin operators
+  resolve via the plugin classloader). androidsensor (no models/) correctly shows nothing under
+  Extensions.
+- TEST-HARNESS gotcha (root adb): pushing plugin jars into files/plugins while adb runs as root
+  leaves root-owned files the app uid cannot read -> "Could not read manifest"/"writable dex file"
+  and NO "Registered external plugin" line. Fix: `adb shell pm clear`, launch once (app creates
+  files/plugins with its own ownership), then copy via `run-as`: `adb shell run-as com.gama.nativeapp
+  cp /data/local/tmp/<jar>.jar files/plugins/plugin_<symbolic>.jar`. Also hardened
+  `PluginManager.bundleNameFromFile` to strip a leading `plugin_` so an unreadable manifest still
+  yields the right symbolic name for lookups like SensorBridge's.
+- PluginManager gained `PluginManager.all()`. Version still 0.1.58; seed/CI refresh still pending
+  (drop gama.extension.androidsensor.jar from native-app-deps before the next release).
+- Uncommitted changes at end of session: ModelNavigatorActivity (+extract/addPluginModels, routing
+  fix), PluginManager (all() + plugin_ strip), plugins/demo/resources/ (new GAML source). Commit
+  message suggestion: "Show installed plugins' models in the app Library".

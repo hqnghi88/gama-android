@@ -1131,11 +1131,73 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 LibraryJarUtil.markExtracted(this);
             }
             if (jarFile != null) jarFile.close();
+
+            // Also materialize each installed plugin's own models/ tree so its sample
+            // models appear in the library and can be opened/run from the file system.
+            extractPluginModels();
         } catch (Exception e) {
             Log.e(TAG, "Extraction failed", e);
         } finally {
             mainHandler.post(() -> done.run());
         }
+    }
+
+    /**
+     * Extract the models/ project tree shipped by each installed plugin into
+     * {@code <cache>/extensions/<symbolic-name>/}, delete leftover dirs of plugins that
+     * were uninstalled, and refresh stale copies. The sealed library jar is the single
+     * source of truth for the built-in models; plugin models live alongside it on disk,
+     * namespaced by the plugin so installed extensions can provide their own samples.
+     */
+    private void extractPluginModels() {
+        File extRoot = new File(getCacheDir(), "extensions");
+        List<PluginManager.Plugin> plugins = PluginManager.all();
+        try {
+            java.util.Set<String> active = new java.util.HashSet<>();
+            for (PluginManager.Plugin p : plugins) {
+                File jar = p.file;
+                if (jar == null || !jar.getName().endsWith(".jar")) continue;
+                active.add(p.name);
+                try (JarFile jf = new JarFile(jar)) {
+                    java.util.Enumeration<? extends JarEntry> entries = jf.entries();
+                    while (entries.hasMoreElements()) {
+                        JarEntry e = entries.nextElement();
+                        String name = e.getName();
+                        if (e.isDirectory() || name.startsWith("META-INF")) continue;
+                        if (!name.startsWith("models/")) continue;
+                        File out = new File(extRoot, p.name + "/" + name);
+                        if (out.exists() && out.lastModified() > jar.lastModified()) continue;
+                        out.getParentFile().mkdirs();
+                        try (InputStream is = jf.getInputStream(e);
+                             FileOutputStream fos = new FileOutputStream(out)) {
+                            byte[] buf = new byte[8192];
+                            int n;
+                            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to extract models from plugin " + p.name, e);
+                }
+            }
+            File[] pluginDirs = extRoot.listFiles();
+            if (pluginDirs != null) {
+                for (File dir : pluginDirs) {
+                    if (dir.isDirectory() && !active.contains(dir.getName())) {
+                        deleteRecursively(dir);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Plugin model extraction failed", e);
+        }
+    }
+
+    private static void deleteRecursively(File f) {
+        File[] children = f.listFiles();
+        if (children != null) {
+            for (File c : children) deleteRecursively(c);
+        }
+        f.delete();
     }
 
     private void bootstrap() {
@@ -1251,6 +1313,8 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             Log.e(TAG, "Error scanning library", e);
         }
 
+        addPluginModels(root);
+
         sortTree(root);
         pruneEmptyDirs(root);
         return root;
@@ -1265,6 +1329,60 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             Log.e(TAG, "JAR open failed", e);
         }
         return null;
+    }
+
+    /**
+     * Append an "Extensions" section to the library tree, one branch per installed
+     * plugin that shipped a models/ tree (extracted by extractPluginModels()).
+     * Item fullPaths are absolute file paths so open/run reuse the same file-based
+     * compile pipeline as workspace models.
+     */
+    private void addPluginModels(ModelTreeItem root) {
+        File extRoot = new File(getCacheDir(), "extensions");
+        File[] pluginDirs = extRoot.listFiles(File::isDirectory);
+        if (pluginDirs == null || pluginDirs.length == 0) return;
+
+        ModelTreeItem extensions = new ModelTreeItem("Extensions",
+                extRoot.getAbsolutePath() + "/", ModelTreeItem.Type.CATEGORY, 1, root);
+        root.getChildren().add(extensions);
+        totalDirs++;
+
+        for (File pluginDir : pluginDirs) {
+            File modelsDir = new File(pluginDir, "models");
+            if (!modelsDir.isDirectory()) continue;
+            ModelTreeItem pluginNode = new ModelTreeItem(pluginDir.getName(),
+                    pluginDir.getAbsolutePath() + "/", ModelTreeItem.Type.CATEGORY, 2, extensions);
+            extensions.getChildren().add(pluginNode);
+            totalDirs++;
+            addDirectory(pluginNode, modelsDir, 3);
+        }
+    }
+
+    /** Walk a plugin model directory on disk, mirroring the library-jar tree builder. */
+    private void addDirectory(ModelTreeItem parent, File dir, int depth) {
+        File[] entries = dir.listFiles();
+        if (entries == null) return;
+        java.util.Arrays.sort(entries, java.util.Comparator.comparing(File::getName));
+        for (File f : entries) {
+            String fileName = f.getName();
+            if (fileName.startsWith(".")) continue;
+            if (f.isDirectory()) {
+                ModelTreeItem dirItem = new ModelTreeItem(fileName, f.getAbsolutePath() + "/",
+                        ModelTreeItem.Type.CATEGORY, depth, parent);
+                parent.getChildren().add(dirItem);
+                totalDirs++;
+                addDirectory(dirItem, f, depth + 1);
+            } else {
+                ModelTreeItem.Type fileType = fileName.toLowerCase().endsWith(".gaml")
+                        ? ModelTreeItem.Type.MODEL_FILE : ModelTreeItem.Type.FILE;
+                ModelTreeItem fileItem = new ModelTreeItem(fileName, f.getAbsolutePath(),
+                        fileType, depth, parent);
+                fileItem.setFileSize(f.length());
+                parent.getChildren().add(fileItem);
+                totalFiles++;
+                totalSize += f.length();
+            }
+        }
     }
 
     private void sortTree(ModelTreeItem node) {
@@ -1309,18 +1427,26 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     private void launchEditor(String name, String jarPath, boolean fromLibrary) {
         Intent intent = new Intent(this, ModelEditorActivity.class);
         intent.putExtra("model_name", name);
-        intent.putExtra("jar_path", jarPath);
-        intent.putExtra("from_library", fromLibrary);
+        if (fromLibrary && new File(jarPath).isFile()) {
+            intent.putExtra("file_path", jarPath);
+        } else {
+            intent.putExtra("jar_path", jarPath);
+            intent.putExtra("from_library", fromLibrary);
+        }
         startActivity(intent);
     }
 
     private void launchExperiment(String name, String jarPath, boolean fromLibrary) {
         Intent intent = new Intent(this, ExperimentActivity.class);
-        intent.putExtra("model_name", jarPath);
-        if (fromLibrary) {
+        if (fromLibrary && new File(jarPath).isFile()) {
+            intent.putExtra("model_name", jarPath);
+            intent.putExtra("file_path", jarPath);
+        } else if (fromLibrary) {
+            intent.putExtra("model_name", jarPath);
             intent.putExtra("jar_path", jarPath);
             intent.putExtra("from_library", true);
         } else {
+            intent.putExtra("model_name", jarPath);
             intent.putExtra("asset_path", jarPath);
         }
         startActivity(intent);

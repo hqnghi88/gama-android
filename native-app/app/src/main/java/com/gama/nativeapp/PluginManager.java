@@ -56,6 +56,13 @@ public class PluginManager {
         return find(symbolicName) != null;
     }
 
+    /** All currently loaded external plugins. */
+    public static List<Plugin> all() {
+        synchronized (loadedPlugins) {
+            return new ArrayList<>(loadedPlugins.values());
+        }
+    }
+
     public static File pluginsDir(Context context) {
         File dir = new File(context.getFilesDir(), PLUGINS_DIR);
         if (!dir.exists() && !dir.mkdirs()) {
@@ -148,6 +155,10 @@ public class PluginManager {
         if (ext >= 0) n = n.substring(0, ext);
         if (n.endsWith(".jar")) n = n.substring(0, n.length() - 4);
         if (n.endsWith(".dex")) n = n.substring(0, n.length() - 4);
+        // install() renames incoming files to "plugin_<symbolic-name>.jar"; strip that
+        // prefix so the fallback still yields the real bundle name if the manifest is
+        // unreadable (same-named lookup, e.g. SensorBridge -> AndroidSensorBridge).
+        if (n.startsWith("plugin_")) n = n.substring("plugin_".length());
         int idx = n.lastIndexOf('_');
         if (idx > 0 && idx < n.length() - 1 && Character.isDigit(n.charAt(idx + 1))) {
             n = n.substring(0, idx);
