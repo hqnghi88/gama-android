@@ -238,6 +238,7 @@ tasks.register('patchGamaJars') {
         //    an EMPTY model library (0 items under "GAMA Library").
         def libraryBundle = resolveBundle('gama.library')
         def assetFile = file("${projectDir}/src/main/assets/gama.library.jar")
+        java.nio.file.Files.createDirectories(assetFile.toPath().getParent())
         java.nio.file.Files.copy(file(libraryBundle).toPath(), assetFile.toPath(),
             java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         logger.lifecycle("Library asset: copied ${file(libraryBundle).name} -> ${assetFile}")
@@ -317,6 +318,7 @@ tasks.register('patchGamaJars') {
         // api/core first (they must initialize before everything else)
         def ordered = (['gama.api', 'gama.core'] + (bundleManifest - ['gama.api', 'gama.core']))
         def manifestFile = file("${projectDir}/src/main/assets/gama.bundles")
+        java.nio.file.Files.createDirectories(manifestFile.toPath().getParent())
         manifestFile.text = String.join('\n', ordered) + '\n'
         logger.lifecycle("Bundle manifest: ${manifestFile.name} lists ${ordered.size()} bundles [${ordered.join(', ')}]")
     }
