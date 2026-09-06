@@ -405,12 +405,22 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             try {
                 File installed = PluginManager.install(this, uri);
                 String sym = PluginManager.symbolicName(installed);
-                mainHandler.post(() -> new MaterialAlertDialogBuilder(this)
-                        .setTitle("Extension installed")
-                        .setMessage("Extension '" + sym + "' will be active after the app restarts.")
-                        .setPositiveButton("Restart now", (d, w) -> restartApp())
-                        .setNegativeButton("Later", null)
-                        .show());
+                if (sym != null && !sym.isEmpty()) {
+                    // Force a fresh extraction of this plugin's models on the next library
+                    // build: clear any stale stamp/extracted files from an earlier install
+                    // so a reinstall can never be masked by a leftover freshness marker.
+                    File extRoot = new File(getCacheDir(), "extensions");
+                    deleteRecursively(new File(extRoot, sym));
+                    deleteRecursively(new File(new File(extRoot, ".stamps"), sym));
+                }
+                mainHandler.post(() -> {
+                    refreshLibrary();
+                    new MaterialAlertDialogBuilder(this)
+                            .setTitle("Extension installed")
+                            .setMessage("Extension '" + sym + "' is now active; its models were added to the library.")
+                            .setPositiveButton("OK", null)
+                            .show();
+                });
             } catch (Exception e) {
                 Log.e(TAG, "Plugin install failed", e);
                 final String msg = e.getMessage() != null ? e.getMessage() : "Install failed";
@@ -508,6 +518,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     }
 
     private void removePlugin(File f, LinearLayout container, LinearLayout row) {
+        final String sym = PluginManager.symbolicName(f);
         executor.execute(() -> {
             boolean ok = false;
             try {
@@ -517,6 +528,9 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Failed to remove plugin " + f.getName(), e);
+            }
+            if (ok && sym != null && !sym.isEmpty()) {
+                PluginManager.unregister(sym);
             }
             final boolean deleted = ok;
             mainHandler.post(() -> {
@@ -530,17 +544,19 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                     empty.setPadding(0, dp(8), 0, dp(8));
                     container.addView(empty, 0);
                 }
+                if (deleted && sym != null && !sym.isEmpty()) {
+                    File extRoot = new File(getCacheDir(), "extensions");
+                    deleteRecursively(new File(extRoot, sym));
+                    deleteRecursively(new File(new File(extRoot, ".stamps"), sym));
+                }
                 MaterialAlertDialogBuilder confirm = new MaterialAlertDialogBuilder(this)
                         .setTitle(deleted ? "Extension removed" : "Could not remove extension")
                         .setMessage(deleted
-                                ? "Restart the app to stop loading it?"
-                                : "The file could not be removed (error logged).");
-                if (deleted) {
-                    confirm.setPositiveButton("Restart now", (d, w) -> restartApp())
-                            .setNegativeButton("Later", null);
-                } else {
-                    confirm.setPositiveButton("OK", null);
-                }
+                                ? "The extension was unloaded and its models removed from the library."
+                                : "The file could not be removed (error logged).")
+                        .setPositiveButton(deleted ? "OK" : "Close", (d, w) -> {
+                            if (deleted) refreshLibrary();
+                        });
                 confirm.show();
             });
         });
@@ -1157,39 +1173,65 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 File jar = p.file;
                 if (jar == null || !jar.getName().endsWith(".jar")) continue;
                 active.add(p.name);
-                // Freshness is tracked by a stamp (jar size + mtime) written after the last
-                // extraction, so re-adding/updating a plugin always refreshes its models even
-                // when file mtimes compare equal or the extracted copies are older.
-                File stamp = new File(extRoot, ".stamps/" + p.name);
-                String currentStamp = jar.length() + ":" + jar.lastModified();
-                boolean outOfDate = false;
-                if (!stamp.isFile()) outOfDate = true;
-                else {
-                    try (BufferedReader br = new BufferedReader(new FileReader(stamp))) {
-                        outOfDate = !currentStamp.equals(br.readLine());
-                    } catch (IOException ioe) {
-                        outOfDate = true;
-                    }
-                }
-                if (outOfDate) {
+                File pluginDir = new File(extRoot, p.name);
+                // List the models/ entries shipped by the jar. A readable jar yields an
+                // exact manifest regardless of any stamp, so we only re-extract when the
+                // jar changed OR one of its model files is missing on disk (this heals
+                // cache wipes and the races between a SAF copy and the extraction pass).
+                java.util.List<String> modelEntries = new java.util.ArrayList<>();
+                boolean jarReadable = false;
+                if (!jar.canRead()) {
+                    Log.w(TAG, "Plugin jar not readable, cannot extract models: " + jar.getName());
+                } else {
                     try (JarFile jf = new JarFile(jar)) {
                         java.util.Enumeration<? extends JarEntry> entries = jf.entries();
                         while (entries.hasMoreElements()) {
                             JarEntry e = entries.nextElement();
                             String name = e.getName();
                             if (e.isDirectory() || name.startsWith("META-INF")) continue;
-                            if (!name.startsWith("models/")) continue;
-                            File out = new File(extRoot, p.name + "/" + name);
+                            if (name.startsWith("models/")) modelEntries.add(name);
+                        }
+                        jarReadable = true;
+                    } catch (Exception e) {
+                        // Do not stamp on failure: a transient error (e.g. a SAF copy that
+                        // is still being flushed) must not mark the plugin as extracted, or
+                        // its models would never reappear after a reinstall.
+                        Log.w(TAG, "Failed to inspect models of plugin " + p.name, e);
+                    }
+                }
+
+                File stamp = new File(extRoot, ".stamps/" + p.name);
+                String currentStamp = jar.length() + ":" + jar.lastModified();
+                boolean stampFresh = stamp.isFile();
+                if (stampFresh) {
+                    try (BufferedReader br = new BufferedReader(new FileReader(stamp))) {
+                        stampFresh = currentStamp.equals(br.readLine());
+                    } catch (IOException ioe) {
+                        stampFresh = false;
+                    }
+                }
+                boolean modelsComplete = true;
+                for (String name : modelEntries) {
+                    if (!new File(pluginDir, name).isFile()) {
+                        modelsComplete = false;
+                        break;
+                    }
+                }
+
+                if (jarReadable && (!stampFresh || !modelsComplete)) {
+                    if (!modelEntries.isEmpty()) {
+                        if (pluginDir.isDirectory()) deleteRecursively(pluginDir);
+                        for (String name : modelEntries) {
+                            File out = new File(pluginDir, name);
                             out.getParentFile().mkdirs();
-                            try (InputStream is = jf.getInputStream(e);
+                            try (JarFile jf = new JarFile(jar);
+                                 InputStream is = jf.getInputStream(jf.getEntry(name));
                                  FileOutputStream fos = new FileOutputStream(out)) {
                                 byte[] buf = new byte[8192];
                                 int n;
                                 while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
                             }
                         }
-                    } catch (Exception e) {
-                        Log.w(TAG, "Failed to extract models from plugin " + p.name, e);
                     }
                     stamp.getParentFile().mkdirs();
                     try (FileWriter fw = new FileWriter(stamp)) {

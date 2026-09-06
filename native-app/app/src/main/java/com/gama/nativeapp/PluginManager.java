@@ -7,6 +7,7 @@ import android.provider.OpenableColumns;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -60,6 +61,13 @@ public class PluginManager {
     public static List<Plugin> all() {
         synchronized (loadedPlugins) {
             return new ArrayList<>(loadedPlugins.values());
+        }
+    }
+
+    /** Drops a plugin from the in-memory registry (e.g. after its jar is removed). */
+    public static void unregister(String symbolicName) {
+        synchronized (loadedPlugins) {
+            loadedPlugins.remove(symbolicName);
         }
     }
 
@@ -168,13 +176,72 @@ public class PluginManager {
 
     public static boolean isValidPlugin(File file) {
         String n = file.getName();
+        while (n.startsWith(".")) n = n.substring(1);
         if (n.endsWith(".dex")) return true;
-        if (!n.endsWith(".jar")) return false;
-        try (ZipFile zip = new ZipFile(file)) {
-            return zip.getEntry("classes.dex") != null;
+        boolean zipMagic;
+        try (InputStream is = new FileInputStream(file)) {
+            byte[] head = new byte[4];
+            int len = is.read(head);
+            zipMagic = len == 4 && head[0] == 'P' && head[1] == 'K';
         } catch (Exception e) {
             return false;
         }
+        if (n.endsWith(".jar") && zipMagic) {
+            try (ZipFile zip = new ZipFile(file)) {
+                if (zip.getEntry("classes.dex") != null) return true;
+            } catch (Exception ignored) {
+                // Fall through to the raw-byte scan below.
+            }
+            // Some SAF providers stream jars whose central directory is hard to open
+            // via ZipFile; fall back to scanning the raw bytes for the entry name.
+            return containsEntryName(file, "classes.dex");
+        }
+        return false;
+    }
+
+    private static String headMagic(File file) {
+        try (InputStream is = new FileInputStream(file)) {
+            byte[] head = new byte[8];
+            int n = is.read(head);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < n; i++) sb.append(String.format("%02x", head[i]));
+            return sb.toString();
+        } catch (Exception e) {
+            return "unreadable";
+        }
+    }
+
+    private static boolean containsEntryName(File file, String name) {
+        try (InputStream is = new FileInputStream(file)) {
+            byte[] buf = new byte[8192];
+            byte[] needle = name.getBytes("UTF-8");
+            int hay = 0;
+            byte[] prev = new byte[0];
+            int n;
+            while ((n = is.read(buf)) != -1) {
+                byte[] all = new byte[hay + n];
+                System.arraycopy(prev, 0, all, 0, hay);
+                System.arraycopy(buf, 0, all, hay, n);
+                int found = indexOf(all, needle);
+                if (found >= 0) return true;
+                prev = all.length > needle.length ? java.util.Arrays.copyOfRange(all, all.length - needle.length + 1, all.length) : all;
+                hay = prev.length;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static int indexOf(byte[] hay, byte[] needle) {
+        outer:
+        for (int i = 0; i + needle.length <= hay.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (hay[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
     }
 
     public static File install(Context context, Uri uri) throws Exception {
@@ -183,41 +250,56 @@ public class PluginManager {
         if (!displayName.endsWith(".jar") && !displayName.endsWith(".dex")) displayName += ".jar";
 
         File pluginsDir = pluginsDir(context);
-        File target = new File(pluginsDir, displayName);
-        if (target.exists()) {
-            target.setWritable(true);
-            target.delete();
-        }
+        // Copy through a temp name so a stale read-only/owned-by-previous-uid file at the
+        // final name can never make the write fail half-way; the live jar is replaced
+        // atomically only after the new content has been validated. The temp name keeps
+        // the .jar/.dex extension (isValidPlugin checks it) but is dot-prefixed so the
+        // plugin loader ignores it.
+        File tmp = new File(pluginsDir, "." + displayName);
+        long written = 0;
         try (InputStream in = context.getContentResolver().openInputStream(uri);
-             OutputStream out = new FileOutputStream(target)) {
+             OutputStream out = new FileOutputStream(tmp)) {
             if (in == null) throw new IllegalArgumentException("Cannot read the selected file");
             byte[] buf = new byte[64 * 1024];
             int r;
-            while ((r = in.read(buf)) != -1) out.write(buf, 0, r);
+            while ((r = in.read(buf)) != -1) {
+                out.write(buf, 0, r);
+                written += r;
+            }
         }
+        Log.i(TAG, "Copied plugin input (" + written + " bytes) from " + uri);
 
-        if (!isValidPlugin(target)) {
-            target.delete();
+        if (!isValidPlugin(tmp)) {
+            Log.e(TAG, "Rejected plugin " + tmp.getName() + ": " + written + " bytes, magic="
+                    + headMagic(tmp));
+            tmp.delete();
             throw new IllegalArgumentException(
-                    "Not a GAMA extension: expected a plugin jar containing classes.dex");
+                    "Not a GAMA extension: expected a plugin jar containing classes.dex (got " + written + " bytes)");
         }
 
-        String sym = symbolicName(target);
+        String sym = symbolicName(tmp);
         if (sym == null || sym.isEmpty()) {
-            target.delete();
+            tmp.delete();
             throw new IllegalArgumentException("Cannot determine the extension's symbolic name");
         }
 
-        String ext = target.getName().endsWith(".dex") ? ".dex" : ".jar";
+        String ext = tmp.getName().endsWith(".dex") ? ".dex" : ".jar";
         File finalTarget = new File(pluginsDir, "plugin_" + sym + ext);
         if (finalTarget.exists()) {
-            finalTarget.setWritable(true);
-            finalTarget.delete();
+            try {
+                finalTarget.setWritable(true);
+            } catch (SecurityException ignored) {}
+            File backup = new File(pluginsDir, "." + finalTarget.getName() + ".old");
+            backup.delete();
+            // Best effort: keep the old file under a .old name so we never lose the plugin
+            // if the rename back fails on some storage.
+            if (!finalTarget.renameTo(backup)) backup.delete();
         }
-        if (!finalTarget.equals(target) && target.exists()) {
-            if (!target.renameTo(finalTarget)) {
-                Log.w(TAG, "Rename to " + finalTarget.getName() + " failed; keeping original name");
-                finalTarget = target;
+        if (!tmp.renameTo(finalTarget)) {
+            Log.w(TAG, "Rename to " + finalTarget.getName() + " failed; trying delete+rename");
+            if (finalTarget.exists()) finalTarget.delete();
+            if (!tmp.renameTo(finalTarget)) {
+                finalTarget = tmp;
             }
         }
         return finalTarget;
