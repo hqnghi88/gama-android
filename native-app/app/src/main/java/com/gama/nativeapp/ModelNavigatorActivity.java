@@ -58,8 +58,11 @@ import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -1154,31 +1157,53 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 File jar = p.file;
                 if (jar == null || !jar.getName().endsWith(".jar")) continue;
                 active.add(p.name);
-                try (JarFile jf = new JarFile(jar)) {
-                    java.util.Enumeration<? extends JarEntry> entries = jf.entries();
-                    while (entries.hasMoreElements()) {
-                        JarEntry e = entries.nextElement();
-                        String name = e.getName();
-                        if (e.isDirectory() || name.startsWith("META-INF")) continue;
-                        if (!name.startsWith("models/")) continue;
-                        File out = new File(extRoot, p.name + "/" + name);
-                        if (out.exists() && out.lastModified() > jar.lastModified()) continue;
-                        out.getParentFile().mkdirs();
-                        try (InputStream is = jf.getInputStream(e);
-                             FileOutputStream fos = new FileOutputStream(out)) {
-                            byte[] buf = new byte[8192];
-                            int n;
-                            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
-                        }
+                // Freshness is tracked by a stamp (jar size + mtime) written after the last
+                // extraction, so re-adding/updating a plugin always refreshes its models even
+                // when file mtimes compare equal or the extracted copies are older.
+                File stamp = new File(extRoot, ".stamps/" + p.name);
+                String currentStamp = jar.length() + ":" + jar.lastModified();
+                boolean outOfDate = false;
+                if (!stamp.isFile()) outOfDate = true;
+                else {
+                    try (BufferedReader br = new BufferedReader(new FileReader(stamp))) {
+                        outOfDate = !currentStamp.equals(br.readLine());
+                    } catch (IOException ioe) {
+                        outOfDate = true;
                     }
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to extract models from plugin " + p.name, e);
+                }
+                if (outOfDate) {
+                    try (JarFile jf = new JarFile(jar)) {
+                        java.util.Enumeration<? extends JarEntry> entries = jf.entries();
+                        while (entries.hasMoreElements()) {
+                            JarEntry e = entries.nextElement();
+                            String name = e.getName();
+                            if (e.isDirectory() || name.startsWith("META-INF")) continue;
+                            if (!name.startsWith("models/")) continue;
+                            File out = new File(extRoot, p.name + "/" + name);
+                            out.getParentFile().mkdirs();
+                            try (InputStream is = jf.getInputStream(e);
+                                 FileOutputStream fos = new FileOutputStream(out)) {
+                                byte[] buf = new byte[8192];
+                                int n;
+                                while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+                            }
+                        }
+                    } catch (Exception e) {
+                        Log.w(TAG, "Failed to extract models from plugin " + p.name, e);
+                    }
+                    stamp.getParentFile().mkdirs();
+                    try (FileWriter fw = new FileWriter(stamp)) {
+                        fw.write(currentStamp);
+                    } catch (IOException ioe) {
+                        Log.w(TAG, "Could not write extraction stamp for " + p.name, ioe);
+                    }
                 }
             }
             File[] pluginDirs = extRoot.listFiles();
             if (pluginDirs != null) {
                 for (File dir : pluginDirs) {
-                    if (dir.isDirectory() && !active.contains(dir.getName())) {
+                    if (dir.isDirectory() && !dir.getName().startsWith(".")
+                            && !active.contains(dir.getName())) {
                         deleteRecursively(dir);
                     }
                 }
