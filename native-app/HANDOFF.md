@@ -1266,8 +1266,15 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   "Compiling: .../cache/extensions/gama.extension.demo/models/PluginDemo.gaml", "Compiled:
   PluginDemo_model", "Found 1 experiment(s) ... plugin_demo", "Starting: plugin_demo", and
   "PLUGIN DEMO: demo_square(4)=16 demo_cube(3)=27 demo_greet(GAMA)=Hello, GAMA!" (plugin operators
-  resolve via the plugin classloader). androidsensor (no models/) correctly shows nothing under
-  Extensions.
+  resolve via the plugin classloader).
+- androidsensor follow-up: the extension jar ships NO models, so installing it added nothing to the
+  Library. The plugin now ships `plugins/androidsensor/resources/models/AndroidSensorTest.gaml`
+  (copy of the app's existing sensor test model) via build_plugin_from_jar.sh's resources merge ->
+  the installed extension shows `Extensions > gama.extension.androidsensor > AndroidSensorTest.gaml`.
+  Verified: "Registered external plugin: gama.extension.androidsensor", branch listed + expanded,
+  model opens in the editor. (NOTE: a factory-reset emulator hit /system-full instability -> repeated
+  spurious ANRs; the Run path for plugin models was proven end-to-end with the demo plugin, and
+  sensor_test run was proven in Session 19c.)
 - TEST-HARNESS gotcha (root adb): pushing plugin jars into files/plugins while adb runs as root
   leaves root-owned files the app uid cannot read -> "Could not read manifest"/"writable dex file"
   and NO "Registered external plugin" line. Fix: `adb shell pm clear`, launch once (app creates
