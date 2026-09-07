@@ -57,6 +57,7 @@ import gama.api.ui.displays.IGraphicsScope;
 public class AndroidDisplaySurface extends View implements OpenGL {
 
     private static final String TAG = "AndroidDisplaySurface";
+    private static final boolean TOUCH_DEBUG = true;
 
     private final LayeredDisplayOutput output;
     private ILayerManager layerManager;
@@ -128,6 +129,13 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     }
 
     private float lastTouchX, lastTouchY;
+    private float downX, downY;
+    private boolean multiTouch;
+    private static final float TAP_SLOP2 = 64f * 4f; // squared slop (~16px) to classify a tap
+    private static final java.util.Set<String> KEY_EVENT_NAMES =
+            java.util.Set.of("arrow_left", "arrow_right", "arrow_up", "arrow_down", "escape", "tab",
+                    "enter", "page_up", "page_down", "space", "backspace", "delete", "ctrl", "cmd",
+                    "alt", "shift");
     private float lastFocalX, lastFocalY;
     private float focalX, focalY;
     private float lastTwistAngle;
@@ -731,6 +739,9 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             case MotionEvent.ACTION_DOWN:
                 lastTouchX = x;
                 lastTouchY = y;
+                downX = x;
+                downY = y;
+                multiTouch = false;
                 downTime = System.currentTimeMillis();
                 longPressFired = false;
                 mousePosition.set(x, y);
@@ -741,6 +752,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 return true;
 
             case MotionEvent.ACTION_POINTER_DOWN:
+                multiTouch = true;
                 cancelLongPressCheck();
                 computeFocal(event);
                 lastFocalX = focalX;
@@ -791,7 +803,9 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                         lastFocalX = focalX;
                         lastFocalY = focalY;
                         invalidateSafe();
-                    } else {
+                    } else if (listeners.isEmpty()) {
+                        // No interactive event layers: single finger drags pan/rotate the
+                        // camera. Interactive (game) models own the gesture instead.
                         float dx = x - lastTouchX;
                         float dy = y - lastTouchY;
                         if (output != null && output.getData().is3D()) {
@@ -832,6 +846,23 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 dispatchMouseEvent(17, (int) x, (int) y); // mouse_up
                 if (!longPressFired && System.currentTimeMillis() - downTime >= LONG_PRESS_MS) {
                     dispatchMouseEvent(9, (int) x, (int) y); // mouse_menu (long press)
+                }
+                float dist2 = (x - downX) * (x - downX) + (y - downY) * (y - downY);
+                if (!multiTouch && !longPressFired
+                        && System.currentTimeMillis() - downTime < LONG_PRESS_MS
+                        && dist2 < TAP_SLOP2) {
+                    // A tap is a mouse click to the model...
+                    dispatchMouseClicked((int) x, (int) y);
+                    // ...and simulates the primary action key so key-driven games
+                    // (e.g. Flappy Bird's space) are playable on touch-only devices.
+                    if (!listeners.isEmpty()) dispatchKeyEvent(' ');
+                } else if (!multiTouch && !listeners.isEmpty() && dist2 >= TAP_SLOP2) {
+                    // A swipe fires the matching arrow key for gesture-driven games.
+                    float adx = Math.abs(x - downX), ady = Math.abs(y - downY);
+                    int code = adx > ady
+                            ? (x > downX ? IEventLayerListener.ARROW_RIGHT : IEventLayerListener.ARROW_LEFT)
+                            : (y > downY ? IEventLayerListener.ARROW_DOWN : IEventLayerListener.ARROW_UP);
+                    dispatchSpecialKeyEvent(code);
                 }
                 dispatchMouseEvent(8, (int) x, (int) y);  // mouse_exit
                 return true;
@@ -1203,8 +1234,21 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     @Override
     public void addListener(IEventLayerListener e) {
         listeners.add(e);
-        if (e.getClass().getSimpleName().contains("Keyboard")) {
+        if (isKeyEventLayer(e)) {
             post(() -> installKeyboardBar());
+        }
+    }
+
+    /** True when the event layer reacts to keyboard input (single char or a named
+     *  special key) rather than to mouse events, so the soft-key bar makes sense. */
+    private static boolean isKeyEventLayer(IEventLayerListener e) {
+        try {
+            Object ev = e.getClass().getMethod("getEvent").invoke(e);
+            if (ev == null) return false;
+            String s = String.valueOf(ev);
+            return s.length() == 1 || KEY_EVENT_NAMES.contains(s);
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -1300,11 +1344,13 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     @Override
     public void dispatchKeyEvent(char character) {
+        if (TOUCH_DEBUG) Log.d(TAG, "touch->key '" + character + "' listeners=" + listeners.size());
         for (IEventLayerListener gl : listeners) gl.keyPressed(String.valueOf(character));
     }
 
     @Override
     public void dispatchSpecialKeyEvent(int keyCode) {
+        if (TOUCH_DEBUG) Log.d(TAG, "touch->special " + keyCode + " listeners=" + listeners.size());
         for (IEventLayerListener gl : listeners) gl.specialKeyPressed(keyCode);
     }
 
@@ -1321,6 +1367,11 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 case 9: gl.mouseMenu(x, y); break;
             }
         }
+    }
+
+    /** Delivers a full mouse click (down+up without drag) to the interactive layers. */
+    private void dispatchMouseClicked(int x, int y) {
+        for (IEventLayerListener gl : listeners) gl.mouseClicked(x, y, 1);
     }
 
     @Override
