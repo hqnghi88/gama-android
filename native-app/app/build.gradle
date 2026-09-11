@@ -125,7 +125,10 @@ tasks.register('patchGamaJars') {
             'java/awt/geom/Line2D$Double.class',
             'java/awt/geom/Line2D$Float.class',
             'java/awt/geom/GeneralPath.class',
-            'java/awt/geom/Area.class']
+            'java/awt/geom/Area.class',
+            'org/xmlpull/v1/XmlPullParser.class',
+            'org/xmlpull/v1/XmlPullParserException.class',
+            'org/xmlpull/v1/XmlSerializer.class']
         fileTree(libsDir).matching { include '*.jar' }.each { jarFile ->
             def tmpDir = file("$buildDir/tmp/jar_patch/${jarFile.name}")
             tmpDir.mkdirs()
@@ -371,7 +374,8 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
@@ -422,7 +426,8 @@ configurations.all {
 dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'
 
-    implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['*.original.jar'])
+    implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['*.original.jar', 'compile-stubs.jar'])
+    compileOnly fileTree(dir: 'libs', include: ['compile-stubs.jar'])
 
     implementation 'org.locationtech.jts:jts-core:1.19.0'
     implementation 'org.jgrapht:jgrapht-core:1.5.2'
