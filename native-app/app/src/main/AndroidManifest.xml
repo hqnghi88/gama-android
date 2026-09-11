@@ -4,14 +4,11 @@
 
     <!-- Required for json_file(http://...) and other URL fetching via the Webb client. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Required so the workspace can be moved to a folder on shared (primary)
-         storage on Android 11+ (targetSdk 30+), where scoped storage otherwise
-         blocks java.io.File access to /storage/emulated/0/. The GAMA engine
-         consumes model paths as real File paths, so broad file access is needed
-         when the user chooses a folder on device storage. -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <!-- Legacy read/write storage permissions (effective on API 26-32; the app
-         still requests WRITE externally on those versions before picking a folder). -->
+    <!-- The workspace lives in app-private storage (getFilesDir), so no broad
+         shared-storage access is required. Legacy read/write storage permissions
+         are effective on API 26-32; the app still requests WRITE externally on
+         those versions before picking a folder. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
