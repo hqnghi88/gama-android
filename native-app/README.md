@@ -23,7 +23,7 @@ GAMA is a desktop Java application built on:
 - Java SE (Swing/AWT for UI)
 - Eclipse platform (OSGi plugin runtime + extension registry)
 - Xtext/ANTLR-generated GAML compiler
-- ~50 `gama.*`/`gaml.*` OSGi bundles (JARs)
+- ~35 `gama.*`/`gaml.*` OSGi bundles (JARs)
 
 Android has **none** of those as a platform (no `java.awt`, no Swing, no OSGi, no
 Eclipse registry). The whole game of this project is:
@@ -53,22 +53,23 @@ from the jars unchanged and executes on-device.
 `app/build.gradle` (the dependencies block):
 
 ```groovy
-implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['gama.extension.physics*', '*.original.jar'])
+implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['*.original.jar', 'compile-stubs.jar'])
+compileOnly fileTree(dir: 'libs', include: ['compile-stubs.jar'])
 ```
 
 Every GAMA jar in `app/libs/` is a compile/runtime dependency of the app:
 
 | Jar | Size | Role |
 |-----|------|------|
-| `gama.core_0.0.0.202605140230.jar` | 2.7 MB / **1,149 classes** | engine core: agents, experiments, displays, layers, memory |
-| `gaml.compiler_0.0.0.202605140230.jar` | 655 KB / **343 classes** | GAML compiler: Xtext-generated parser, model builder, validator |
-| `gama.ui.shared`, `gama.ui.display.*`, `gama.ui.experiment`, … | ~13 MB total | display/output/experiment layer (hosted by our Android view) |
-| `gama.extension.*` (image, network, maths, bdi, pedestrian, stats, traffic, …) | ~15 MB total | optional model capabilities |
-| `gama.headless`, `gama.library`, `gama.processor`, `gama.annotations` | ~2 MB | headless runner, built-in model library, annotation processing |
-| `gama.dependencies` | 70 MB | third-party libs GAMA bundles (GeoTools, KML, OSM, …) |
+| `gama.api` + `gama.core` (0.0.0.202609050134) | 1.4 MB (+0.9) / **474 + 639 classes** | engine core: agents, experiments, displays, layers, memory |
+| `gaml.compiler` (0.0.0.202609050134) | 808 KB / **410 classes** | GAML compiler: Xtext-generated parser, model builder, validator |
+| `gama.ui.shared`, `gama.ui.display.*`, `gama.ui.experiment`, … | ~9.3 MB total | display/output/experiment layer (hosted by our Android view) |
+| `gama.extension.*` (image, network, maths, bdi, pedestrian, stats, traffic, physics, …) | ~87 MB total | optional model capabilities |
+| `gama.headless`, `gama.library`, `gama.processor`, `gama.annotations` | ~8 MB | headless runner, built-in model library, annotation processing |
+| `gama.dependencies` | 27 MB | third-party libs GAMA bundles (GeoTools, KML, OSM, …) |
 
 The jars the compiler needs beyond GAMA are pulled from Maven — Xtext/Xtend **2.35.0**
-and EMF **2.31.0** (`app/build.gradle:581-604`) — so the GAML compiler is the genuine
+and EMF **2.31.0** (`app/build.gradle:450-476`) — so the GAML compiler is the genuine
 Xtext/ANTLR pipeline, not a reimplementation.
 
 ### 2.2 The APK dex contains the actual engine classes
@@ -83,28 +84,30 @@ gama.core.kernel.experiment.ExperimentPlan          (experiment runtime)
 gama.core.outputs.display.LayerManager              (display layer manager)
 gama.gaml.statements.draw.DrawStatement             (draw statement)
 gama.core.outputs.layers.EventLayerStatement        (event layer)
-gaml.compiler...parser.antlr.internal.InternalGamlParser  (16 class files — the
-    Xtext-generated ANTLR GAML parser shipped inside gaml.compiler.jar)
+gaml.compiler...parser.antlr.internal.InternalGamlParser  (the Xtext-generated ANTLR
+    GAML parser shipped inside gaml.compiler.jar)
 ```
 
-Reference counts found across all dex files, by source package:
+Reference counts found across all dex files, by source package (fresh dex of
+`0.1.60`):
 
 | Source | Type references in dex |
 |--------|------------------------|
-| `gaml/additions` (generated GAML language classes) | 1,984 |
-| `gama/ui` | 1,366 |
-| `gama/core` | 1,286 |
-| `gama/gaml` | 819 |
-| `gaml/compiler` | 731 |
-| `gama/dependencies` (GeoTools/KML/OSM) | 525 |
-| `gama/extension` | 292 |
-| `com/gama/nativeapp` (the Android host) | 229 |
-| `gama/headless` | 73 |
-| `java/awt` (SE stubs + jar references) | 632 |
-| `javax/swing`, `javax/imageio` (stubs) | 237 |
-| `org/eclipse`, `org/osgi` (Maven EMF/OSGi + stubs) | 9,514 |
-| `org/antlr/runtime` (ANTLR 3 runtime from Maven) | 109 |
-| `org/eclipse/xtext` (Xtext runtime from Maven) | 5,730 |
+| `gaml/additions` (generated GAML language classes) | 4,256 |
+| `gama/ui` | 3,005 |
+| `gama/core` | 926 |
+| `gama/gaml` | 548 |
+| `gaml/compiler` | 1,754 |
+| `gama/extension` | 1,316 |
+| `gama/dependencies` (GeoTools/KML/OSM) | 136 |
+| `com/gama/nativeapp` (the Android host) | 603 |
+| `gama/headless` | 154 |
+| `java/awt` (SE stubs + jar references) | 860 |
+| `javax/swing` + `javax/imageio` (stubs) | 323 |
+| `org/eclipse` (Maven EMF/Xtext + stubs) | 18,623 |
+| `org/osgi` (OSGi runtime + stubs) | 883 |
+| `org/antlr/runtime` (ANTLR 3 runtime from Maven) | 253 |
+| `org/eclipse/xtext` (Xtext runtime from Maven) | 11,204 |
 
 (These are type-string occurrences — every call site counts — so they over-count
 unique classes, but they prove the classes exist and are linked into the app.)
@@ -142,7 +145,7 @@ engine can talk to Android. They contain **no GAMA engine logic**.
 | File | Role |
 |------|------|
 | `GamaApplication.java` | App entry; disables `java.util.prefs` |
-| `GamaNativeBootstrap.java` | Boots the engine: registers plugin bundles, loads GAML additions, inits metamodel/types, sets up the Xtext injector, registers draw/create/event delegates, registers 331 GAML constants + `android2d` display type |
+| `GamaNativeBootstrap.java` | Boots the engine: registers plugin bundles, loads GAML additions, inits metamodel/types, sets up the Xtext injector, registers draw/create/event delegates & GAML constants, snapshots display-type constants |
 | `MainActivity.java` | Generic container activity |
 | `ModelNavigatorActivity.java` | Launcher: model/library tree |
 | `ModelEditorActivity.java` | GAML text editor |
@@ -154,7 +157,7 @@ engine can talk to Android. They contain **no GAMA engine logic**.
 | `NoOpPreferencesFactory.java` | Java-preferences no-op (Android lacks `java.util.prefs` backend) |
 | `PluginManager.java` | Loads GAML plugin jars (e.g. sensors) via a `DexClassLoader` |
 | `SensorBridge.java` | Sensor → GAMA bridge (gyro/etc.) |
-| `UiSystemBars.java` | Edge-to-edge insets + system-bar control (targetSdk 35+) |
+| `UiSystemBars.java` | Edge-to-edge insets + system-bar control (targetSdk 36) |
 | `gui/AndroidGuiHandler.java` | Implements GAMA's `IGui` for Android |
 | `gui/AndroidGamaView.java` | Implements `IGamaView.Display` |
 | `gui/AndroidDialogs.java` | Dialog/option implementations for the engine GUI |
@@ -162,7 +165,7 @@ engine can talk to Android. They contain **no GAMA engine logic**.
 | `display/AndroidDisplaySurface.java` | `View` implementing `IDisplaySurface`; hosts both 2D and 3D rendering (software, CPU) |
 | `display/AndroidDisplayGraphics.java` | Implements `AbstractDisplayGraphics`; translates GAMA `draw` calls → `Canvas` (2D) or `AndroidScene3D` prims (3D) |
 | `display/AndroidScene3D.java` | Software perspective rasterizer that mimics GAMA's desktop OpenGL 3D output (CPU, no GPU) |
-| `display/GamaAndroidDisplaySetup.java` | Registers GAML display types: `android2d`, `2d`, `android3d`, `3d`, `opengl`, `opengl2` |
+| `display/GamaAndroidDisplaySetup.java` | Registers GAML display-type constants: `android2d`, `2d`, `android3d`, `3d`, `opengl`, `opengl2` (see Section 6.1 for how they resolve) |
 | `util/LayerManagerHelper.java` | Layer-manager convenience wrapper |
 
 ### 3.2 `java.awt` / `javax.swing` / `javax.imageio` — Java SE stubs (82 files)
@@ -195,7 +198,7 @@ image layer and draw statements use it.
 **What is missing.** There is no real AWT/Swing event loop, windowing, layout, or
 GUI toolkit. The stubs contain **no GAMA logic** — they exist only so the unmodified
 jar bytecode links and runs against Android-native backing types. The dex confirms
-632 `java.awt` type references resolve to these stubs.
+860 `java.awt` type references resolve to these stubs (Section 2).
 
 ### 3.3 `org.eclipse.*` / `org.osgi.*` — a two-tier approach (53 files)
 
@@ -262,8 +265,8 @@ distribution. These six `gama.dev.*` classes in `gama/dev/` are minimal Android
 stubs (e.g. `DEBUG` routes to `android.util.Log`) that let `gama.api.gaml.types.Types`
 and friends load. They are GAMA-package *constants*, not ports of engine logic.
 `patchGamaJars` also strips a few engine classes that D8/ART mis-dex
-(`SkillDescription`, `java.awt.geom.*`, the `org.xmlpull.v1.*` framework duplicates) at
-`app/build.gradle:123`.
+(`SkillDescription`, `java.awt.geom.Line2D`/`GeneralPath`/`Area`, the
+`org.xmlpull.v1.*` framework duplicates) at `app/build.gradle:123`.
 
 ---
 
@@ -271,7 +274,7 @@ and friends load. They are GAMA-package *constants*, not ports of engine logic.
 
 ```
 libs/*.jar ──► patchGamaJars ──► compileDebugJavaWithJavac ──► dexBuilderDebug (D8) ──► APK
-   (real        rewrite class-file versions >21 down to 21 (clear preview flag)
+   (real        rewrite class-file versions >65 down to 65 (clear preview flag)
     jars)       restore pristine jars from libs/pristine/ when present
                 strip D8-hostile classes from every jar (SkillDescription,
                   java.awt.geom.Line2D/GeneralPath/Area, org.xmlpull.v1.*)
@@ -309,12 +312,12 @@ Key points:
 ## 5. The honest nuance: "untouched" vs "patched"
 
 It is accurate to say the engine is the real jars — but it is not literally true that
-every byte is byte-identical to upstream. Three categories:
+every byte is byte-identical to upstream. Four categories:
 
-1. **Runs as-is from the jar** — the vast majority of the engine (~11,000 classes
-   across the libs jars). GAML grammar/parser, model builder, agent metamodel,
-   experiment controller, display layers, draw statements, built-in functions,
-   extensions.
+1. **Runs as-is from the jar** — the vast majority of the engine (~3,200 classes
+   across the `gama.*`/`gaml.*` jars; ~19,700 more in bundled third-party tooling).
+   GAML grammar/parser, model builder, agent metamodel, experiment controller,
+   display layers, draw statements, built-in functions, extensions.
 2. **Bytecode-patched (ASM)** — a small number of classes/bytecode rewritten at
    build time because Android's runtime/dexer can't do what the desktop JVM does:
    - `ParallelAgentRunner` / parallel loops: Android `ForkJoinPool` is broken for
@@ -329,9 +332,9 @@ every byte is byte-identical to upstream. Three categories:
 3. **Stripped/rebuilt at build time** — a few classes are removed from the jars
    (`SkillDescription`, `java.awt.geom.Line2D`/`GeneralPath`/`Area`, the
    `org.xmlpull.v1.*` framework duplicates) because D8/ART mis-dexes them or Android
-   provides its own copy. In a handful of cases the engine's own source in this
-   repository (the GAMA source tree) is compiled with Android fixes and injected back;
-   that is GAMA's own code — not a rewrite.
+   provides its own copy. One class is injected back into a jar:
+   `AndroidTaskWrapper` (in package `gama.api.runtime`) is compiled from
+   `tools/AndroidTaskWrapper.java` and replaces `ForkJoinTask.join()` on Android.
 4. **GAMA-package constants shadows** — the six `gama.dev.*` classes (Section 3.6).
 
 So: **the engine code is GAMA's; only the platform adapter is ours.** Roughly 135 of
@@ -466,12 +469,17 @@ compiles and simulates. A fake would have no `GamlModelBuilder`, no Xtext parser
 `ExperimentPlan`.
 
 **Q: What about the models in `assets/`?**
-`gama.library.jar` (a copy of the real library jar) holds the built-in GAMA models;
-user models live in `assets/models/` and are compiled with the same engine.
+`assets/gama.library.jar` (a copy of the real library jar) holds the built-in GAMA
+models; it is extracted to app storage at startup and supplemented by sample models
+from engine bundles at build time. User models are loaded from the workspace folder on
+device storage, not bundled in `assets/`.
 
-**Q: Why exclude `gama.extension.physics`?**
-It carries native/desktop physics bindings that do not fit the Android build; it is
-excluded in `app/build.gradle`'s `fileTree`.
+**Q: Is `gama.extension.physics` excluded?**
+No — it ships as a jar in `app/libs/` and is registered in the bundle manifest
+(`gama.bundles`), so its pure-GAML parts load. However, the Box2D native bindings
+(Libbulletjme) require platform `.so` libraries that are not present, so actual
+physics simulation via the native Bullet library will fail at runtime; only pure-GAML
+agent logic is available.
 
 **Q: Is the 3D display real OpenGL?**
 No — it is a custom CPU software rasterizer (`AndroidScene3D`) that mimics desktop
@@ -489,10 +497,10 @@ it is never instantiated. 2D and 3D both render through the same software `View`
 native-app/
 ├── app/
 │   ├── build.gradle                 # deps + patchGamaJars task + ASM patchers
-│   ├── libs/*.jar                   # the real GAMA jars (11,499 class entries total)
+│   ├── libs/*.jar                   # the real GAMA jars + engine deps (~3,200 GAMA classes, ~22,900 class entries total)
 │   └── src/main/
 │       ├── assets/gama.library.jar  # built-in model library
-│       ├── assets/models/*.gaml     # sample/user models
+│       ├── assets/gama.bundles      # engine bundle manifest
 │       └── java/
 │           ├── com/gama/nativeapp/…    (23) Android host shell
 │           ├── java/awt/…              (60) Java SE stubs
