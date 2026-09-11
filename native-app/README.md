@@ -10,10 +10,10 @@ desktop JVM.
 > jar code actually being used — or is it all fake?"**
 >
 > Short answer: **The GAMA engine is 100% the real jars, running in the APK.**
-> The ~133 files in `app/src/main/java` are (1) a thin Android host shell,
+> The ~164 files in `app/src/main/java` are (1) a thin Android host shell,
 > (2) small API-compatibility stubs for Java SE / Eclipse / OSGi classes that Android
-> does not provide, (3) one ported SVG renderer, and (4) **one** GAMA-package shadow
-> class. None of them reimplement GAMA engine logic. The proof is in Section 2.
+> does not provide, and (3) a handful of GAMA-package constant shadows. None of them
+> reimplement GAMA engine logic. The proof is in Section 2.
 
 ---
 
@@ -50,7 +50,7 @@ from the jars unchanged and executes on-device.
 
 ### 2.1 The build links the real jars
 
-`app/build.gradle:566`:
+`app/build.gradle` (the dependencies block):
 
 ```groovy
 implementation fileTree(dir: 'libs', include: ['*.jar'], exclude: ['gama.extension.physics*', '*.original.jar'])
@@ -119,24 +119,22 @@ display updates. The compile path is `GamlModelBuilder` → Xtext parser →
 
 ---
 
-## 3. What exactly is in `app/src/main`? (the 133 files)
+## 3. What exactly is in `app/src/main`? (the 164 files)
 
 Every `.java` file in `app/src/main/java`, counted by package:
 
 | Files | Package | What it is |
 |------:|---------|------------|
-| **18** | `com/gama/nativeapp` | **The Android host shell** (real app code, not GAMA) |
-| **52** | `java/awt` | **Java SE API stubs** — Android has no `java.awt` |
+| **23** | `com/gama/nativeapp` | **The Android host shell** (real app code, not GAMA) |
+| **60** | `java/awt` | **Java SE API stubs** — Android has no `java.awt` |
 | **11** | `javax/swing` | Swing stubs (used by the jar's GUI classes) |
-| **9** | `javax/imageio` | ImageIO stubs |
-| **26** | `org/eclipse/core` | Eclipse runtime/registry stubs |
+| **11** | `javax/imageio` | ImageIO stubs |
+| **49** | `org/eclipse/core` | Eclipse runtime/registry stubs |
 | **4** | `org/osgi/framework` | OSGi framework stubs |
-| **11** | `com/github/weisj/jsvg` | Ported SVG renderer |
-| **1** | `systems/uom/common` | Unit-system stub |
-| **1** | `gama/gaml/descriptions/SkillDescription` | **The single GAMA-package shadow class** |
-| **133** | **total** | |
+| **6** | `gama/dev` | GAMA-package constants shadow classes |
+| **164** | **total** | |
 
-### 3.1 `com.gama.nativeapp` — the Android host (18 files)
+### 3.1 `com.gama.nativeapp` — the Android host (23 files)
 
 These are the *phone side*. They implement GAMA's own extension points so the jar
 engine can talk to Android. They contain **no GAMA engine logic**.
@@ -150,72 +148,122 @@ engine can talk to Android. They contain **no GAMA engine logic**.
 | `ModelEditorActivity.java` | GAML text editor |
 | `ExperimentActivity.java` | Compiles a model, runs an experiment, play/pause/step/stop |
 | `WorkspaceManager.java` | Maps app storage to a GAMA workspace |
+| `AndroidWorkspaceManager.java` | Workspace shell on Android storage |
 | `LibraryJarUtil.java` | Extracts library models from `assets/gama.library.jar` |
 | `ModelTreeItem.java` | Tree data holder |
 | `NoOpPreferencesFactory.java` | Java-preferences no-op (Android lacks `java.util.prefs` backend) |
+| `PluginManager.java` | Loads GAML plugin jars (e.g. sensors) via a `DexClassLoader` |
 | `SensorBridge.java` | Sensor → GAMA bridge (gyro/etc.) |
+| `UiSystemBars.java` | Edge-to-edge insets + system-bar control (targetSdk 35+) |
 | `gui/AndroidGuiHandler.java` | Implements GAMA's `IGui` for Android |
 | `gui/AndroidGamaView.java` | Implements `IGamaView.Display` |
-| `display/AndroidDisplaySurface.java` | `View` implementing `IDisplaySurface`; Canvas rendering |
-| `display/AndroidDisplayGraphics.java` | Implements `AbstractDisplayGraphics`; GAMA draw calls → Canvas |
-| `display/AndroidScene3D.java` | 3D scene |
-| `display/GamaAndroidDisplaySetup.java` | Registers `"android2d"` display type |
+| `gui/AndroidDialogs.java` | Dialog/option implementations for the engine GUI |
+| `gui/ParamsPanelBuilder.java` | Builds the experiment parameter panel |
+| `display/AndroidDisplaySurface.java` | `View` implementing `IDisplaySurface`; hosts both 2D and 3D rendering (software, CPU) |
+| `display/AndroidDisplayGraphics.java` | Implements `AbstractDisplayGraphics`; translates GAMA `draw` calls → `Canvas` (2D) or `AndroidScene3D` prims (3D) |
+| `display/AndroidScene3D.java` | Software perspective rasterizer that mimics GAMA's desktop OpenGL 3D output (CPU, no GPU) |
+| `display/GamaAndroidDisplaySetup.java` | Registers GAML display types: `android2d`, `2d`, `android3d`, `3d`, `opengl`, `opengl2` |
 | `util/LayerManagerHelper.java` | Layer-manager convenience wrapper |
 
-### 3.2 `java.awt` / `javax.swing` / `javax.imageio` — Java SE stubs (72 files)
+### 3.2 `java.awt` / `javax.swing` / `javax.imageio` — Java SE stubs (82 files)
 
-Android ships no `java.awt`. But the gama jars were compiled against it and reference
-`java.awt.Color`, `java.awt.geom.*`, `java.awt.image.BufferedImage`, `java.awt.Font`,
-`java.awt.Rectangle`, `java.awt.Shape`, etc. throughout. These stubs are small,
-API-compatible, Android-friendly stand-ins (`java.awt.Color` is backed by an `int`
-ARGB, `java.awt.geom.Path2D` by `android.graphics.Path`, …) so the *unmodified jar
-bytecode* links and runs. The dex confirms 632 `java.awt` type references resolve to
-these stubs.
+**What happens.** Android ships no `java.awt`, no Swing, no AWT. But the GAMA jars
+were compiled against them and reference `java.awt.Color`, `java.awt.geom.*`,
+`java.awt.image.BufferedImage`, `java.awt.Font`, `java.awt.Rectangle`,
+`java.awt.Shape`, etc. — on a desktop classpath those resolve to the JRE. On Android
+the class doesn't exist at all, so **the jar bytecode cannot even verify** if they
+are absent. Something must provide those class names.
 
-Same story for `javax.swing` (referenced by the jar's desktop GUI classes, which we
-never instantiate but which must still *verify*) and `javax.imageio`
-(`BufferedImage`/`ImageIO` used by the image display layer).
+**What is implemented.** Small, API-compatible stubs with the **same fully-qualified
+class name and the same public API surface**, backed by Android types instead of a
+real AWT toolkit:
 
-### 3.3 `org.eclipse.*` / `org.osgi.*` — platform stubs (30 files)
+| Stub | Backed by |
+|------|-----------|
+| `java.awt.Color` | `int` ARGB |
+| `java.awt.geom.Path2D` / `PathIterator` | `android.graphics.Path` |
+| `java.awt.image.BufferedImage` / `javax.imageio.ImageIO` | `android.graphics.Bitmap` |
+| `java.awt.Font` / `FontMetrics` | `android.graphics.Typeface` / paint |
+| `java.awt.Rectangle`, `Point`, `Dimension`, `Graphics2D` | plain Java fields / `android.graphics.Canvas` |
 
-GAMA desktop is an Eclipse/OSGi product: it discovers its plugins through the OSGi
-extension registry. Android has no OSGi. These stubs give the jars a working
-substitute: `Platform.getExtensionRegistry()` returns an empty in-memory registry,
-`Bundle`/`BundleContext` fake wrappers delegate to the app classloader, and the
-preferences/`IPath`/`IFileStore` APIs are mapped to Android storage.
+60 files in `java/awt`, 11 in `javax/swing`, 11 in `javax/imageio`. The Swing and
+ImageIO classes in the *desktop GUI* jars only need to **verify** (they are never
+instantiated on Android), so they can be skeletal; the display/image path
+(`BufferedImage`, `Graphics2D`, `Shape`) needs a working implementation because the
+image layer and draw statements use it.
 
-**This is why the bootstrap must do "manual OSGi."** Because the extension registry is
-empty, nothing auto-discovers delegates — so `GamaNativeBootstrap` explicitly
-registers the draw delegates, create delegates, event-layer delegates
-(`MouseEventLayerDelegate`, `KeyboardEventLayerDelegate`), GAML constants, and the
-display type. The empty-registry stub is literally the reason event-based models
-(`#mouse_down`/`#mouse_move`) failed to compile until the bootstrap registered the
-event delegates.
+**What is missing.** There is no real AWT/Swing event loop, windowing, layout, or
+GUI toolkit. The stubs contain **no GAMA logic** — they exist only so the unmodified
+jar bytecode links and runs against Android-native backing types. The dex confirms
+632 `java.awt` type references resolve to these stubs.
 
-(The heavy Eclipse machinery the jars actually need at runtime — EMF, Xtext, the real
-OSGi runtime — is not stubbed; it is pulled from Maven / `org.eclipse.osgi-patched.jar`,
-see Section 2.)
+### 3.3 `org.eclipse.*` / `org.osgi.*` — a two-tier approach (53 files)
 
-### 3.4 `com.github.weisj.jsvg` — SVG renderer (11 files)
+GAMA desktop is an Eclipse/OSGi product: plugins are containers discovered through
+the OSGi registry, and the whole platform runtime (extension registry, bundles,
+preferences, `IPath`/workspace) is part of the desktop host. Android has no OSGi and
+no Eclipse platform. The handling is **split in two tiers**:
+
+**Tier 1 — fully replaced by app-source stubs (what has NO equivalent on Android):**
+
+- **The extension registry** — `Platform.getExtensionRegistry()` returns an *empty*
+  in-memory registry. This is the decisive replacement: nothing auto-discovers
+  plugins on device, which is **why the bootstrap must "do manual OSGi."**
+  `GamaNativeBootstrap` explicitly registers the draw delegates, create delegates,
+  event-layer delegates, GAML constants, and display types as a substitute for
+  OSGi's automatic plugin discovery.
+- **Workspace / storage APIs** — `IPath`, `IFileStore`, `IWorkspace`, `IProject`,
+  `IResource`, `IResourceDelta` etc. (`org.eclipse.core.resources`,
+  `org.eclipse.core.filesystem`) are mapped onto Android storage paths.
+- **The bundle API** — `Bundle`, `BundleContext`, `BundleActivator`,
+  `FrameworkUtil` are tiny wrappers that delegate to the app classloader rather than
+  a running OSGi container (`BundleContext` is literally `Bundle getBundle();`).
+- **Runtime plumbing** — `Platform`, `IProgressMonitor`, `CoreException`,
+  `IConfigurationElement`, `IPreferencesService`, etc. 49 files under
+  `org.eclipse.core.*` and 4 under `org.osgi.framework`.
+
+**Tier 2 — the real thing, pulled from Maven / delivered patched (what the engine
+genuinely needs at runtime):**
+
+- **EMF 2.31.0, Xtext/Xtend 2.35.0, ANTLR** are real Maven dependencies
+  (`app/build.gradle:450-476`). These `org.eclipse.emf.*` / `org.eclipse.xtext.*`
+  classes execute on-device for real — including the Xtext-generated GAML parser.
+- **`org.eclipse.osgi-patched.jar`** (`app/libs/`) carries a real OSGi framework
+  implementation (`org.eclipse.osgi.internal.framework.SystemBundleActivator`,
+  `org.osgi.framework.launch.Framework`, `FrameworkUtil`, …), patched only so it
+  fits Android classloading instead of booting a full embedded OSGi container.
+- **The heavy `gama.*` bundles** (including `gama.ui.display.opengl`/`java2d`) are
+  dexed into the APK and kept by the proguard rules; they run — they are just never
+  *instantiated* for desktop UI.
+
+**What is missing.** The OSGi *platform* — the running container, extension
+discovery, declarative services, auto-activation — and the AWT/Swing *toolkit* do not
+exist on Android. They are replaced, not emulated. What *did* survive is every class
+the engine actually executes: GAMA jars + real EMF/Xtext/OSGi-runtime from Maven.
+Only the platform-adapter classes around them are stand-ins.
+
+### 3.4 SVG rendering — a libs jar, not a source port (0 files)
 
 Android has no built-in SVG renderer, and GAMA's display pipeline can render vector
-assets. This is a port of the pure-Java JSVG library to satisfy that dependency.
+assets. SVG support is delivered as a **dependency jar** — `app/libs/jsvg-2.0.0.jar` —
+plus a build-time ASM patch (`StaxNewFactoryPatcher`, `app/build.gradle:215`). It is a
+dependency, not app-source code, so there are no `.java` files for it in `app/src`.
 
-### 3.5 `systems.uom.common.USCustomary` — unit stub (1 file)
+### 3.5 `systems.uom.*` — no app-source stub (0 files)
 
-JSR-385 unit constants needed by GAMA's unit system, adapted for Android.
+JSR-385 unit constants are supplied by the bundled jars; there is no
+`systems.uom.*` source stub in `app/src` in the current tree.
 
-### 3.6 `gama.gaml.descriptions.SkillDescription` — the one shadow class (1 file)
+### 3.6 `gama.dev` — the GAMA-package constants shadows (6 files)
 
-This is the **only file in the whole app source that lives in a GAMA package**. It is
-a re-implementation of one engine class, and it is *not* a port of GAMA logic — it is
-a replacement class written to avoid a JVM feature (`StringConcatFactory` bootstrap
-method #17 / Java 21 string concat) that D8 mis-dexes for that class.
-
-`patchGamaJars` **strips** the original `SkillDescription.class` out of the jars
-(`app/build.gradle:9`) and the app's copy (compiled into the dex) takes its place at
-runtime. Same class name, same public API — its job is to make one JVM bytecode path
-dex-compatible.
+The engine's `gama.dev.DEBUG`/`FLAGS`/`STRINGS`/`THREADS`/`COUNTER`/`BANNER_CATEGORY`
+helpers are referenced by the jar bytecode but are not bundled in this GAMA
+distribution. These six `gama.dev.*` classes in `gama/dev/` are minimal Android
+stubs (e.g. `DEBUG` routes to `android.util.Log`) that let `gama.api.gaml.types.Types`
+and friends load. They are GAMA-package *constants*, not ports of engine logic.
+`patchGamaJars` also strips a few engine classes that D8/ART mis-dex
+(`SkillDescription`, `java.awt.geom.*`, the `org.xmlpull.v1.*` framework duplicates) at
+`app/build.gradle:123`.
 
 ---
 
@@ -223,31 +271,36 @@ dex-compatible.
 
 ```
 libs/*.jar ──► patchGamaJars ──► compileDebugJavaWithJavac ──► dexBuilderDebug (D8) ──► APK
-   (real        strip SkillDescription
-    jars)       recompile ~19 classes from repo GAMA source (with Android fixes)
-                and inject back via `jar uf`
-                ASM-patch bytecode:
+   (real        rewrite class-file versions >21 down to 21 (clear preview flag)
+    jars)       restore pristine jars from libs/pristine/ when present
+                strip D8-hostile classes from every jar (SkillDescription,
+                  java.awt.geom.Line2D/GeneralPath/Area, org.xmlpull.v1.*)
+                prepare guava-patched.jar (android-gradle variant)
+                compile AndroidTaskWrapper (gama.api.runtime, tools/AndroidTaskWrapper.java)
+                run ASM patchers (tools/patchers/*.java) — never fail the build:
                   - ParallelRunnerPatcher   (ForkJoinPool → Android ExecutorService)
-                  - Display3DPatcher        (enable 3D surface creation)
-                  - TypeSwitchPatcher       (Java-21 type-switch invokedynamic → dex-safe)
-                  - GamaPopulation/GamlAgent/etc. recompiled from
-                    ../../gama.core/src and ../../gaml.compiler/src
+                  - TypeSwitch/EnumSwitch   (Java-21 switch invokedynamic → dex-safe)
+                  - SpiPatcher, MapProjectionPatcher (GeoTools projection SPI)
+                  - EclipseCorePatcher      (org.eclipse.core → workspace stubs)
+                  - GuavaJreCompat, StaxNewFactory (guava/jsvg classpath fixes)
+                  - ColorBrewer, FontRenderContext, AwtFontMetrics (chart rendering)
+                  - XtSDSAXProperty, XSDPluginBaseURL (GeoTools GML XSD/EMF fixes)
+                  - WorldGlobalPatcher      (gama.core world globals)
                 + app/src classes
 ```
 
 Key points:
 
-- **Linking** (`app/build.gradle:566`): the jars are first-class dependencies. No
-  reflection-based "trick" — D8 sees them as ordinary input classes.
-- **`patchGamaJars`** (`app/build.gradle:6`): a build-time task that (a) strips
-  `SkillDescription.class`, (b) recompiles a small set of engine classes **from this
-  repository's own GAMA source tree** (`gama.core/src`, `gaml.compiler/src`) with
-  Android-specific fixes and injects them into `gama.core` via `jar uf`
-  (`app/build.gradle:160`), and (c) runs ASM patchers (`tools/*.java`) for bytecode
-  features that Android/D8 cannot run (ForkJoinPool on Android, Java-21 string/type
-  concatenation, the 3D display early-return).
+- **Linking** (`app/build.gradle`): the jars are first-class dependencies
+  (`implementation fileTree(dir:'libs', ...)`). No reflection-based "trick" — D8 sees
+  them as ordinary input classes.
+- **`patchGamaJars`** (`app/build.gradle`): a build-time task (a) rewrites class-file
+  versions that newer JDKs emit, (b) strips a short list of classes that D8/ART
+  mis-dex or that Android provides itself, and (c) runs the list of ASM patchers
+  (`tools/patchers/*.java`) for bytecode features that Android/D8 cannot run
+  (ForkJoinPool, Java-21 switch packaging, GeoTools SPI/EMF lookups).
 - **Ordering is critical**: `patchGamaJars` must run before D8, otherwise the APK
-  contains the unpatched jar. Enforced in `app/build.gradle:492-495`.
+  contains the unpatched jar. Enforced via `task.dependsOn` on the compile/merge tasks.
 - **Dexing**: D8 compiles jars + app classes together; the engine classes physically
   end up in the APK (Section 2.2).
 
@@ -262,37 +315,144 @@ every byte is byte-identical to upstream. Three categories:
    across the libs jars). GAML grammar/parser, model builder, agent metamodel,
    experiment controller, display layers, draw statements, built-in functions,
    extensions.
-2. **Bytecode-patched (ASM)** — a handful of classes rewritten at build time because
-   Android's runtime/dexer can't do what the desktop JVM does:
-   - `GamaExecutorService` / `ParallelAgentRunner`: Android `ForkJoinPool` is broken
-     for this use, replaced with a regular `ExecutorService`
+2. **Bytecode-patched (ASM)** — a small number of classes/bytecode rewritten at
+   build time because Android's runtime/dexer can't do what the desktop JVM does:
+   - `ParallelAgentRunner` / parallel loops: Android `ForkJoinPool` is broken for
+     this use, replaced with a regular `ExecutorService`
      (`ANDROID_PARALLEL_EXECUTOR`).
-   - `LayeredDisplayOutput`: remove the desktop-only `is3D()` early-return.
-   - Various: Java-21 `typeSwitch`/`StringConcatFactory` invokedynamic rewrites that
-     D8 cannot desugar.
-   - `SimulationRunner$1`: release a semaphore in the catch path (deadlock fix).
-3. **Recompiled from this repo's GAMA source with Android fixes** — ~19 classes
-   (`GamaPopulation`, `GamlAgent`, `AbstractAgent`, `ExperimentAgent`,
-   `DefaultExperimentController`, `GamlModelBuilder`, `AbstractOutputManager`,
-   `LayeredDisplayOutput`, `ImageLayer`, `SimulationPopulation`, `GamaGridFile`,
-   `GridPopulation`, `GamaList`, chart classes, …). These are compiled from the real
-   GAMA sources (this repository *is* the GAMA source tree) with small patches, then
-   injected into `gama.core` with `jar uf` (`app/build.gradle:124-209`). They are
-   GAMA's own code — not a rewrite.
-4. **Replaced by an app-source shadow** — `SkillDescription` (one class, Section 3.6).
+   - Java-21 `typeSwitch`/`enumSwitch` invokedynamic packaging that D8 cannot desugar
+     (the `TypeSwitchPatcher`/`EnumSwitchPatcher`).
+   - GeoTools projection SPI wiring (`SpiPatcher`, `MapProjectionPatcher`), the
+     `org.eclipse.core` → Android workspace mapping (`EclipseCorePatcher`), and the
+     XSD/EMF base-URL handling needed for GML files (`XtSDSAXPropertyPatcher`,
+     `XSDPluginBaseURLPatcher`).
+3. **Stripped/rebuilt at build time** — a few classes are removed from the jars
+   (`SkillDescription`, `java.awt.geom.Line2D`/`GeneralPath`/`Area`, the
+   `org.xmlpull.v1.*` framework duplicates) because D8/ART mis-dexes them or Android
+   provides its own copy. In a handful of cases the engine's own source in this
+   repository (the GAMA source tree) is compiled with Android fixes and injected back;
+   that is GAMA's own code — not a rewrite.
+4. **GAMA-package constants shadows** — the six `gama.dev.*` classes (Section 3.6).
 
-So: **the engine code is GAMA's; only the platform adapter is ours.** Roughly 114 of
-the 133 app-source files are platform stubs and the host shell; 1 lives in a GAMA
-package; the remainder is a ported SVG library.
+So: **the engine code is GAMA's; only the platform adapter is ours.** Roughly 135 of
+the 164 app-source files are platform stubs (the `java.awt`/`javax.*` and
+`org.eclipse`/`org.osgi` families, Section 3.2/3.3), 23 are the Android host shell,
+and 6 are GAMA-package constants shadows (`gama/dev`).
 
 ---
 
-## 6. FAQ
+## 6. How 3D rendering works on Android — and what it is *not*
+
+One sentence: **the Android app renders 3D in software, on the CPU, with a custom
+rasterizer that mimics the visual output of GAMA's desktop OpenGL renderer.**
+
+It is **not** OpenGL, OpenGL ES, WebGL, JOGL, jMonkey, or any GPU-accelerated
+pipeline. The GAMA desktop OpenGL bundle (`gama.ui.display.opengl`, with embedded
+JOGL) ships *inside* the jars and the APK, but it can never run on Android: its
+JOGL natives are desktop-only (macOS/Linux/Windows), so the `com.jogamp.*` classes
+are not present at runtime (hence the `-dontwarn com.jogamp.*` rules in
+`proguard-rules.pro`). The app never instantiates the desktop GL surface.
+
+### 6.1 What happens at runtime
+
+```
+GAML:  display Sky type: 2d            display view type: 3d / opengl
+                    │                                │
+                    └──────────────┬─────────────────┘
+                                   ▼
+              LayeredDisplayData.is3D()   (set from the display `type:` facet)
+                                   │
+                                   ▼
+        AndroidGuiHandler.createDisplaySurfaceFor(ldo)
+        (gui/AndroidGuiHandler.java:130 — the one place the app
+         chooses the surface; desktop GL surface is never built)
+                                   │
+                                   ▼
+              AndroidDisplaySurface  (a custom View)
+                setLayerType(LAYER_TYPE_SOFTWARE)
+                triple-buffered ARGB_8888 bitmaps
+                rendered on the simulation thread, blitted in onDraw()
+                                   │
+                                   ▼
+        AndroidDisplayGraphics  (AbstractDisplayGraphics impl)
+           │                                  │
+      is3dMode()==false                  is3dMode()==true
+           │                                  │
+           ▼                                  ▼
+      android.graphics.Canvas        AndroidScene3D (software
+      (2D vector fill)               perspective rasterizer)
+```
+
+Every display — 2D **and** 3D — is the same custom `View` forced to CPU software
+rendering (`LAYER_TYPE_SOFTWARE`). A snapshot bitmap is rendered on the simulation
+thread at each cycle end and blitted on the UI thread. The engine-side surface
+creation (`LayeredDisplayOutput.createSurface()`) always delegates back to the app
+via `IGui.createDisplaySurfaceFor(...)` instead of building the desktop GL surface
+(Section 4/5).
+
+### 6.2 What is implemented (the software renderer)
+
+The 3D pipeline is two files working together:
+
+- **`display/AndroidScene3D.java`** — the rasterizer core (the "OpenGL replacement"):
+  - `lookAt` / `perspective` matrix math, viewport and camera projection
+  - depth sorting via the painter's algorithm (analogue of the GL depth test)
+  - primitives: boxes/cuboids, polygons, spheres (adaptive tessellation), prisms,
+    tapered meshes, lines, text, billboards, textured and flat-shaded polys
+  - lighting: ambient / point / spot / directional lights (read from the experiment
+    via reflection on `LayeredDisplayData`)
+  - world axes, camera orbit / tilt / pan (gesture handlers in
+    `AndroidDisplaySurface`), GAMA camera position / target / lens state
+  - overlay layers composited on a separate bitmap and blended on top
+- **`display/AndroidDisplayGraphics.java`** — the front-end translator: converts GAMA
+  `draw` statements and display layers into `AndroidScene3D` prims
+  (`drawShape3D`, `drawImage3D`, `addPrism3D`, `addSphereMesh`, `addTaperedMesh`,
+  `addRotatedBox`, textured image drawing) or into plain `Canvas` calls for 2D.
+
+In practice this reproduces the *visual* output of typical GAMA 3D models — geometry,
+textures, lights, camera controls, overlays — at modest polygon counts.
+
+### 6.3 What is missing compared to the desktop OpenGL (JOGL) renderer
+
+| Missing | Desktop has | Consequence on Android |
+|---------|-------------|------------------------|
+| GPU acceleration | OpenGL/JOGL on the GPU | Everything runs single-threaded on the CPU; fill-rate and polygon count are the hard limit |
+| Depth buffer (z-buffer) | GL depth test | Painter's-algorithm sorting breaks on intersecting/interpenetrating or transparent geometry |
+| Real alpha blending | GL blending | Transparency only approximate (sort order + overlay bitmap) |
+| Antialiasing / MSAA | GL multisampling | Jagged edges at low internal resolution |
+| Per-pixel shading | GLSL shaders per material | Software renderer uses flat/varying fills only, no real materials |
+| Shadows, PBR, environment/reflection | shader-based effects | Not present |
+| Texture filtering / mip-maps | GL texture pipeline | Per-pixel software texture reads, no bilinear/anisotropic/mipmap quality |
+| General mesh import / NURBS | GLU + indexed meshes | Only the coded primitives; no free-form geometry import |
+| Render targets / post-processing | FBOs + filters | No filters, no glow/blur/etc.; output is plain ARGB bitmaps |
+| Float/HDR buffers | float-frame buffers | No gamma/HDR pipeline or tone mapping |
+| Desktop `GeometryDrawer`/`MeshDrawer` | rich grid/floor/elevation/text drawing | Only the common subset re-implemented |
+
+There is also no `GLSurfaceView`, `android.opengl`, EGL, or Vulkan anywhere in the
+app — the software path is the *only* path.
+
+### 6.4 Why it is done this way
+
+The desktop `JOGLRenderer` targets JOGL 2.6.0 immediate-mode GL2 and is not portable
+to Android's OpenGL ES without a large rewrite; and JOGL's Android natives would
+still have to be sourced. A software rasterizer reusing the same camera/light/prim
+abstraction was the pragmatic route and gives visual parity for the models people
+actually run on a phone.
+
+**The seam where real OpenGL could plug in later**: `AndroidGuiHandler
+.createDisplaySurfaceFor()` (`gui/AndroidGuiHandler.java:130`) — the single place the
+app chooses which surface object to build per display. Swapping `AndroidDisplaySurface`
+for a `GLSurfaceView` (still fed by `AndroidDisplayGraphics`'s prim-list API) is the
+intended upgrade path if GPU 3D is ever needed.
+
+---
+
+## 7. FAQ
 
 **Q: Did you translate/port GAMA's logic to Kotlin/Java Android code?**
-No. There is no ported engine. Search `app/src/main/java` — the only GAMA-package file
-is `gama/gaml/descriptions/SkillDescription.java`, a compatibility replacement for
-one class. The engine logic is inside the jars.
+No. There is no ported engine. Search `app/src/main/java` — the only GAMA-package
+files are the six `gama/dev` constants shadows (Section 3.6). The engine logic is
+inside the jars.
 
 **Q: Then why do the stubs look like reimplementations (e.g. `java.awt.Color`)?**
 Because Android genuinely lacks those APIs and the jar bytecode references them. A
@@ -311,32 +471,36 @@ user models live in `assets/models/` and are compiled with the same engine.
 
 **Q: Why exclude `gama.extension.physics`?**
 It carries native/desktop physics bindings that do not fit the Android build; it is
-excluded at `app/build.gradle:566`.
+excluded in `app/build.gradle`'s `fileTree`.
+
+**Q: Is the 3D display real OpenGL?**
+No — it is a custom CPU software rasterizer (`AndroidScene3D`) that mimics desktop
+OpenGL output (Section 6). There is no OpenGL ES/GLSurfaceView/WebGL/JOGL at runtime:
+GAMA's desktop GL bundle is inside the APK but its JOGL natives are desktop-only and
+it is never instantiated. 2D and 3D both render through the same software `View`.
 
 ---
 
-## 7. Quick reference
+## 8. Quick reference
 
 ### File map
 
 ```
 native-app/
 ├── app/
-│   ├── build.gradle                 # deps (line 566), patchGamaJars task (line 6)
+│   ├── build.gradle                 # deps + patchGamaJars task + ASM patchers
 │   ├── libs/*.jar                   # the real GAMA jars (11,499 class entries total)
 │   └── src/main/
 │       ├── assets/gama.library.jar  # built-in model library
 │       ├── assets/models/*.gaml     # sample/user models
 │       └── java/
-│           ├── com/gama/nativeapp/…    (18) Android host shell
-│           ├── com/github/weisj/jsvg/… (11) ported SVG renderer
-│           ├── java/awt/…              (52) Java SE stubs
+│           ├── com/gama/nativeapp/…    (23) Android host shell
+│           ├── java/awt/…              (60) Java SE stubs
 │           ├── javax/swing/…           (11) Swing stubs
-│           ├── javax/imageio/…          (9) ImageIO stubs
-│           ├── org/eclipse/…           (26) Eclipse platform stubs
+│           ├── javax/imageio/…         (11) ImageIO stubs
+│           ├── org/eclipse/…           (49) Eclipse platform stubs
 │           ├── org/osgi/…               (4) OSGi stubs
-│           ├── systems/uom/…            (1) unit stub
-│           └── gama/gaml/descriptions/… (1) SkillDescription shadow class
+│           └── gama/dev/…               (6) GAMA-package constants shadows
 ├── tools/*.java                  # ASM patchers run by patchGamaJars
 └── HANDOFF.md                    # session handoff / build commands
 ```
