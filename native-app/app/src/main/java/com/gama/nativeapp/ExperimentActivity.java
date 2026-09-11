@@ -201,14 +201,15 @@ public class ExperimentActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         setTheme(R.style.Theme_GamaNative);
+        UiSystemBars.enable(this);
         super.onCreate(savedInstanceState);
         setGuiActivity(this);
         modelName = getIntent().getStringExtra("model_name");
         isDarkTheme = getSharedPreferences("gama_prefs", 0).getBoolean("dark_theme", false);
+        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !isDarkTheme);
 
-        LinearLayout root = new LinearLayout(this);
+        LinearLayout root = UiSystemBars.applyInsets(new LinearLayout(this));
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setFitsSystemWindows(true);
         root.setBackgroundColor(thc(0xFFFAFAFA, 0xFF121212));
         rootLayout = root;
 
@@ -278,8 +279,7 @@ public class ExperimentActivity extends Activity {
         // system bars/layout don't fight the re-arrangement.
         if (isFullscreen) {
             isFullscreen = false;
-            View decor = getWindow().getDecorView();
-            decor.setSystemUiVisibility(0);
+            UiSystemBars.setFullscreen(getWindow().getDecorView(), false);
             if (fullscreenBtn != null) {
                 fullscreenBtn.setTextColor(thc(0xFF333333, 0xFFE6E6E6));
             }
@@ -1295,18 +1295,7 @@ public class ExperimentActivity extends Activity {
         }
         displayColumn.requestLayout();
 
-        View decor = getWindow().getDecorView();
-        if (isFullscreen) {
-            decor.setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-        } else {
-            decor.setSystemUiVisibility(0);
-        }
+        UiSystemBars.setFullscreen(getWindow().getDecorView(), isFullscreen);
 
         if (fullscreenBtn != null) {
             fullscreenBtn.setTextColor(isFullscreen
@@ -1344,6 +1333,7 @@ public class ExperimentActivity extends Activity {
     private void toggleTheme() {
         isDarkTheme = !isDarkTheme;
         getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
+        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !isDarkTheme);
         applyThemeColors();
     }
 

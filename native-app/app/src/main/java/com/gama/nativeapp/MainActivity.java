@@ -26,11 +26,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        UiSystemBars.enable(this);
+        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), true);
         super.onCreate(savedInstanceState);
 
         setGuiActivity(this);
 
-        LinearLayout root = new LinearLayout(this);
+        LinearLayout root = UiSystemBars.applyInsets(new LinearLayout(this));
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(32, 32, 32, 32);
 

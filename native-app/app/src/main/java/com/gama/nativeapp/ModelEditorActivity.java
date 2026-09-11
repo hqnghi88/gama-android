@@ -169,9 +169,8 @@ public class ModelEditorActivity extends AppCompatActivity {
         fromLibrary = getIntent().getBooleanExtra("from_library", false);
         filePath = getIntent().getStringExtra("file_path");
 
-        LinearLayout root = new LinearLayout(this);
+        LinearLayout root = UiSystemBars.applyInsets(new LinearLayout(this));
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setFitsSystemWindows(true);
 
         // Row 1: Back, Save, Run
         LinearLayout toolbarRow1 = new LinearLayout(this);
@@ -540,12 +539,7 @@ public class ModelEditorActivity extends AppCompatActivity {
             COLOR_BTN_STROKE = 0xFFBBBBBB;
         }
         getWindow().getDecorView().setBackgroundColor(COLOR_EDITOR_BG);
-        getWindow().setStatusBarColor(COLOR_TOOLBAR_BG);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            int flags = getWindow().getDecorView().getSystemUiVisibility();
-            flags = dark ? (flags & ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) : (flags | View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
-            getWindow().getDecorView().setSystemUiVisibility(flags);
-        }
+        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !dark);
         if (titleText != null) {
             titleText.setTextColor(COLOR_TOOLBAR_TEXT);
         }

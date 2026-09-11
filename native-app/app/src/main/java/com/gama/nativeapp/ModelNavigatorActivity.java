@@ -121,11 +121,12 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         boolean dark = getSharedPreferences("gama_prefs", 0).getBoolean("dark_theme", false);
         isDarkTheme = dark;
         setTheme(dark ? R.style.Theme_GamaNative_Dark : R.style.Theme_GamaNative);
+        UiSystemBars.enable(this);
+        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !dark);
         super.onCreate(savedInstanceState);
 
-        LinearLayout root = new LinearLayout(this);
+        LinearLayout root = UiSystemBars.applyInsets(new LinearLayout(this));
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setFitsSystemWindows(true);
         root.setBackgroundColor(isDarkTheme ? 0xFF1E1E2E : 0xFFF5F5F5);
 
         toolbar = new MaterialToolbar(this);
@@ -171,6 +172,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             isDarkTheme = !isDarkTheme;
             getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
             themeIcon.setText(isDarkTheme ? "\u2600" : "\u263E");
+            UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !isDarkTheme);
             applyThemeColors();
         });
         toolbar.addView(themeIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));

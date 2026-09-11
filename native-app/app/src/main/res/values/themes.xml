@@ -14,8 +14,6 @@
         <item name="colorOnSurface">@color/on_surface</item>
         <item name="colorError">@color/error</item>
         <item name="colorOnError">@color/on_error</item>
-        <item name="android:statusBarColor">@color/primary</item>
-        <item name="android:navigationBarColor">@color/surface</item>
         <item name="materialCardViewStyle">@style/Widget.GamaNative.Card</item>
     </style>
 
@@ -31,8 +29,6 @@
         <item name="colorOnSurface">@color/dark_on_surface</item>
         <item name="colorError">@color/error</item>
         <item name="colorOnError">@color/on_error</item>
-        <item name="android:statusBarColor">@color/dark_background</item>
-        <item name="android:navigationBarColor">@color/dark_background</item>
     </style>
 
     <style name="Widget.GamaNative.Card" parent="Widget.Material3.CardView.Filled">
