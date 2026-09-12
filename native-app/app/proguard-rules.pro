@@ -21,6 +21,12 @@
 # signatures for generics, inner classes for nested prefs etc).
 -keepattributes Signature,*Annotation*,InnerClasses,EnclosingMethod,Exceptions,AnnotationDefault,RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations,RuntimeVisibleParameterAnnotations,RuntimeInvisibleParameterAnnotations,MethodParameters
 
+# MissingScopeAnnotation at GamlStandaloneSetupGenerated.createInjector (seen live on API 37 window):
+# keeps the CLASS-retention guice scope annotations (Scope/Singleton meta) that R8 would otherwise drop and that Guice reads reflectively.
+-keep @com.google.inject.ScopeAnnotation class * { *; }
+-keep @com.google.inject.Singleton class * { *; }
+-keep @com.google.inject.Scope class * { *; }
+
 # The engine intentionally avoids translator/step optimizations; turning them
 # off reduces risk of VerifyError/NoSuchMethodError on the heavily reflected
 # model classes.
