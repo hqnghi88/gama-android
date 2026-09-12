@@ -12,9 +12,11 @@ import android.Manifest;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.text.format.Formatter;
@@ -105,6 +107,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 if (uri != null) onPluginPicked(uri);
             });
     private static final int REQUEST_PICK_WORKSPACE_FOLDER = 1001;
+    private static final int REQUEST_MANAGE_ACCESS = 1002;
     private static final int REQUEST_WRITE_STORAGE = 1003;
     private int currentSource = SOURCE_LIBRARY;
     private MaterialButton libTabBtn;
@@ -118,12 +121,11 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         boolean dark = getSharedPreferences("gama_prefs", 0).getBoolean("dark_theme", false);
         isDarkTheme = dark;
         setTheme(dark ? R.style.Theme_GamaNative_Dark : R.style.Theme_GamaNative);
-        UiSystemBars.enable(this);
-        UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !dark);
         super.onCreate(savedInstanceState);
 
-        LinearLayout root = UiSystemBars.applyInsets(new LinearLayout(this));
+        LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setFitsSystemWindows(true);
         root.setBackgroundColor(isDarkTheme ? 0xFF1E1E2E : 0xFFF5F5F5);
 
         toolbar = new MaterialToolbar(this);
@@ -169,7 +171,6 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             isDarkTheme = !isDarkTheme;
             getSharedPreferences("gama_prefs", 0).edit().putBoolean("dark_theme", isDarkTheme).apply();
             themeIcon.setText(isDarkTheme ? "\u2600" : "\u263E");
-            UiSystemBars.setLightStatusBar(getWindow().getDecorView(), !isDarkTheme);
             applyThemeColors();
         });
         toolbar.addView(themeIcon, new LinearLayout.LayoutParams(dp(48), dp(48)));
@@ -575,24 +576,42 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             launchFolderPicker();
             return;
         }
-        // Android 11+ (API 30+) enforces scoped storage: java.io.File access to
-        // /storage/emulated/0/ is not granted without the MANAGE_EXTERNAL_STORAGE
-        // permission, which this app does not request (it is not core to GAMA).
-        // The workspace therefore stays in app-private storage on those versions.
+        // On Android 11+ (API 30+) scoped storage blocks java.io.File access to
+        // /storage/emulated/0/ without MANAGE_EXTERNAL_STORAGE. The GAMA engine
+        // consumes model paths as real File paths, so request that permission.
         if (Build.VERSION.SDK_INT >= 30) {
-            Toast.makeText(this, "The workspace stays in app storage on Android 11+",
-                    Toast.LENGTH_LONG).show();
-            return;
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle("Storage permission needed")
+                    .setMessage("To move the workspace to a folder on your device's storage, grant "
+                            + "\"All files access\" to GAMA Native in Settings, then choose the folder again.")
+                    .setPositiveButton("Open Settings", (d, w) -> openManageSettings())
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } else {
+            // API 26-29: WRITE_EXTERNAL_STORAGE is the (runtime) gate here.
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    REQUEST_WRITE_STORAGE);
         }
-        // API 26-29: WRITE_EXTERNAL_STORAGE is the (runtime) gate here.
-        ActivityCompat.requestPermissions(this,
-                new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
-                REQUEST_WRITE_STORAGE);
     }
 
     private boolean hasStorageAccess() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager();
+        }
         return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void openManageSettings() {
+        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+        intent.setData(Uri.parse("package:" + getPackageName()));
+        try {
+            startActivityForResult(intent, REQUEST_MANAGE_ACCESS);
+        } catch (Exception e) {
+            Toast.makeText(this, "Open \"All files access\" for GAMA Native in Settings",
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void launchFolderPicker() {
@@ -629,6 +648,15 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_MANAGE_ACCESS) {
+            if (hasStorageAccess()) {
+                launchFolderPicker();
+            } else {
+                Toast.makeText(this, "All files access is required to use a device folder",
+                        Toast.LENGTH_LONG).show();
+            }
+            return;
+        }
         if (requestCode != REQUEST_PICK_WORKSPACE_FOLDER || resultCode != RESULT_OK || data == null) return;
         Uri treeUri = data.getData();
         if (treeUri == null) return;
