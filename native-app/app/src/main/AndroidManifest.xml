@@ -2,23 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.gama.nativeapp">
-    <!-- Required for json_file(http://...) and other URL fetching via the Webb client. -->
+    <!-- SAF-based workspace folder access via ACTION_OPEN_DOCUMENT_TREE.
+         No MANAGE_EXTERNAL_STORAGE permission required — the user picks
+         a folder and the app receives a persisted URI permission to it. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- CORE FEATURE: GAMA is a modeling/simulation IDE. Its primary function
-         is to open, edit, run and output the USER'S OWN model files (GAML),
-         GIS shapefiles/GeoTIFF and CSV data wherever the user keeps them on
-         device storage. The simulation engine consumes these as real filesystem
-         paths (java.io.File), which on Android 11+ (API 30+) scoped storage
-         serves to the app as raw paths only with the MANAGE_EXTERNAL_STORAGE
-         (All Files Access) permission. This permission is core functionality,
-         declared and justified to Google Play accordingly. -->
-    <uses-permission
-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
     <application
-        android:requestLegacyExternalStorage="true"
         android:name=".GamaApplication"
         android:allowBackup="true"
         android:extractNativeLibs="true"

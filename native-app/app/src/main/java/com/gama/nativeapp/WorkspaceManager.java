@@ -36,6 +36,8 @@ public final class WorkspaceManager {
 
     private static final String PREFS_NAME = "gama_workspace_prefs";
     private static final String KEY_ROOT_PATH = "workspace_root_path";
+    private static final String KEY_TREE_URI_TREE = "workspace_tree_uri_tree";
+    private static final String KEY_TREE_URI_DOCUMENT = "workspace_tree_uri_document";
     private static final String VALUE_DEFAULT = "__default__";
 
     private WorkspaceManager() {}
@@ -99,6 +101,23 @@ public final class WorkspaceManager {
     /** Resets the workspace to the app-private storage location. */
     public static void resetWorkspaceRoot(Context context) {
         getPrefs(context).edit().putString(KEY_ROOT_PATH, VALUE_DEFAULT).apply();
+    }
+
+    /** Persists the SAF tree URI granted for the chosen workspace folder. */
+    public static void setTreeUri(Context context, String treeUri) {
+        getPrefs(context).edit().putString(KEY_TREE_URI_TREE, treeUri != null ? treeUri : "").apply();
+    }
+
+    /** Returns the persisted SAF tree URI as a Uri, or null if none was granted. */
+    public static Uri getTreeUri(Context context) {
+        String s = getPrefs(context).getString(KEY_TREE_URI_TREE, "");
+        if ("".equals(s)) return null;
+        return Uri.parse(s);
+    }
+
+    /** Clears the persisted SAF tree URI (e.g. when the user resets the workspace). */
+    public static void clearTreeUri(Context context) {
+        getPrefs(context).edit().putString(KEY_TREE_URI_TREE, "").apply();
     }
 
     /**

@@ -3,6 +3,7 @@ package com.gama.nativeapp;
 import android.animation.Animator;
 import android.animation.AnimatorInflater;
 import android.content.Intent;
+import android.content.UriPermission;
 import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.graphics.PorterDuff;
@@ -595,23 +596,26 @@ public class ModelNavigatorActivity extends AppCompatActivity {
         }
     }
 
-    private boolean hasStorageAccess() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            return Environment.isExternalStorageManager();
+        private boolean hasStorageAccess() {
+        // SAF-only gate: access means the user picked the workspace folder through
+        // ACTION_OPEN_DOCUMENT_TREE and the OS still holds a persisted permission
+        // for that tree URI. No MANAGE_EXTERNAL_STORAGE is used (not in manifest).
+        Uri treeUri = WorkspaceManager.getTreeUri(this);
+        if (treeUri == null) return false;
+        Uri tree = treeUri;
+        for (android.content.UriPermission perm : getContentResolver().getPersistedUriPermissions()) {
+            if (tree.equals(perm.getUri())
+                    && (perm.isReadPermission() || perm.isWritePermission())) {
+                return true;
+            }
         }
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED;
+        return false;
     }
 
     private void openManageSettings() {
-        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-        intent.setData(Uri.parse("package:" + getPackageName()));
-        try {
-            startActivityForResult(intent, REQUEST_MANAGE_ACCESS);
-        } catch (Exception e) {
-            Toast.makeText(this, "Open \"All files access\" for GAMA Native in Settings",
-                    Toast.LENGTH_LONG).show();
-        }
+        // SAF-only: the policy gate opens the Storage Access Framework folder
+        // picker directly — never the old "All files access" settings screen.
+        launchFolderPicker();
     }
 
     private void launchFolderPicker() {
