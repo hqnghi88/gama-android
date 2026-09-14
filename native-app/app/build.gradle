@@ -368,14 +368,14 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 67
-        versionName "0.1.67"
+        versionCode 68
+        versionName "0.1.68"
     }
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
