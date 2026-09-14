@@ -368,8 +368,8 @@ android {
         applicationId "com.gama.nativeapp"
         minSdk 26
         targetSdk 36
-        versionCode 61
-        versionName "0.1.60"
+        versionCode 62
+        versionName "0.1.61"
     }
 
     buildTypes {
@@ -480,4 +480,5 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.10.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.documentfile:documentfile:1.0.0'
 }

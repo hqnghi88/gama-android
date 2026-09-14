@@ -3,20 +3,16 @@ package com.gama.nativeapp;
 import android.animation.Animator;
 import android.animation.AnimatorInflater;
 import android.content.Intent;
+import android.content.UriPermission;
 import android.content.res.ColorStateList;
 import android.net.Uri;
 import android.graphics.PorterDuff;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
-import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.text.format.Formatter;
@@ -42,7 +38,6 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.cardview.widget.CardView;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.drawable.DrawableCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -107,8 +102,6 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 if (uri != null) onPluginPicked(uri);
             });
     private static final int REQUEST_PICK_WORKSPACE_FOLDER = 1001;
-    private static final int REQUEST_MANAGE_ACCESS = 1002;
-    private static final int REQUEST_WRITE_STORAGE = 1003;
     private int currentSource = SOURCE_LIBRARY;
     private MaterialButton libTabBtn;
     private MaterialButton wsTabBtn;
@@ -367,17 +360,21 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     private void showWorkspaceLocationDialog() {
         String current = WorkspaceManager.getConfigRootPath(this);
         boolean isDefault = WorkspaceManager.defaultRootPath(this).equals(current);
-        String title = "Workspace location\n" + (isDefault ? "Using app storage" : current);
+        final boolean safeLinked = WorkspaceManager.isSafeWorkspace(this);
+        String title = "Workspace location\n"
+                + (safeLinked ? "Linked to a device folder (mirrored)"
+                : isDefault ? "Using app storage" : current);
 
         final CharSequence[] items = {
-                "Choose folder on device...",
-                isDefault ? "Refresh current folder" : "Reset to app storage (default)"
+                safeLinked ? "Re-link / change folder..." : "Choose folder on device...",
+                safeLinked ? "Reset to app storage (default)" : "Refresh current folder"
         };
 
         new MaterialAlertDialogBuilder(this)
                 .setTitle(title)
                 .setItems(items, (d, w) -> {
                     if (w == 0) pickWorkspaceFolder();
+                    else if (safeLinked) { WorkspaceManager.resetWorkspaceRoot(this); applyWorkspaceLocationChange(); }
                     else if (isDefault) applyWorkspaceLocationChange();
                     else { WorkspaceManager.resetWorkspaceRoot(this); applyWorkspaceLocationChange(); }
                 })
@@ -566,6 +563,8 @@ public class ModelNavigatorActivity extends AppCompatActivity {
 
     private void applyWorkspaceLocationChange() {
         executor.execute(() -> {
+            // Re-mirror the SAF folder so models added/edited outside the app appear.
+            WorkspaceManager.syncPull(this);
             buildWorkspaceTree();
             mainHandler.post(() -> {
                 if (currentSource == SOURCE_WORKSPACE) showWorkspace();
@@ -578,42 +577,39 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             launchFolderPicker();
             return;
         }
-        // On Android 11+ (API 30+) scoped storage blocks java.io.File access to
-        // /storage/emulated/0/ without MANAGE_EXTERNAL_STORAGE. The GAMA engine
-        // consumes model paths as real File paths, so request that permission.
-        if (Build.VERSION.SDK_INT >= 30) {
-            new MaterialAlertDialogBuilder(this)
-                    .setTitle("Storage permission needed")
-                    .setMessage("To move the workspace to a folder on your device's storage, grant "
-                            + "\"All files access\" to GAMA Native in Settings, then choose the folder again.")
-                    .setPositiveButton("Open Settings", (d, w) -> openManageSettings())
-                    .setNegativeButton("Cancel", null)
-                    .show();
-        } else {
-            // API 26-29: WRITE_EXTERNAL_STORAGE is the (runtime) gate here.
-            ActivityCompat.requestPermissions(this,
-                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
-                    REQUEST_WRITE_STORAGE);
-        }
+        // SAF gate: the user has not granted the app a persisted folder yet. Open
+        // the Storage Access Framework picker; the app never requests All Files
+        // Access (no MANAGE_EXTERNAL_STORAGE in the manifest).
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("Choose workspace folder")
+                .setMessage("GAMA Native stores your GAML models in a folder you choose. "
+                        + "Pick a folder on this device using the system picker — the app "
+                        + "uses the Storage Access Framework and never asks for \"All files "
+                        + "access\".")
+                .setPositiveButton("Choose folder", (d, w) -> openManageSettings())
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private boolean hasStorageAccess() {
-        if (Build.VERSION.SDK_INT >= 30) {
-            return Environment.isExternalStorageManager();
+        // SAF gate: access means the user picked the workspace folder through
+        // ACTION_OPEN_DOCUMENT_TREE and the OS holds a persisted permission for
+        // that tree URI. No MANAGE_EXTERNAL_STORAGE is used (not in the manifest).
+        Uri treeUri = WorkspaceManager.getTreeUri(this);
+        if (treeUri == null) return false;
+        for (UriPermission perm : getContentResolver().getPersistedUriPermissions()) {
+            if (treeUri.equals(perm.getUri())
+                    && (perm.isReadPermission() || perm.isWritePermission())) {
+                return true;
+            }
         }
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED;
+        return false;
     }
 
     private void openManageSettings() {
-        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-        intent.setData(Uri.parse("package:" + getPackageName()));
-        try {
-            startActivityForResult(intent, REQUEST_MANAGE_ACCESS);
-        } catch (Exception e) {
-            Toast.makeText(this, "Open \"All files access\" for GAMA Native in Settings",
-                    Toast.LENGTH_LONG).show();
-        }
+        // SAF gate: opens the Storage Access Framework folder picker directly —
+        // never the old "All files access" settings screen.
+        launchFolderPicker();
     }
 
     private void launchFolderPicker() {
@@ -634,86 +630,30 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions,
-            int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_WRITE_STORAGE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                launchFolderPicker();
-            } else {
-                Toast.makeText(this, "Storage permission is required to pick a folder",
-                        Toast.LENGTH_LONG).show();
-            }
-        }
-    }
-
-    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_MANAGE_ACCESS) {
-            if (hasStorageAccess()) {
-                launchFolderPicker();
-            } else {
-                Toast.makeText(this, "All files access is required to use a device folder",
-                        Toast.LENGTH_LONG).show();
-            }
-            return;
-        }
         if (requestCode != REQUEST_PICK_WORKSPACE_FOLDER || resultCode != RESULT_OK || data == null) return;
         Uri treeUri = data.getData();
         if (treeUri == null) return;
         try {
             getContentResolver().takePersistableUriPermission(treeUri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            WorkspaceManager.setTreeUri(this, treeUri.toString());
+            Log.i(TAG, "persisted SAF tree grant: " + treeUri);
         } catch (Exception e) {
             Log.w(TAG, "persistable permission: " + e.getMessage());
-        }
-        String localPath = WorkspaceManager.resolveLocalPathFromTreeUri(this, treeUri);
-        if (localPath == null) {
-            Toast.makeText(this, "Please pick a folder in device storage (not cloud)", Toast.LENGTH_LONG).show();
             return;
         }
-        File root = new File(localPath);
-        if (!root.exists() && !root.mkdirs()) root = null;
-        if (root == null || !WorkspaceManager.isWritable(root)) {
-            Toast.makeText(this, "Selected folder is not writable", Toast.LENGTH_LONG).show();
-            return;
-        }
-        // Optionally migrate the existing app-private workspace if it has content.
-        File defaultRoot = WorkspaceManager.defaultRoot(this);
-        boolean hasContent = defaultRoot.exists()
-                && defaultRoot.listFiles() != null && defaultRoot.listFiles().length > 0;
-        File finalRoot = root;
-        boolean isEmpty = root.listFiles() != null && root.listFiles().length == 0;
-        if (hasContent && isEmpty) {
-            new MaterialAlertDialogBuilder(this)
-                    .setMessage("Copy your existing workspace content into the new folder?")
-                    .setPositiveButton("Copy", (d, w) -> {
-                        WorkspaceManager.setWorkspaceRoot(this, finalRoot);
-                        copyExistingWorkspace(defaultRoot, finalRoot);
-                        applyWorkspaceLocationChange();
-                        Toast.makeText(this, "Workspace moved to " + finalRoot.getAbsolutePath(), Toast.LENGTH_LONG).show();
-                    })
-                    .setNegativeButton("Skip", (d, w) -> {
-                        WorkspaceManager.setWorkspaceRoot(this, finalRoot);
-                        applyWorkspaceLocationChange();
-                        Toast.makeText(this, "Workspace moved to " + finalRoot.getAbsolutePath(), Toast.LENGTH_LONG).show();
-                    })
-                    .show();
-        } else {
-            WorkspaceManager.setWorkspaceRoot(this, root);
-            applyWorkspaceLocationChange();
-            Toast.makeText(this, "Workspace moved to " + root.getAbsolutePath(), Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void copyExistingWorkspace(File src, File dst) {
+        // Mirror the picked folder into the app-private workspace (real paths for
+        // the engine). Content-URI copies need no storage permission.
+        statusText.setText("Mirroring your folder...");
+        progressIndicator.setVisibility(View.VISIBLE);
         executor.execute(() -> {
-            try {
-                WorkspaceManager.copyRecursively(src, dst);
-            } catch (IOException e) {
-                Log.e(TAG, "copy workspace failed", e);
-            }
+            WorkspaceManager.syncPull(this);
+            mainHandler.post(() -> {
+                applyWorkspaceLocationChange();
+                Toast.makeText(this, "Workspace linked to your folder", Toast.LENGTH_LONG).show();
+            });
         });
     }
 
@@ -915,6 +855,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
             try {
                 String name = WorkspaceManager.sanitizeModelName(rawName);
                 File file = WorkspaceManager.newModel(this, parentDir, name);
+                WorkspaceManager.syncPush(this, file);
                 mainHandler.post(() -> {
                     refreshWorkspace();
                     launchEditorFile(file);
@@ -939,6 +880,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                     String name = input.getText() != null ? input.getText().toString().trim() : "";
                     if (name.isEmpty()) { Toast.makeText(this, "Enter a name", Toast.LENGTH_SHORT).show(); return; }
                     File folder = WorkspaceManager.newFolder(this, parentDir, name);
+                    WorkspaceManager.syncPush(this, folder);
                     refreshWorkspace();
                     Toast.makeText(this, "Folder created", Toast.LENGTH_SHORT).show();
                 })
@@ -1030,6 +972,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                             return;
                         }
                         if (src.renameTo(dst)) {
+                            WorkspaceManager.syncPushRename(this, src, dst.getName());
                             mainHandler.post(this::refreshWorkspace);
                         } else {
                             mainHandler.post(() -> Toast.makeText(this, "Rename failed", Toast.LENGTH_SHORT).show());
@@ -1046,6 +989,7 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 File src = new File(item.getFullPath());
                 File dst = WorkspaceManager.uniqueFile(src.getParentFile(), src.getName());
                 WorkspaceManager.copyRecursively(src, dst);
+                WorkspaceManager.syncPush(this, dst);
                 mainHandler.post(this::refreshWorkspace);
             } catch (Exception e) {
                 Log.e(TAG, "duplicate failed", e);
@@ -1059,7 +1003,9 @@ public class ModelNavigatorActivity extends AppCompatActivity {
                 .setTitle("Delete " + item.getName() + "?")
                 .setMessage("This cannot be undone.")
                 .setPositiveButton("Delete", (d, w) -> executor.execute(() -> {
-                    WorkspaceManager.deleteRecursively(new File(item.getFullPath()));
+                    File doomed = new File(item.getFullPath());
+                    WorkspaceManager.deleteRecursively(doomed);
+                    WorkspaceManager.syncPushDelete(this, doomed);
                     mainHandler.post(this::refreshWorkspace);
                 }))
                 .setNegativeButton("Cancel", null)
@@ -1069,6 +1015,8 @@ public class ModelNavigatorActivity extends AppCompatActivity {
     private void refreshWorkspace() {
         if (currentSource != SOURCE_WORKSPACE) return;
         executor.execute(() -> {
+            // Re-mirror the SAF folder so models added/edited outside the app appear.
+            WorkspaceManager.syncPull(this);
             buildWorkspaceTree();
             mainHandler.post(this::showWorkspace);
         });

@@ -1,30 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     package="com.gama.nativeapp">
 
     <!-- Required for json_file(http://...) and other URL fetching via the Webb client. -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- CORE FEATURE: GAMA is a full simulation/modeling IDE whose models (GAML
-         files, GIS/CSV data, images, outputs) live on the device's shared storage
-         wherever the user keeps them. The engine consumes model and resource paths
-         as real filesystem paths (java.io.File), so on Android 11+ scoped storage
-         (API 30+) the workspace folder the user chooses must be readable and
-         writable as real paths, which requires All Files Access. This permission
-         is declared and justified to Google Play as the core functionality of the
-         app. -->
-    <uses-permission
-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
-    <!-- The workspace lives in app-private storage (getFilesDir) by default;
-         legacy read/write storage permissions are effective on API 26-32; the app
-         still requests WRITE externally on those versions before picking a
-         folder. -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <!-- SAF-based workspace folder access via ACTION_OPEN_DOCUMENT_TREE.
+         No MANAGE_EXTERNAL_STORAGE (All Files Access) and no legacy storage
+         permissions are declared — the user picks a folder and the app receives
+         a persisted URI permission to it, then mirrors it into app-private
+         storage (real paths) for the GAMA engine. This is the
+         Google-Play-policy-compliant path. -->
     <application
-        android:requestLegacyExternalStorage="true"
         android:name=".GamaApplication"
         android:allowBackup="true"
         android:extractNativeLibs="true"

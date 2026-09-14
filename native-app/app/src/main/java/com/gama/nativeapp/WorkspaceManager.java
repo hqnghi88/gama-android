@@ -1,12 +1,13 @@
 package com.gama.nativeapp;
 
 import android.content.Context;
+import android.content.ContentResolver;
 import android.content.SharedPreferences;
 import android.net.Uri;
-import android.os.Environment;
-import android.provider.DocumentsContract;
 import android.text.TextUtils;
 import android.util.Log;
+
+import androidx.documentfile.provider.DocumentFile;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -14,6 +15,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.URLConnection;
 
 /**
  * Manages the user's personal workspace where they can create, edit and save
@@ -36,6 +38,8 @@ public final class WorkspaceManager {
 
     private static final String PREFS_NAME = "gama_workspace_prefs";
     private static final String KEY_ROOT_PATH = "workspace_root_path";
+    private static final String KEY_TREE_URI_TREE = "workspace_tree_uri_tree";
+    private static final String KEY_TREE_URI_DOCUMENT = "workspace_tree_uri_document";
     private static final String VALUE_DEFAULT = "__default__";
 
     private WorkspaceManager() {}
@@ -68,12 +72,15 @@ public final class WorkspaceManager {
     }
 
     /**
-     * Returns the current workspace root. If the user has chosen a custom folder
-     * on the device, that folder is used. If it is no longer present or valid,
-     * we transparently fall back to the app-private storage so the workspace is
-     * always usable.
+     * Returns the current workspace root. If the user has chosen a folder on the
+     * device via the Storage Access Framework, that folder is mirrored (see the
+     * sync* methods below) into the app-private workspace, which is what the
+     * engine consumes as a real, permission-free path. Otherwise a previously
+     * configured custom real path (API 26-28) is honoured; if it is no longer
+     * valid we fall back to the app-private storage.
      */
     public static File workspaceRoot(Context context) {
+        if (getTreeUri(context) != null) return defaultRoot(context);
         String custom = getPrefs(context).getString(KEY_ROOT_PATH, VALUE_DEFAULT);
         if (VALUE_DEFAULT.equals(custom) || TextUtils.isEmpty(custom)) return defaultRoot(context);
         File root = new File(custom);
@@ -91,74 +98,186 @@ public final class WorkspaceManager {
         return custom;
     }
 
-    /** Persists a writable local root chosen by the user. */
-    public static void setWorkspaceRoot(Context context, File root) {
-        getPrefs(context).edit().putString(KEY_ROOT_PATH, root.getAbsolutePath()).apply();
-    }
-
     /** Resets the workspace to the app-private storage location. */
     public static void resetWorkspaceRoot(Context context) {
         getPrefs(context).edit().putString(KEY_ROOT_PATH, VALUE_DEFAULT).apply();
+        clearTreeUri(context);
     }
 
-    /**
-     * Tries to resolve a Storage Access Framework tree URI to a real local
-     * filesystem path (java.io.File). Only local storage providers are
-     * supported: the primary shared volume and secondary/external volumes.
-     * Cloud-only providers (Drive, etc.) cannot be mapped to a real path and
-     * return null.
-     */
-    public static String resolveLocalPathFromTreeUri(Context context, Uri treeUri) {
-        if (treeUri == null) return null;
-        String authority = treeUri.getAuthority();
-        String docId;
-        try {
-            docId = DocumentsContract.getTreeDocumentId(treeUri);
-        } catch (Exception e) {
-            return null;
-        }
-        if (docId == null) return null;
-
-        if ("com.android.externalstorage.documents".equals(authority)) {
-            // "primary:..." or "<volumeSerial>:..."
-            if (docId.startsWith("primary:")) {
-                String rest = docId.substring("primary:".length());
-                return new File(Environment.getExternalStorageDirectory(), rest).getAbsolutePath();
-            }
-            int sep = docId.indexOf(':');
-            if (sep > 0) {
-                String volume = docId.substring(0, sep);
-                String rest = docId.substring(sep + 1);
-                File storage = new File("/storage");
-                File[] vols = storage.listFiles();
-                if (vols != null) {
-                    for (File v : vols) {
-                        if (v.getName().equals(volume)) return new File(v, rest).getAbsolutePath();
-                    }
-                }
-            }
-            return null;
-        }
-        if ("com.android.providers.downloads.documents".equals(authority)) {
-            int sep = docId.indexOf(':');
-            String rest = sep >= 0 ? docId.substring(sep + 1) : docId;
-            return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), rest).getAbsolutePath();
-        }
-        return null;
+    /** Persists the SAF tree URI granted for the chosen workspace folder. */
+    public static void setTreeUri(Context context, String treeUri) {
+        getPrefs(context).edit().putString(KEY_TREE_URI_TREE, treeUri != null ? treeUri : "").apply();
     }
 
-    /** Quick probe that a folder is writable (create + delete a probe file). */
-    public static boolean isWritable(File dir) {
-        if (dir == null) return false;
+    /** Returns the persisted SAF tree URI as a Uri, or null if none was granted. */
+    public static Uri getTreeUri(Context context) {
+        String s = getPrefs(context).getString(KEY_TREE_URI_TREE, "");
+        if ("".equals(s)) return null;
+        return Uri.parse(s);
+    }
+
+    /** Clears the persisted SAF tree URI (e.g. when the user resets the workspace). */
+    public static void clearTreeUri(Context context) {
+        getPrefs(context).edit().putString(KEY_TREE_URI_TREE, "").apply();
+    }
+
+    /** True when the workspace is bound to a SAF-picked device folder. */
+    public static boolean isSafeWorkspace(Context context) {
+        return getTreeUri(context) != null;
+    }
+
+    /** The app-private directory the SAF folder is mirrored into. */
+    public static File mirrorRoot(Context context) {
+        return defaultRoot(context);
+    }
+
+    /** Pulls the entire SAF tree into the local mirror (content-URI reads, no
+     *  storage permissions needed). Off the UI thread. */
+    public static void syncPull(Context context) {
+        Uri tree = getTreeUri(context);
+        if (tree == null) return;
         try {
-            if (!dir.exists() && !dir.mkdirs()) return false;
-            File probe = new File(dir, ".gama_probe");
-            if (!probe.createNewFile()) return false;
-            if (!probe.delete()) return false;
-            return true;
+            DocumentFile root = DocumentFile.fromTreeUri(context, tree);
+            if (root == null) return;
+            pullTree(context.getContentResolver(), root, mirrorRoot(context));
+            Log.i(TAG, "syncPull complete from " + tree);
         } catch (Exception e) {
-            return false;
+            Log.e(TAG, "syncPull failed", e);
         }
+    }
+
+    /** Pushes one local file (or directory subtree) into the SAF tree. */
+    public static void syncPush(Context context, File local) {
+        Uri tree = getTreeUri(context);
+        if (tree == null || local == null) return;
+        String rel = relativePath(mirrorRoot(context), local);
+        if (rel == null) return;
+        try {
+            DocumentFile root = DocumentFile.fromTreeUri(context, tree);
+            if (root == null) return;
+            String[] segs = rel.split("/");
+            DocumentFile parent = navigate(root, segs, 0, segs.length - 1, true);
+            if (parent == null) return;
+            pushNode(context.getContentResolver(), parent, local);
+            Log.i(TAG, "syncPush " + rel + " (" + local.length() + "b)");
+        } catch (Exception e) {
+            Log.e(TAG, "syncPush failed for " + local, e);
+        }
+    }
+
+    /** Deletes one local file/dir from the SAF tree too. */
+    public static void syncPushDelete(Context context, File local) {
+        Uri tree = getTreeUri(context);
+        if (tree == null || local == null) return;
+        String rel = relativePath(mirrorRoot(context), local);
+        if (rel == null) return;
+        try {
+            DocumentFile root = DocumentFile.fromTreeUri(context, tree);
+            if (root == null) return;
+            String[] segs = rel.split("/");
+            DocumentFile parent = navigate(root, segs, 0, segs.length - 1, false);
+            if (parent == null) return;
+            DocumentFile node = parent.findFile(segs[segs.length - 1]);
+            if (node != null && node.delete()) Log.i(TAG, "syncPushDelete " + rel);
+        } catch (Exception e) {
+            Log.e(TAG, "syncPushDelete failed for " + local, e);
+        }
+    }
+
+    /** Renames the local file and mirrors the rename into the SAF tree. */
+    public static void syncPushRename(Context context, File oldLocal, String newName) {
+        Uri tree = getTreeUri(context);
+        if (tree == null || oldLocal == null) return;
+        String rel = relativePath(mirrorRoot(context), oldLocal);
+        if (rel == null) return;
+        try {
+            DocumentFile root = DocumentFile.fromTreeUri(context, tree);
+            if (root == null) return;
+            String[] segs = rel.split("/");
+            DocumentFile parent = navigate(root, segs, 0, segs.length - 1, false);
+            if (parent == null) return;
+            DocumentFile node = parent.findFile(segs[segs.length - 1]);
+            if (node != null && node.renameTo(newName)) Log.i(TAG, "syncPushRename " + rel + " -> " + newName);
+        } catch (Exception e) {
+            Log.e(TAG, "syncPushRename failed", e);
+        }
+    }
+
+    private static void pullTree(ContentResolver cr, DocumentFile dir, File localDir) {
+        if (!localDir.exists()) localDir.mkdirs();
+        for (DocumentFile doc : dir.listFiles()) {
+            if (doc.isDirectory()) {
+                pullTree(cr, doc, new File(localDir, doc.getName()));
+            } else if (doc.isFile()) {
+                copyDoc(cr, doc, new File(localDir, doc.getName()));
+            }
+        }
+    }
+
+    private static void copyDoc(ContentResolver cr, DocumentFile doc, File target) {
+        try (InputStream in = cr.openInputStream(doc.getUri());
+             OutputStream out = new FileOutputStream(target)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } catch (Exception e) {
+            Log.w(TAG, "copyDoc failed for " + doc.getUri() + ": " + e);
+        }
+    }
+
+    private static void pushNode(ContentResolver cr, DocumentFile parent, File local) {
+        if (local.isDirectory()) {
+            File[] children = local.listFiles();
+            if (children == null) return;
+            for (File child : children) {
+                DocumentFile sub = parent.findFile(child.getName());
+                if (sub == null) sub = parent.createDirectory(child.getName());
+                if (sub != null) pushNode(cr, sub, child);
+            }
+        } else {
+            String mime = mimeFor(local.getName());
+            DocumentFile target = parent.findFile(local.getName());
+            if (target == null) target = parent.createFile(mime, local.getName());
+            if (target == null) return;
+            try (InputStream in = new FileInputStream(local);
+                 OutputStream out = cr.openOutputStream(target.getUri(), "w")) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            } catch (Exception e) {
+                Log.w(TAG, "pushNode failed for " + local.getName() + ": " + e);
+            }
+        }
+    }
+
+    /** Walks segments of a relative path starting from the tree root, optionally
+     *  creating missing directories. Returns the leaf's parent. */
+    private static DocumentFile navigate(DocumentFile root, String[] segs, int start, int end, boolean createDirs) {
+        DocumentFile cur = root;
+        for (int i = start; i < end; i++) {
+            DocumentFile next = cur.findFile(segs[i]);
+            if (next == null) {
+                if (!createDirs) return null;
+                next = cur.createDirectory(segs[i]);
+            }
+            if (next == null) return null;
+            cur = next;
+        }
+        return cur;
+    }
+
+    private static String mimeFor(String name) {
+        String mime = URLConnection.guessContentTypeFromName(name);
+        if (mime == null) mime = "application/octet-stream";
+        return mime;
+    }
+
+    private static String relativePath(File base, File file) {
+        String b = base.getAbsolutePath();
+        String f = file.getAbsolutePath();
+        if (!b.endsWith("/")) b = b + "/";
+        if (!f.startsWith(b)) return null;
+        return f.substring(b.length());
     }
 
     /** Returns the absolute path of the default app-private workspace. */

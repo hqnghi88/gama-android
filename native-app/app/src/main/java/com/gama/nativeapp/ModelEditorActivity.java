@@ -699,6 +699,7 @@ public class ModelEditorActivity extends AppCompatActivity {
 
                 if (filePath != null) {
                     WorkspaceManager.writeText(new File(filePath), content);
+                    WorkspaceManager.syncPush(this, new File(filePath));
                 } else if (fromLibrary && jarPath != null) {
                     File cacheFile = new File(getCacheDir(), jarPath);
                     WorkspaceManager.writeText(cacheFile, content);
