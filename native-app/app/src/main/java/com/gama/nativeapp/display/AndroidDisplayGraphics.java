@@ -2021,8 +2021,14 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     @Override
     public void endDrawingLayers() {
         if (is3dMode()) {
-            renderScene3D();
-            blitOverlay();
+            boolean useGpu = getSurface() instanceof AndroidDisplaySurface
+                    && ((AndroidDisplaySurface) getSurface()).useGpu3D();
+            if (useGpu) {
+                renderScene3DGpu();
+            } else {
+                renderScene3D();
+                blitOverlay();
+            }
         }
     }
 
@@ -2085,11 +2091,102 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         Canvas c = canvas;
         if (c == null || scene3d.size() == 0) return;
         try {
+            SceneParams sp = collectSceneParams();
+            if (sp == null) return;
+            scene3d.setAmbientLight(sp.ambientARGB);
+            scene3d.setLights(sp.lights);
+            scene3d.setBgColor(sp.bgColor);
+            scene3d.setAxesEnabled(sp.axesOn);
+            if (sp.camPos == null || sp.camTarget == null) {
+                scene3d.explicitCamera = false;
+                scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
+                return;
+            }
+            scene3d.explicitCamera = true;
+            scene3d.setViewPos(sp.camPos.getX(), sp.camPos.getY(), sp.camPos.getZ());
+            scene3d.render(c,
+                    sp.camPos.getX(), sp.camPos.getY(), sp.camPos.getZ(),
+                    sp.camTarget.getX(), sp.camTarget.getY(), sp.camTarget.getZ(),
+                    sp.camLens != null ? sp.camLens : 45.0,
+                    getDisplayWidth(), getDisplayHeight());
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "renderScene3D failed: " + t);
+        }
+    }
+
+    /**
+     * GPU path: builds the same camera/lighting state as {@link #renderScene3D}
+     * but hands the scene to the GpuDisplayRenderer instead of the software
+     * rasterizer. The overlay layer is composited on top afterwards exactly as
+     * in the software path.
+     */
+    private void renderScene3DGpu() {
+        if (scene3d.size() == 0) return;
+        try {
+            SceneParams sp = collectSceneParams();
+            if (sp == null) return;
+            scene3d.setAmbientLight(sp.ambientARGB);
+            scene3d.setLights(sp.lights);
+            scene3d.setBgColor(sp.bgColor);
+            scene3d.setAxesEnabled(sp.axesOn);
+            GpuSnapshot snap;
+            if (sp.camPos == null || sp.camTarget == null) {
+                scene3d.explicitCamera = false;
+                float[] b = scene3dSceneBoundsGpuSafe();
+                if (b == null) return;
+                double cx = (b[0] + b[3]) / 2d, cy = (b[1] + b[4]) / 2d, cz = (b[2] + b[5]) / 2d;
+                snap = scene3d.captureGpuFrame(cx, cy, cz + 1.0, cx, cy, cz,
+                        45.0, getDisplayWidth(), getDisplayHeight());
+                android.util.Log.i("ANDROID_3D", "GPU default-cam: b=" + java.util.Arrays.toString(b)
+                        + " cam=(" + cx + "," + cy + "," + (cz + 1.0) + ")->(" + cx + "," + cy + "," + cz + ")");
+            } else {
+                scene3d.explicitCamera = true;
+                scene3d.setViewPos(sp.camPos.getX(), sp.camPos.getY(), sp.camPos.getZ());
+                snap = scene3d.captureGpuFrame(
+                        sp.camPos.getX(), sp.camPos.getY(), sp.camPos.getZ(),
+                        sp.camTarget.getX(), sp.camTarget.getY(), sp.camTarget.getZ(),
+                        sp.camLens != null ? sp.camLens : 45.0,
+                        getDisplayWidth(), getDisplayHeight());
+                android.util.Log.i("ANDROID_3D", "GPU explicit-cam: cam=(" + sp.camPos.getX() + "," + sp.camPos.getY() + "," + sp.camPos.getZ()
+                        + ")->(" + sp.camTarget.getX() + "," + sp.camTarget.getY() + "," + sp.camTarget.getZ() + ")");
+            }
+            if (snap == null) {
+                android.util.Log.w("ANDROID_3D", "captureGpuFrame returned null");
+                return;
+            }
+            android.util.Log.i("ANDROID_3D", "GPU snapshot prims=" + snap.prims.size());
+            AndroidDisplaySurface sf = getSurface() instanceof AndroidDisplaySurface
+                    ? (AndroidDisplaySurface) getSurface() : null;
+            if (sf == null) return;
+            sf.submitGpuFrame(snap);
+            blitOverlay();
+        } catch (Throwable t) {
+            android.util.Log.w("ANDROID_3D", "renderScene3DGpu failed: " + t);
+        }
+    }
+
+    /** Fresh scene bounds (live prims) for the default top-down GPU camera. */
+    private float[] scene3dSceneBoundsGpuSafe() {
+        return scene3d.sceneBoundsCurrent();
+    }
+
+    /** Collected per-frame 3D display parameters shared by both render paths. */
+    private static class SceneParams {
+        int ambientARGB = 0xFFFFFFFF;
+        int bgColor = 0xFFFFFFFF;
+        boolean axesOn = false;
+        AndroidScene3D.GamaLight[] lights = new AndroidScene3D.GamaLight[0];
+        IPoint camPos = null, camTarget = null;
+        Double camLens = null;
+    }
+
+    private SceneParams collectSceneParams() {
+        SceneParams sp = new SceneParams();
+        try {
             // Apply ambient + every point/spot/directional light from the display
             // data. Ambient is passed separately; all other lights are gathered
             // into the renderer's light array so multi-light GAMA displays (the
             // Lighting and Specular Effects recipes) shade correctly.
-            int ambientARGB = 0xFFFFFFFF;
             java.util.List<AndroidScene3D.GamaLight> ls = new java.util.ArrayList<>();
             // A live scope is needed to re-evaluate each light's dynamic facet
             // expressions (e.g. the "Quadratic, Linear and Constant attenuation"
@@ -2138,7 +2235,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                             // #ambient keeps the default #direction type.
                             if (name.contains("Ambient")) {
                                 Object intensity = light.getClass().getMethod("getIntensity").invoke(light);
-                                ambientARGB = colorToARGB(intensity, ambientARGB);
+                                sp.ambientARGB = colorToARGB(intensity, sp.ambientARGB);
                                 continue;
                             }
                             Object intensityObj = light.getClass().getMethod("getIntensity").invoke(light);
@@ -2198,8 +2295,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             } catch (Throwable t) {
                 android.util.Log.w("ANDROID_3D", "Failed to get lights: " + t);
             }
-            scene3d.setAmbientLight(ambientARGB);
-            scene3d.setLights(ls.toArray(new AndroidScene3D.GamaLight[0]));
+            sp.lights = ls.toArray(new AndroidScene3D.GamaLight[0]);
 
             // Pass the display background color to the 3D renderer so the
             // frame bitmap matches the model's background:#... instead of
@@ -2209,41 +2305,30 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         ? ((AndroidDisplaySurface) getSurface()).getOutput() : null;
                 if (out != null) {
                     int displayBg = gama.api.types.color.IColor.toAWTColor(out.getData().getBackgroundColor()).getRGB();
-                    scene3d.setBgColor(displayBg);
+                    sp.bgColor = displayBg;
                 }
             } catch (Throwable t) { /* keep default white */ }
             // The display's axes/draw_env facet maps onto isDrawEnv() in this
             // build, whose default comes from a preference (CORE_DRAW_ENV). Only
             // honour it when the model explicitly wrote one of the two facets,
             // otherwise every 3D display would suddenly show the world axes.
-            boolean axesOn = false;
             try {
                 LayeredDisplayOutput out = getSurface() instanceof AndroidDisplaySurface
                         ? ((AndroidDisplaySurface) getSurface()).getOutput() : null;
                 if (out != null && (out.hasFacet("axes") || out.hasFacet("draw_env"))) {
-                    axesOn = data.isDrawEnv();
+                    sp.axesOn = data.isDrawEnv();
                 }
             } catch (Throwable ignored) {
             }
-            scene3d.setAxesEnabled(axesOn);
 
-            IPoint camPos = null, camTarget = null;
-            Double camLens = null;
             try {
-                camPos = data.getCameraPos();
-                camTarget = data.getCameraTarget();
-                camLens = data.getCameraLens();
+                sp.camPos = data.getCameraPos();
+                sp.camTarget = data.getCameraTarget();
+                sp.camLens = data.getCameraLens();
             } catch (Throwable camErr) {
-                camPos = null;
+                sp.camPos = null;
             }
-            // The camera framing is frozen by AndroidScene3D itself on the first
-            // render (to the live prims bounds), so live agent movement outside
-            // the world never pans/re-scales the ground.
-            if (camPos == null || camTarget == null) {
-                scene3d.explicitCamera = false;
-                scene3d.renderDefaultTopDown(c, 45.0, getDisplayWidth(), getDisplayHeight());
-                return;
-            }
+            if (sp.camPos == null || sp.camTarget == null) return sp;
             // A display-level `rotation` facet (e.g. `rotation angle: 1.0 axis: {0,1,0}
             // dynamic: true`) rotates the whole 3D view about the rotation center/axis.
             // Desktop applies this as a model rotation of +angle; rotating the camera by
@@ -2258,26 +2343,21 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
                         double cx = cent.getX(), cy = cent.getY(), cz = cent.getZ();
                         double ax = 0, ay = 0, az = 1;
                         if (axis != null) { ax = axis.getX(); ay = axis.getY(); az = axis.getZ(); }
-                        double[] ep = rotateAboutAxis(camPos.getX(), camPos.getY(), camPos.getZ(),
+                        double[] ep = rotateAboutAxis(sp.camPos.getX(), sp.camPos.getY(), sp.camPos.getZ(),
                                 cx, cy, cz, ax, ay, az, -ang);
-                        double[] tp = rotateAboutAxis(camTarget.getX(), camTarget.getY(), camTarget.getZ(),
+                        double[] tp = rotateAboutAxis(sp.camTarget.getX(), sp.camTarget.getY(), sp.camTarget.getZ(),
                                 cx, cy, cz, ax, ay, az, -ang);
-                        camPos = GamaPointFactory.create(ep[0], ep[1], ep[2]);
-                        camTarget = GamaPointFactory.create(tp[0], tp[1], tp[2]);
+                        sp.camPos = GamaPointFactory.create(ep[0], ep[1], ep[2]);
+                        sp.camTarget = GamaPointFactory.create(tp[0], tp[1], tp[2]);
                     }
                 }
             } catch (Throwable rotErr) {
                 android.util.Log.w("ANDROID_3D", "display rotation failed: " + rotErr);
             }
-            scene3d.explicitCamera = true;
-            scene3d.setViewPos(camPos.getX(), camPos.getY(), camPos.getZ());
-            scene3d.render(c,
-                    camPos.getX(), camPos.getY(), camPos.getZ(),
-                    camTarget.getX(), camTarget.getY(), camTarget.getZ(),
-                    camLens != null ? camLens : 45.0,
-                    getDisplayWidth(), getDisplayHeight());
+            return sp;
         } catch (Throwable t) {
-            android.util.Log.w("ANDROID_3D", "renderScene3D failed: " + t);
+            android.util.Log.w("ANDROID_3D", "collectSceneParams failed: " + t);
+            return null;
         }
     }
 

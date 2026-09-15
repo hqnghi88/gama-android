@@ -158,6 +158,10 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     private boolean scopeUpdated = false;
     private static long lastRenderDiag = 0;
 
+    // GPU 3D renderer state (lazy-initialized on first 3D frame).
+    private GpuDisplayRenderer gpuRenderer;
+    private volatile boolean gpuRendererFailed = false;
+
     public AndroidDisplaySurface(Context context, LayeredDisplayOutput output) {
         super(context);
         this.output = output;
@@ -1549,8 +1553,47 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         disposed = true;
         getData().removeListener(this);
         if (layerManager != null) layerManager.dispose();
+        if (gpuRenderer != null) { gpuRenderer.shutdown(); gpuRenderer = null; }
         GAMA.releaseScope(getScope());
         setDisplayScope(null);
+    }
+
+    // ---- GPU 3D support ---------------------------------------------------
+
+    /**
+     * Whether the GPU renderer should be used for the current display. Defaults
+     * on; falls back to software permanently if GL initialization fails, and
+     * can be disabled at launch with the "gama.gpu3d" system property set to 0.
+     */
+    public boolean useGpu3D() {
+        if (gpuRendererFailed) return false;
+        String p = System.getProperty("gama.gpu3d");
+        if (p != null && p.equals("0")) return false;
+        return true;
+    }
+
+    /**
+     * Called from {@link AndroidDisplayGraphics#renderScene3DGpu()} on the SIM
+     * thread (inside {@code renderSnapshot()}). Renders the snapshot to the
+     * current work buffer via the GL pbuffer renderer, then overlays the 2D
+     * layer on top.
+     */
+    public void submitGpuFrame(GpuSnapshot snap) {
+        if (snap == null) return;
+        try {
+            if (gpuRenderer == null) {
+                gpuRenderer = new GpuDisplayRenderer();
+                gpuRenderer.init(snap.viewW, snap.viewH);
+            }
+            ensureBuffers(snap.viewW, snap.viewH);
+            Bitmap target = frameBuffers[workIndex];
+            if (target == null) return;
+            gpuRenderer.renderSync(snap, target);
+        } catch (Throwable t) {
+            Log.w(TAG, "submitGpuFrame failed, falling back to software", t);
+            gpuRendererFailed = true;
+            if (gpuRenderer != null) { gpuRenderer.shutdown(); gpuRenderer = null; }
+        }
     }
 
     /**

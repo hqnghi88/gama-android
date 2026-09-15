@@ -963,6 +963,221 @@ public class AndroidScene3D {
         canvas.drawBitmap(frameBmp, null, new android.graphics.RectF(0, 0, viewW, viewH), blitPaint);
     }
 
+    /**
+     * Builds a GPU snapshot: computes the same camera framing / view-projection
+     * matrices as {@link #render} and returns the scene data for
+     * {@link GpuDisplayRenderer} instead of rasterizing on the CPU. The prims
+     * list is referenced (not copied): the caller must keep the sim thread
+     * blocked until the GL render completes.
+     */
+    public GpuSnapshot captureGpuFrame(double camX, double camY, double camZ,
+                                       double tarX, double tarY, double tarZ,
+                                       double fovDeg, int viewW, int viewH) {
+        if (prims.isEmpty() || viewW <= 0 || viewH <= 0) return null;
+        int rw = viewW;
+        int rh = viewH;
+
+        float[] b = sceneBounds();
+        if (b == null) return null;
+        float minX = b[0], minY = b[1], minZ = b[2];
+        float maxX = b[3], maxY = b[4], maxZ = b[5];
+        if (!frameBoundsSet) {
+            frameMinX = minX; frameMinY = minY; frameMaxX = maxX; frameMaxY = maxY;
+            frameMinZ = minZ; frameMaxZ = maxZ;
+            frameBoundsSet = true;
+        } else {
+            float overlapX = Math.max(0f, Math.min(maxX, frameMaxX) - Math.max(minX, frameMinX));
+            float overlapY = Math.max(0f, Math.min(maxY, frameMaxY) - Math.max(minY, frameMinY));
+            float frameW = frameMaxX - frameMinX, frameH = frameMaxY - frameMinY;
+            float newW = maxX - minX, newH = maxY - minY;
+            boolean enlarged = newW > frameW * 1.25f || newH > frameH * 1.25f;
+            boolean displaced = overlapX <= 0f || overlapY <= 0f;
+            if (enlarged || displaced) {
+                frameMinX = minX; frameMinY = minY; frameMaxX = maxX; frameMaxY = maxY;
+                frameMinZ = minZ; frameMaxZ = maxZ;
+            }
+        }
+        minX = frameMinX; minY = frameMinY; maxX = frameMaxX; maxY = frameMaxY;
+        minZ = frameMinZ; maxZ = frameMaxZ;
+        float cx = (minX + maxX) / 2f, cy = (minY + maxY) / 2f, cz = (minZ + maxZ) / 2f;
+        double r2 = 0;
+        float[] xs = {minX, maxX}, ys = {minY, maxY}, zs = {minZ, maxZ};
+        for (float fx : xs) {
+            for (float fy : ys) {
+                for (float fz : zs) {
+                    double dx = fx - cx, dy = fy - cy, dz = fz - cz;
+                    double d = dx * dx + dy * dy + dz * dz;
+                    if (d > r2) r2 = d;
+                }
+            }
+        }
+        double r = Math.sqrt(r2);
+        if (r < 1e-6) return null;
+
+        double fovy = fovDeg > 1 && fovDeg < 179 ? fovDeg : 45;
+        double dxc = camX - tarX, dyc = camY - tarY, dzc = camZ - tarZ;
+        double dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+        if (dist < 1e-6) dist = 2 * r;
+        double halfV = Math.toRadians(fovy) / 2;
+        double halfH = Math.atan(Math.tan(halfV) * (double) rw / rh);
+        double fvx = dxc / dist, fvy = dyc / dist, fvz = dzc / dist;
+        double neededFit = frameDistance(fvx, fvy, fvz, halfV, halfH, cx, cy, cz,
+                minX, minY, minZ, maxX, maxY, maxZ);
+        long nowMs = System.currentTimeMillis();
+        if (fitStartMs < 0) fitStartMs = nowMs;
+        if (!explicitCamera) {
+            if (fitLocked) {
+                camX = fitCamX; camY = fitCamY; camZ = fitCamZ;
+                dist = fitDist;
+                if (neededFit > fitNeed * 1.15f) {
+                    fitLocked = false;
+                    fitStartMs = nowMs;
+                }
+            } else {
+                if (neededFit > fitNeed) fitNeed = (float) neededFit;
+                if (fitNeed > dist) {
+                    double ux = fvx, uy = fvy, uz = fvz;
+                    double back = fitNeed - dist;
+                    camX += ux * back; camY += uy * back; camZ += uz * back;
+                    dxc = camX - tarX; dyc = camY - tarY; dzc = camZ - tarZ;
+                    dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+                } else if (coverFit && fitNeed < dist) {
+                    double ux = fvx, uy = fvy, uz = fvz;
+                    double forward = dist - fitNeed;
+                    camX -= ux * forward; camY -= uy * forward; camZ -= uz * forward;
+                    dxc = camX - tarX; dyc = camY - tarY; dzc = camZ - tarZ;
+                    dist = Math.sqrt(dxc * dxc + dyc * dyc + dzc * dzc);
+                }
+                fitCamX = camX; fitCamY = camY; fitCamZ = camZ;
+                fitDist = dist;
+                if (nowMs - fitStartMs > 2000) fitLocked = true;
+            }
+        }
+
+        if (!explicitCamera) {
+            double offx = cx - tarX, offy = cy - tarY, offz = cz - tarZ;
+            double fdot = offx * fvx + offy * fvy + offz * fvz;
+            double perpX = offx - fdot * fvx;
+            double perpY = offy - fdot * fvy;
+            double perpZ = offz - fdot * fvz;
+            double perpLen = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+            if (perpLen > r * 0.01) {
+                tarX += perpX; tarY += perpY; tarZ += perpZ;
+                camX += perpX; camY += perpY; camZ += perpZ;
+            }
+        }
+
+        if (!explicitCamera) {
+            float zSpan = maxZ - minZ;
+            float xySpan = Math.max(maxX - minX, maxY - minY);
+            if (zSpan < xySpan * 0.05f && zSpan < (float) r * 0.2f) {
+                double vx = camX - tarX, vy = camY - tarY, vz = camZ - tarZ;
+                double camDist = Math.sqrt(vx * vx + vy * vy + vz * vz);
+                double elevRad = camDist > 1e-9 ? Math.atan2(vz, Math.hypot(vx, vy)) : 0;
+                if (elevRad < Math.toRadians(25)) {
+                    double az = camDist > 1e-9 ? Math.atan2(vy, vx) : Math.PI;
+                    double elev = Math.toRadians(55);
+                    double fvx2 = Math.cos(elev) * Math.cos(az);
+                    double fvy2 = Math.cos(elev) * Math.sin(az);
+                    double fvz2 = Math.sin(elev);
+                    double need = frameDistance(fvx2, fvy2, fvz2, halfV, halfH, cx, cy, cz,
+                            minX, minY, minZ, maxX, maxY, maxZ);
+                    tarX = cx; tarY = cy; tarZ = cz;
+                    camX = tarX + fvx2 * need;
+                    camY = tarY + fvy2 * need;
+                    camZ = tarZ + fvz2 * need;
+                    dist = need;
+                }
+            }
+        }
+
+        if (rotYawDeg != 0f || rotPitchDeg != 0f) {
+            double vx = camX - tarX, vy = camY - tarY, vz = camZ - tarZ;
+            double orbitDist = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (orbitDist > 1e-9) {
+                double az = Math.atan2(vy, vx);
+                double elev = Math.atan2(vz, Math.hypot(vx, vy));
+                az += Math.toRadians(rotYawDeg);
+                elev = Math.max(Math.toRadians(-85),
+                        Math.min(Math.toRadians(85), elev + Math.toRadians(rotPitchDeg)));
+                double horiz = orbitDist * Math.cos(elev);
+                double nvz = orbitDist * Math.sin(elev);
+                double ncx = tarX + horiz * Math.cos(az);
+                double ncy = tarY + horiz * Math.sin(az);
+                double ncz = tarZ + nvz;
+                if (!explicitCamera) {
+                    double fvx2 = ncx - tarX, fvy2 = ncy - tarY, fvz2 = ncz - tarZ;
+                    double fl = Math.sqrt(fvx2 * fvx2 + fvy2 * fvy2 + fvz2 * fvz2);
+                    if (fl > 1e-9) {
+                        double need = frameDistance(fvx2 / fl, fvy2 / fl, fvz2 / fl, halfV, halfH,
+                                cx, cy, cz, minX, minY, minZ, maxX, maxY, maxZ, false);
+                        if (need > orbitDist) {
+                            orbitDist = need;
+                            horiz = orbitDist * Math.cos(elev);
+                            nvz = orbitDist * Math.sin(elev);
+                            ncx = tarX + horiz * Math.cos(az);
+                            ncy = tarY + horiz * Math.sin(az);
+                            ncz = tarZ + nvz;
+                        }
+                    }
+                }
+                camX = ncx; camY = ncy; camZ = ncz;
+                dist = orbitDist;
+            }
+        }
+
+        if (zoomDolly != 1.0) {
+            double vx = camX - tarX, vy = camY - tarY, vz = camZ - tarZ;
+            double cd = Math.sqrt(vx * vx + vy * vy + vz * vz);
+            if (cd > 1e-9) {
+                double nd = cd * zoomDolly;
+                double s = nd / cd;
+                camX = tarX + vx * s; camY = tarY + vy * s; camZ = tarZ + vz * s;
+                dist = nd;
+            }
+        }
+
+        panScaleX = (float) (2 * dist * Math.tan(halfH) / viewW);
+        panScaleY = (float) (2 * dist * Math.tan(halfV) / viewH);
+        if (panX != 0f || panY != 0f) {
+            double fx = tarX - camX, fy = tarY - camY, fz = tarZ - camZ;
+            double fl = Math.sqrt(fx * fx + fy * fy + fz * fz);
+            if (fl > 1e-12) { fx /= fl; fy /= fl; fz /= fl; }
+            double sx = fy, sy = -fx, sz = 0;
+            double sl = Math.sqrt(sx * sx + sy * sy + sz * sz);
+            double ux, uy, uz;
+            if (sl > 1e-12) {
+                sx /= sl; sy /= sl; sz /= sl;
+                ux = sy * fz - sz * fy; uy = sz * fx - sx * fz; uz = sx * fy - sy * fx;
+            } else {
+                sx = 1; sy = 0; sz = 0;
+                ux = 0; uy = 1; uz = 0;
+            }
+            double ox = sx * panX + ux * panY;
+            double oy = sy * panX + uy * panY;
+            double oz = sz * panX + uz * panY;
+            tarX += ox; tarY += oy; tarZ += oz;
+            camX += ox; camY += oy; camZ += oz;
+        }
+
+        float[] view = new float[16];
+        float[] proj = new float[16];
+        lookAt(view, camX, camY, camZ, tarX, tarY, tarZ, 0, 0, 1);
+        double near = Math.max(dist * 0.001, 0.01);
+        double far = Math.max(dist + 2 * r, 2 * dist);
+        perspective(proj, Math.toRadians(fovy), (double) rw / rh, near, far);
+
+        this.viewW = rw;
+        this.viewH = rh;
+        this.nearPlane = (float) near;
+        this.farPlane = (float) far;
+
+        addAxesPrims(minX, minY, minZ, maxX, maxY, maxZ);
+
+        return new GpuSnapshot(prims, view, proj, rw, rh,
+                bgColor, (float) near, (float) far, ambR, ambG, ambB, lights);
+    }
+
     /** Distance needed to frame the scene's 2D footprint from a view direction. */
     private double frameDistance(double fvx, double fvy, double fvz, double halfV, double halfH,
                                  float cx, float cy, float cz,
@@ -1023,6 +1238,11 @@ public class AndroidScene3D {
         boundsOut[0] = minX; boundsOut[1] = minY; boundsOut[2] = minZ;
         boundsOut[3] = maxX; boundsOut[4] = maxY; boundsOut[5] = maxZ;
         return boundsOut;
+    }
+
+    /** Public read-only view of current prims bounds (no state mutation). */
+    public float[] sceneBoundsCurrent() {
+        return sceneBounds();
     }
 
     /**
