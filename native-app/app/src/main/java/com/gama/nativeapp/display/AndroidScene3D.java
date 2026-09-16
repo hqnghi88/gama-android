@@ -130,6 +130,7 @@ public class AndroidScene3D {
         int kind;
         float[] v;          // model coords, y negated, x,y,z interleaved
         float[] uv;         // per-vertex u,v interleaved (only when textured)
+        int[] vc;           // per-vertex ARGB colors (length n; null => flat `fill`)
         Object texture;     // Bitmap or AnimatedTexture
         int tint;           // ARGB tint/alpha multiplier applied to the texture
         int fill;
@@ -371,6 +372,31 @@ public class AndroidScene3D {
         float[] nn = faceNormal(model, n);
         p.lnx = nn[0]; p.lny = nn[1]; p.lnz = nn[2];
         p.fill = fill;
+        p.border = border;
+        p.stroke = stroke;
+        p.cull = cull;
+        p.layerIdx = currentLayerIdx;
+        prims.add(p);
+    }
+
+    /** Adds a polygon with per-vertex ARGB colors (n entries), Gouraud-shaded. */
+    public void addPolyVertexColor(float[] model, int n, int[] colors, int border, float stroke, boolean cull) {
+        Prim p = new Prim();
+        p.kind = POLY;
+        p.v = new float[n * 3];
+        for (int i = 0; i < n; i++) {
+            p.v[i * 3] = model[i * 3] + layerOffX;
+            p.v[i * 3 + 1] = -(model[i * 3 + 1] + layerOffY);
+            p.v[i * 3 + 2] = model[i * 3 + 2] + layerOffZ;
+        }
+        p.vc = colors != null ? colors.clone() : null;
+        float[] nn = faceNormal(model, n);
+        p.lnx = nn[0]; p.lny = nn[1]; p.lnz = nn[2];
+        if (p.vc != null) {
+            int r = 0, g = 0, b = 0, a = 0;
+            for (int c : p.vc) { r += (c >>> 16) & 0xFF; g += (c >>> 8) & 0xFF; b += c & 0xFF; a += (c >>> 24) & 0xFF; }
+            p.fill = ((a / n) << 24) | ((r / n) << 16) | ((g / n) << 8) | (b / n);
+        }
         p.border = border;
         p.stroke = stroke;
         p.cull = cull;

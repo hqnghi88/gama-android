@@ -316,7 +316,8 @@ public final class GpuDisplayRenderer {
             int solidVertCount = 0;
             for (AndroidScene3D.Prim p : snap.prims) {
                 if (p.kind == AndroidScene3D.POLY && p.texture == null) {
-                    solidVertCount += p.v.length / 3;
+                    int nv = p.v.length / 3;
+                    solidVertCount += Math.max(0, (nv - 2) * 3);
                 }
             }
             if (solidVertCount > 0) {
@@ -324,21 +325,25 @@ public final class GpuDisplayRenderer {
                 int si = 0;
                 for (AndroidScene3D.Prim p : snap.prims) {
                     if (p.kind == AndroidScene3D.POLY && p.texture == null) {
+                        int nv = p.v.length / 3;
                         float r = ((p.fill >> 16) & 0xFF) / 255f;
                         float g = ((p.fill >> 8) & 0xFF) / 255f;
                         float b = (p.fill & 0xFF) / 255f;
-                        float a = ((p.fill >> 24) & 0xFF) / 255f;
-                        for (int i = 0; i < p.v.length; i += 3) {
-                            solidBuf[si++] = p.v[i];
-                            solidBuf[si++] = p.v[i + 1];
-                            solidBuf[si++] = p.v[i + 2];
-                            solidBuf[si++] = p.lnx;
-                            solidBuf[si++] = p.lny;
-                            solidBuf[si++] = p.lnz;
-                            solidBuf[si++] = r;
-                            solidBuf[si++] = g;
-                            solidBuf[si++] = b;
-                            solidBuf[si++] = a;
+                        float a = ((p.fill >>> 24) & 0xFF) / 255f;
+                        for (int ti = 1; ti + 1 < nv; ti++) {
+                            int[] idx = {0, ti, ti + 1};
+                            for (int vi : idx) {
+                                solidBuf[si++] = p.v[vi * 3];
+                                solidBuf[si++] = p.v[vi * 3 + 1];
+                                solidBuf[si++] = p.v[vi * 3 + 2];
+                                solidBuf[si++] = p.lnx;
+                                solidBuf[si++] = p.lny;
+                                solidBuf[si++] = p.lnz;
+                                solidBuf[si++] = r;
+                                solidBuf[si++] = g;
+                                solidBuf[si++] = b;
+                                solidBuf[si++] = a;
+                            }
                         }
                     }
                 }
