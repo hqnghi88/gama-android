@@ -289,6 +289,8 @@ public final class GpuDisplayRenderer {
         texVbo = bufs[2];
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
         GLES20.glLineWidth(1.0f);
     }
@@ -385,14 +387,37 @@ public final class GpuDisplayRenderer {
             // ── Readback → Bitmap ───────────────────────────────────
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
                     IntBuffer.wrap(intBuf));
-            // Convert RGBA → ARGB (Android Bitmap format)
-            // glReadPixels(GL_RGBA, GL_UNSIGNED_BYTE) on little-endian yields int = A|B<<16|G<<8|R
-            for (int i = 0; i < intBuf.length; i++) {
-                int rgba = intBuf[i];
-                int r = rgba & 0xFF;
-                int g = (rgba >> 8) & 0xFF;
-                int b = (rgba >> 16) & 0xFF;
-                intBuf[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            // Convert RGBA → ARGB (Android Bitmap format) + flip Y
+            // glReadPixels returns rows bottom-to-top; Bitmap expects top-to-bottom.
+            // On little-endian, IntBuffer reads bytes as: int = A<<24 | B<<16 | G<<8 | R
+            int[] row = new int[w];
+            for (int y = 0; y < h / 2; y++) {
+                int topOff = y * w, botOff = (h - 1 - y) * w;
+                // Convert and swap top row
+                for (int x = 0; x < w; x++) {
+                    int rgba = intBuf[topOff + x];
+                    row[x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
+                            | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
+                }
+                // Convert bottom row
+                for (int x = 0; x < w; x++) {
+                    int rgba = intBuf[botOff + x];
+                    intBuf[topOff + x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
+                            | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
+                }
+                // Put converted top row into bottom position
+                for (int x = 0; x < w; x++) {
+                    intBuf[botOff + x] = row[x];
+                }
+            }
+            // If h is odd, convert the middle row (no swap needed)
+            if ((h & 1) == 1) {
+                int mid = (h / 2) * w;
+                for (int x = 0; x < w; x++) {
+                    int rgba = intBuf[mid + x];
+                    intBuf[mid + x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
+                            | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
+                }
             }
             targetBitmap.eraseColor(0);
             targetBitmap.setPixels(intBuf, 0, w, 0, 0, w, h);
