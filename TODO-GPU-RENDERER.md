@@ -72,9 +72,39 @@
 - Consider rendering text as textured quads in the GL pipeline.
 
 ## Build Commands
+
+### opengl4 JAR (from mygama/gama)
+```bash
+# 1. Build full GAMA platform (produces target/ folders with JARs)
+cd /Users/hqnghi/git/mygama/gama
+bash travis/build.sh
+
+# 2. Compile opengl4 sources against target/ JARs
+SOURCES=$(find gama.ui.display.opengl4/src -name "*.java" ! -name "OpenGLDisplayView.java")
+CP="gama.ui.display.opengl4/target/classes"
+CP="$CP:$(find gama.dev/target -name '*.jar' | head -1)"
+CP="$CP:$(find gama application/plugins -name 'org.jts.core*.jar' | head -1)"
+CP="$CP:$(find gama.application/plugins -name 'streamex*.jar' | head -1)"
+CP="$CP:$(find gama.application/plugins -name 'org.jogl*.jar' | head -1)"
+CP="$CP:$(find gama.application/plugins -name 'org.mitridate*.jar' | head -1)"
+CP="$CP:/Users/hqnghi/git/gama-android/native-app/app/libs/joml-1.10.5.jar"
+CP="$CP:$(find /path/to/android-sdk -name 'android.jar' | head -1)"
+javac --release 16 -cp "$CP" -d /tmp/opengl4-build $SOURCES
+
+# 3. Copy GLSL shaders into build dir
+cp gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/glsl/* \
+   /tmp/opengl4-build/gama/ui/display/opengl4/renderer/shaders/glsl/
+
+# 4. Package JAR and copy to Android
+cd /tmp/opengl4-build && jar cf gama.ui.display.opengl4_0.0.0.20260917.jar gama/
+cp gama.ui.display.opengl4_0.0.0.20260917.jar \
+   /Users/hqnghi/git/gama-android/native-app/app/libs/
+```
+
+### Android APK
 ```bash
 # Build APK
-cd native-app && ./gradlew assembleDebug
+cd /Users/hqnghi/git/gama-android/native-app && ./gradlew assembleDebug
 
 # Build APK (skip deps)
 scripts/build_app.sh --repo /Users/hqnghi/git/gama-android --skip-deps
@@ -84,10 +114,6 @@ adb install -r native-app/app/build/outputs/apk/debug/app-debug.apk
 
 # Check logs
 adb logcat -d | grep GpuDisplay
-
-# Build opengl4 JAR (if needed)
-cd /tmp/opengl4-build && jar cf gama.ui.display.opengl4_0.0.0.20260917.jar gama/
-cp gama.ui.display.opengl4_0.0.0.20260917.jar /Users/hqnghi/git/gama-android/native-app/app/libs/
 ```
 
 ## Key File Locations
