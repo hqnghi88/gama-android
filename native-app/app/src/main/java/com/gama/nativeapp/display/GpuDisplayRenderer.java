@@ -9,23 +9,18 @@ import android.opengl.EGLContext;
 import android.opengl.EGLDisplay;
 import android.opengl.EGLSurface;
 import android.opengl.GLUtils;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
-import android.util.SparseIntArray;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 
-import javax.microedition.khronos.egl.EGL10;
-import javax.microedition.khronos.opengles.GL10;
-
 import android.opengl.GLES20;
+
+import gama.ui.display.opengl4.renderer.shaders.BasicShader;
 
 /**
  * GPU-accelerated 3D renderer using OpenGL ES 2.0.
@@ -42,7 +37,6 @@ import android.opengl.GLES20;
 public final class GpuDisplayRenderer {
 
     private static final String TAG = "GpuDisplayRenderer";
-    private static final int MAX_LIGHTS = 8;
 
     private final GlThread glThread = new GlThread();
 
@@ -56,7 +50,8 @@ public final class GpuDisplayRenderer {
     private EGLDisplay eglDisplay = EGL14.EGL_NO_DISPLAY;
     private EGLContext eglContext = EGL14.EGL_NO_CONTEXT;
     private EGLSurface eglSurface = EGL14.EGL_NO_SURFACE;
-    private int solidProgram, lineProgram;
+    private BasicShader basicShader;
+    private int lineProgram;
     private int solidVbo, lineVbo;
     private int[] intBuf;
     private int renderW, renderH;
@@ -65,9 +60,6 @@ public final class GpuDisplayRenderer {
     // Texture cache: Bitmap identity → GL texture name
     private final Map<Bitmap, Integer> texCache = new HashMap<>();
     private int texVbo;
-
-    // Reusable line VBO attribute buffer
-    private FloatBuffer lineFloatBuf;
 
     // CPU text paint (used after readback, on GL thread)
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -187,78 +179,8 @@ public final class GpuDisplayRenderer {
     }
 
     private void initShaders() {
-        // ── Solid/textured shader (Phong lighting) ───────────────────
-        String solidVert =
-            "attribute vec3 aPos;\n" +
-            "attribute vec3 aNormal;\n" +
-            "attribute vec4 aColor;\n" +
-            "attribute vec2 aUV;\n" +
-            "uniform mat4 uMVP;\n" +
-            "varying vec3 vW;\n" +
-            "varying vec3 vN;\n" +
-            "varying vec4 vCol;\n" +
-            "varying vec2 vUV;\n" +
-            "void main(){\n" +
-            "  vW = aPos; vN = aNormal; vCol = aColor; vUV = aUV;\n" +
-            "  gl_Position = uMVP * vec4(aPos, 1.0);\n" +
-            "}\n";
-
-        String solidFrag =
-            "precision mediump float;\n" +
-            "varying vec3 vW;\n" +
-            "varying vec3 vN;\n" +
-            "varying vec4 vCol;\n" +
-            "varying vec2 vUV;\n" +
-            "uniform int uTextured;\n" +
-            "uniform sampler2D uTex;\n" +
-            "uniform vec4 uTint;\n" +
-            "uniform vec3 uAmbient;\n" +
-            "uniform int uNumLights;\n" +
-            "uniform int uLType[8];\n" +
-            "uniform vec3 uLCol[8];\n" +
-            "uniform vec3 uLPos[8];\n" +
-            "uniform vec3 uLDir[8];\n" +
-            "uniform float uLCa[8], uLLa[8], uLQa[8], uLCos[8];\n" +
-            "void main(){\n" +
-            "  vec3 N = normalize(vN);\n" +
-            "  vec4 base;\n" +
-            "  if(uTextured==1){\n" +
-            "    base = texture2D(uTex, vUV) * uTint;\n" +
-            "  } else {\n" +
-            "    base = vCol;\n" +
-            "  }\n" +
-            "  vec3 col = base.rgb * uAmbient;\n" +
-            "  for(int i=0;i<uNumLights && i<8;i++){\n" +
-            "    int t = uLType[i];\n" +
-            "    if(t==1){\n" +
-            "      float d = abs(dot(N, uLDir[i]));\n" +
-            "      col += base.rgb * uLCol[i] * d;\n" +
-            "    } else if(t==2){\n" +
-            "      vec3 L = uLPos[i] - vW;\n" +
-            "      float dist = length(L);\n" +
-            "      L = L / dist;\n" +
-            "      float att = uLCa[i] + uLLa[i]*dist + uLQa[i]*dist*dist;\n" +
-            "      float d = abs(dot(N, L));\n" +
-            "      col += base.rgb * uLCol[i] * d / max(att, 0.001);\n" +
-            "    } else if(t==3){\n" +
-            "      vec3 L = uLPos[i] - vW;\n" +
-            "      float dist = length(L);\n" +
-            "      L = L / dist;\n" +
-            "      if(dot(-L, uLDir[i]) >= uLCos[i]){\n" +
-            "        float att = uLCa[i] + uLLa[i]*dist + uLQa[i]*dist*dist;\n" +
-            "        float d = max(dot(N, L), 0.0);\n" +
-            "        col += base.rgb * uLCol[i] * d / max(att, 0.001);\n" +
-            "      }\n" +
-            "    }\n" +
-            "  }\n" +
-            "  gl_FragColor = vec4(col, base.a);\n" +
-            "}\n";
-
-        int sv = compileShader(GLES20.GL_VERTEX_SHADER, solidVert);
-        int sf = compileShader(GLES20.GL_FRAGMENT_SHADER, solidFrag);
-        solidProgram = linkProgram(sv, sf);
-        GLES20.glDeleteShader(sv);
-        GLES20.glDeleteShader(sf);
+        // ── Solid/textured shader: reuse opengl4 BasicShader ─────────
+        basicShader = new BasicShader();
 
         // ── Line shader ──────────────────────────────────────────────
         String lineVert =
@@ -289,6 +211,7 @@ public final class GpuDisplayRenderer {
         texVbo = bufs[2];
 
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+        GLES20.glDepthFunc(GLES20.GL_LEQUAL);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
@@ -301,6 +224,18 @@ public final class GpuDisplayRenderer {
         try {
             if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return;
 
+            // Diagnostic: count prims by type
+            int nSolid = 0, nTex = 0, nLine = 0, nBill = 0, nText = 0;
+            for (AndroidScene3D.Prim p : snap.prims) {
+                switch (p.kind) {
+                    case AndroidScene3D.POLY: if (p.texture != null) nTex++; else nSolid++; break;
+                    case AndroidScene3D.LINE: nLine++; break;
+                    case AndroidScene3D.BILLBOARD: nBill++; break;
+                    case AndroidScene3D.TEXT: nText++; break;
+                }
+            }
+            Log.d(TAG, "prims: solid=" + nSolid + " tex=" + nTex + " line=" + nLine + " bill=" + nBill + " text=" + nText + " lights=" + snap.lights.length);
+
             int w = snap.viewW, h = snap.viewH;
             GLES20.glViewport(0, 0, w, h);
 
@@ -310,23 +245,28 @@ public final class GpuDisplayRenderer {
             GLES20.glClearColor(bgR, bgG, bgB, 1f);
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
-            // MVP = proj × view (model is identity)
+            // Matrices: column-major, passed directly to GL
             float[] mvp = new float[16];
             mat4Mul(mvp, snap.proj, snap.view);
+
+            // Identity model matrix
+            float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            float[] NORMAL_ID = {1,0,0, 0,1,0, 0,0,1};
 
             // ── Solid batch ──────────────────────────────────────────
             int solidVertCount = 0;
             for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture == null) {
+                if (p.kind == AndroidScene3D.POLY && p.texture == null && p.fill != 0) {
                     int nv = p.v.length / 3;
                     solidVertCount += Math.max(0, (nv - 2) * 3);
                 }
             }
             if (solidVertCount > 0) {
-                float[] solidBuf = new float[solidVertCount * 10]; // pos3+norm3+col4
+                // pos3 + col4 + uv2 + norm3 = 12 floats/vertex (BasicShader layout)
+                float[] solidBuf = new float[solidVertCount * 12];
                 int si = 0;
                 for (AndroidScene3D.Prim p : snap.prims) {
-                    if (p.kind == AndroidScene3D.POLY && p.texture == null) {
+                    if (p.kind == AndroidScene3D.POLY && p.texture == null && p.fill != 0) {
                         int nv = p.v.length / 3;
                         float r = ((p.fill >> 16) & 0xFF) / 255f;
                         float g = ((p.fill >> 8) & 0xFF) / 255f;
@@ -335,21 +275,27 @@ public final class GpuDisplayRenderer {
                         for (int ti = 1; ti + 1 < nv; ti++) {
                             int[] idx = {0, ti, ti + 1};
                             for (int vi : idx) {
+                                // aPos (location 0)
                                 solidBuf[si++] = p.v[vi * 3];
                                 solidBuf[si++] = p.v[vi * 3 + 1];
                                 solidBuf[si++] = p.v[vi * 3 + 2];
-                                solidBuf[si++] = p.lnx;
-                                solidBuf[si++] = p.lny;
-                                solidBuf[si++] = p.lnz;
+                                // aColor (location 1)
                                 solidBuf[si++] = r;
                                 solidBuf[si++] = g;
                                 solidBuf[si++] = b;
                                 solidBuf[si++] = a;
+                                // aTexCoord (location 2) - unused for solid
+                                solidBuf[si++] = 0;
+                                solidBuf[si++] = 0;
+                                // aNormal (location 3)
+                                solidBuf[si++] = p.lnx;
+                                solidBuf[si++] = p.lny;
+                                solidBuf[si++] = p.lnz;
                             }
                         }
                     }
                 }
-                drawSolidBatch(solidBuf, solidVertCount, mvp, snap);
+                drawSolidBatch(solidBuf, solidVertCount, mvp, IDENTITY4, snap);
             }
 
             // ── Lines ───────────────────────────────────────────────
@@ -378,11 +324,15 @@ public final class GpuDisplayRenderer {
             // ── Textured prims (per-draw, small vertex counts) ─────
             for (AndroidScene3D.Prim p : snap.prims) {
                 if (p.kind == AndroidScene3D.POLY && p.texture != null) {
-                    drawTexturedPrim(p, mvp, snap);
+                    drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true);
                 } else if (p.kind == AndroidScene3D.BILLBOARD) {
-                    drawBillboard(p, mvp, snap);
+                    drawBillboard(p, snap, IDENTITY4, NORMAL_ID);
                 }
             }
+
+            // ── GL error check ──────────────────────────────────────
+            int glErr = GLES20.glGetError();
+            if (glErr != GLES20.GL_NO_ERROR) Log.e(TAG, "GL error: 0x" + Integer.toHexString(glErr));
 
             // ── Readback → Bitmap ───────────────────────────────────
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
@@ -432,72 +382,130 @@ public final class GpuDisplayRenderer {
 
     // ── Solid/textured batch draw ──────────────────────────────────────
 
-    private void drawSolidBatch(float[] buf, int vertCount, float[] mvp, GpuSnapshot snap) {
-        GLES20.glUseProgram(solidProgram);
-        int uMVP = GLES20.glGetUniformLocation(solidProgram, "uMVP");
-        GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0);
-        int uTextured = GLES20.glGetUniformLocation(solidProgram, "uTextured");
-        GLES20.glUniform1i(uTextured, 0);
-        setLightUniforms(solidProgram, snap);
+    private void drawSolidBatch(float[] buf, int vertCount, float[] mvp, float[] modelMatrix, GpuSnapshot snap) {
+        int pid = basicShader.getProgramID();
+        basicShader.start();
+
+        // Pass matrices as raw column-major floats (bypass JOML transpose issue)
+        int loc;
+        loc = GLES20.glGetUniformLocation(pid, "model");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, modelMatrix, 0);
+        loc = GLES20.glGetUniformLocation(pid, "view");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.view, 0);
+        loc = GLES20.glGetUniformLocation(pid, "projection");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.proj, 0);
+        loc = GLES20.glGetUniformLocation(pid, "normalMatrix");
+        if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
+
+        basicShader.loadUseTexture(false);
+        basicShader.loadUseLighting(false);
+        basicShader.loadAmbientColor(1f, 1f, 1f);
+
+        // Bind texture sampler to unit 0
+        loc = GLES20.glGetUniformLocation(pid, "texture1");
+        if (loc >= 0) GLES20.glUniform1i(loc, 0);
 
         FloatBuffer fb = ByteBuffer.allocateDirect(buf.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         fb.put(buf).flip();
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, solidVbo);
         GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, buf.length * 4, fb, GLES20.GL_STREAM_DRAW);
 
-        int stride = 10 * 4;
-        int aPos = GLES20.glGetAttribLocation(solidProgram, "aPos");
-        int aNorm = GLES20.glGetAttribLocation(solidProgram, "aNormal");
-        int aCol = GLES20.glGetAttribLocation(solidProgram, "aColor");
-        int aUV = GLES20.glGetAttribLocation(solidProgram, "aUV");
+        int stride = 12 * 4;
+        int aPos = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aPos");
+        int aCol = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aColor");
+        int aTex = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aTexCoord");
+        int aNorm = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aNormal");
 
         GLES20.glEnableVertexAttribArray(aPos);
         GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
-        GLES20.glEnableVertexAttribArray(aNorm);
-        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 3 * 4);
         GLES20.glEnableVertexAttribArray(aCol);
-        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 6 * 4);
-        if (aUV >= 0) GLES20.glDisableVertexAttribArray(aUV);
+        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        if (aTex >= 0) {
+            GLES20.glEnableVertexAttribArray(aTex);
+            GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, stride, 7 * 4);
+        }
+        GLES20.glEnableVertexAttribArray(aNorm);
+        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertCount);
     }
 
-    private void drawTexturedPrim(AndroidScene3D.Prim p, float[] mvp, GpuSnapshot snap) {
-        int vertCount = p.v.length / 3;
-        if (vertCount == 0) return;
+    private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate) {
+        int nv = p.v.length / 3;
+        if (nv == 0) return;
+        int triCount = fanTriangulate ? Math.max(0, (nv - 2) * 3) : nv;
+        if (triCount == 0) return;
 
-        GLES20.glUseProgram(solidProgram);
-        int uMVP = GLES20.glGetUniformLocation(solidProgram, "uMVP");
-        GLES20.glUniformMatrix4fv(uMVP, 1, false, mvp, 0);
-        int uTextured = GLES20.glGetUniformLocation(solidProgram, "uTextured");
-        GLES20.glUniform1i(uTextured, 1);
-        setLightUniforms(solidProgram, snap);
+        int pid = basicShader.getProgramID();
+        basicShader.start();
 
-        // Tint (ARGB → vec4)
+        // Pass matrices as raw column-major floats (bypass JOML transpose issue)
+        int loc;
+        loc = GLES20.glGetUniformLocation(pid, "model");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, modelMatrix, 0);
+        loc = GLES20.glGetUniformLocation(pid, "view");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.view, 0);
+        loc = GLES20.glGetUniformLocation(pid, "projection");
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.proj, 0);
+        loc = GLES20.glGetUniformLocation(pid, "normalMatrix");
+        if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, normalMatrix, 0);
+
+        basicShader.loadUseTexture(true);
+        basicShader.loadUseLighting(snap.lights.length > 0);
+        basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
+        if (snap.lights.length > 0) {
+            AndroidScene3D.GamaLight l = snap.lights[0];
+            basicShader.loadLightPosition(l.px, l.py, l.pz);
+            basicShader.loadLightColor(l.r, l.g, l.b);
+        } else {
+            basicShader.loadLightPosition(0, 0, 1);
+            basicShader.loadLightColor(1, 1, 1);
+        }
+        // Extract camera position from view matrix (column-major)
+        float[] v = snap.view;
+        float camX = -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14]);
+        float camY = -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14]);
+        float camZ = -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14]);
+        basicShader.loadViewPos(camX, camY, camZ);
+        basicShader.loadShininess(32f);
+
+        // Bind texture sampler to unit 0
+        loc = GLES20.glGetUniformLocation(pid, "texture1");
+        if (loc >= 0) GLES20.glUniform1i(loc, 0);
+
+        // Tint is baked into vertex color
         int tint = p.tint != 0 ? p.tint : 0xFFFFFFFF;
-        int uTint = GLES20.glGetUniformLocation(solidProgram, "uTint");
-        GLES20.glUniform4f(uTint,
-                ((tint >> 16) & 0xFF) / 255f,
-                ((tint >> 8) & 0xFF) / 255f,
-                (tint & 0xFF) / 255f,
-                ((tint >> 24) & 0xFF) / 255f);
+        float tr = ((tint >> 16) & 0xFF) / 255f;
+        float tg = ((tint >> 8) & 0xFF) / 255f;
+        float tb = (tint & 0xFF) / 255f;
+        float ta = ((tint >> 24) & 0xFF) / 255f;
 
-        // Build buffer: pos3 + norm3 + uv2 = 8 floats per vertex
-        float[] buf = new float[vertCount * 8];
+        // triCount already computed above for fan case
+        // Build buffer: pos3 + col4 + uv2 + norm3 = 12 floats per vertex
+        float[] buf = new float[triCount * 12];
         int bi = 0;
-        for (int i = 0; i < p.v.length; i += 3) {
-            buf[bi++] = p.v[i];
-            buf[bi++] = p.v[i + 1];
-            buf[bi++] = p.v[i + 2];
-            buf[bi++] = p.lnx;
-            buf[bi++] = p.lny;
-            buf[bi++] = p.lnz;
-            int vi = i / 3;
-            if (p.uv != null && vi * 2 + 1 < p.uv.length) {
-                buf[bi++] = p.uv[vi * 2];
-                buf[bi++] = p.uv[vi * 2 + 1];
-            } else {
-                buf[bi++] = 0; buf[bi++] = 0;
+        if (fanTriangulate) {
+            // Fan triangulation: [0, ti, ti+1]
+            for (int ti = 1; ti + 1 < nv; ti++) {
+                int[] idx = {0, ti, ti + 1};
+                for (int vi : idx) {
+                    buf[bi++] = p.v[vi * 3]; buf[bi++] = p.v[vi * 3 + 1]; buf[bi++] = p.v[vi * 3 + 2];
+                    buf[bi++] = tr; buf[bi++] = tg; buf[bi++] = tb; buf[bi++] = ta;
+                    if (p.uv != null && vi * 2 + 1 < p.uv.length) {
+                        buf[bi++] = p.uv[vi * 2]; buf[bi++] = p.uv[vi * 2 + 1];
+                    } else { buf[bi++] = 0; buf[bi++] = 0; }
+                    buf[bi++] = p.lnx; buf[bi++] = p.lny; buf[bi++] = p.lnz;
+                }
+            }
+        } else {
+            // Pre-triangulated: pass all vertices as-is
+            for (int vi = 0; vi < nv; vi++) {
+                buf[bi++] = p.v[vi * 3]; buf[bi++] = p.v[vi * 3 + 1]; buf[bi++] = p.v[vi * 3 + 2];
+                buf[bi++] = tr; buf[bi++] = tg; buf[bi++] = tb; buf[bi++] = ta;
+                if (p.uv != null && vi * 2 + 1 < p.uv.length) {
+                    buf[bi++] = p.uv[vi * 2]; buf[bi++] = p.uv[vi * 2 + 1];
+                } else { buf[bi++] = 0; buf[bi++] = 0; }
+                buf[bi++] = p.lnx; buf[bi++] = p.lny; buf[bi++] = p.lnz;
             }
         }
         FloatBuffer fb = ByteBuffer.allocateDirect(buf.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -505,51 +513,54 @@ public final class GpuDisplayRenderer {
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, texVbo);
         GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, buf.length * 4, fb, GLES20.GL_STREAM_DRAW);
 
-        int stride = 8 * 4;
-        int aPos = GLES20.glGetAttribLocation(solidProgram, "aPos");
-        int aNorm = GLES20.glGetAttribLocation(solidProgram, "aNormal");
-        int aUV = GLES20.glGetAttribLocation(solidProgram, "aUV");
+        int stride = 12 * 4;
+        int aPos = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aPos");
+        int aCol = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aColor");
+        int aTex = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aTexCoord");
+        int aNorm = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aNormal");
 
         GLES20.glEnableVertexAttribArray(aPos);
         GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
-        GLES20.glEnableVertexAttribArray(aNorm);
-        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 3 * 4);
-        if (aUV >= 0) {
-            GLES20.glEnableVertexAttribArray(aUV);
-            GLES20.glVertexAttribPointer(aUV, 2, GLES20.GL_FLOAT, false, stride, 6 * 4);
+        GLES20.glEnableVertexAttribArray(aCol);
+        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        if (aTex >= 0) {
+            GLES20.glEnableVertexAttribArray(aTex);
+            GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, stride, 7 * 4);
         }
-        int aCol = GLES20.glGetAttribLocation(solidProgram, "aColor");
-        if (aCol >= 0) GLES20.glDisableVertexAttribArray(aCol);
+        GLES20.glEnableVertexAttribArray(aNorm);
+        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
 
         // Bind texture
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         int texId = getOrCreateTexture(p.texture);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId);
-        int uTex = GLES20.glGetUniformLocation(solidProgram, "uTex");
-        GLES20.glUniform1i(uTex, 0);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
 
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertCount);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, triCount);
     }
 
     private int getOrCreateTexture(Object texObj) {
-        if (texObj instanceof Bitmap bmp) {
-            Integer cached = texCache.get(bmp);
-            if (cached != null) return cached;
-            int[] tex = new int[1];
-            GLES20.glGenTextures(1, tex, 0);
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
-            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
-            texCache.put(bmp, tex[0]);
-            return tex[0];
+        Bitmap bmp = null;
+        if (texObj instanceof Bitmap b) {
+            bmp = b;
+        } else if (texObj instanceof AndroidScene3D.AnimatedTexture at) {
+            bmp = at.currentFrame();
         }
-        return 0;
+        if (bmp == null) return 0;
+        Integer cached = texCache.get(bmp);
+        if (cached != null) return cached;
+        int[] tex = new int[1];
+        GLES20.glGenTextures(1, tex, 0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        texCache.put(bmp, tex[0]);
+        return tex[0];
     }
 
-    private void drawBillboard(AndroidScene3D.Prim p, float[] mvp, GpuSnapshot snap) {
+    private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix) {
         // Expand billboard into a textured quad using camera right/up from the view matrix
         float cx = p.v[0], cy = p.v[1], cz = p.v[2];
         // Camera right = view matrix row 0 (mvp columns are transposed; view[0,4,8] are right x,y,z)
@@ -580,7 +591,7 @@ public final class GpuDisplayRenderer {
         quad.texture = p.texture;
         quad.tint = p.tint;
         quad.lnx = -snap.view[8]; quad.lny = -snap.view[9]; quad.lnz = -snap.view[10]; // camera forward as normal
-        drawTexturedPrim(quad, mvp, snap);
+        drawTexturedPrim(quad, snap, modelMatrix, normalMatrix, false);
     }
 
     // ── Line batch draw ────────────────────────────────────────────────
@@ -598,6 +609,9 @@ public final class GpuDisplayRenderer {
         int stride = 7 * 4;
         int aPos = GLES20.glGetAttribLocation(lineProgram, "aPos");
         int aCol = GLES20.glGetAttribLocation(lineProgram, "aColor");
+        // Disable attributes that may be enabled from previous draw calls
+        GLES20.glDisableVertexAttribArray(2);
+        GLES20.glDisableVertexAttribArray(3);
         GLES20.glEnableVertexAttribArray(aPos);
         GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
         GLES20.glEnableVertexAttribArray(aCol);
@@ -642,27 +656,6 @@ public final class GpuDisplayRenderer {
         float sx = (px / pw + 1f) / 2f * snap.viewW;
         float sy = (1f - py / pw) / 2f * snap.viewH;
         return new float[]{ sx, sy };
-    }
-
-    // ── Lighting uniforms ──────────────────────────────────────────────
-
-    private void setLightUniforms(int program, GpuSnapshot snap) {
-        int uAmb = GLES20.glGetUniformLocation(program, "uAmbient");
-        GLES20.glUniform3f(uAmb, snap.ambR, snap.ambG, snap.ambB);
-        int count = Math.min(snap.lights.length, MAX_LIGHTS);
-        int uNum = GLES20.glGetUniformLocation(program, "uNumLights");
-        GLES20.glUniform1i(uNum, count);
-        for (int i = 0; i < count; i++) {
-            AndroidScene3D.GamaLight l = snap.lights[i];
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uLType[" + i + "]"), l.type);
-            GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uLCol[" + i + "]"), l.r, l.g, l.b);
-            GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uLPos[" + i + "]"), l.px, l.py, l.pz);
-            GLES20.glUniform3f(GLES20.glGetUniformLocation(program, "uLDir[" + i + "]"), l.ldx, l.ldy, l.ldz);
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLCa[" + i + "]"), l.ca);
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLLa[" + i + "]"), l.la);
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLQa[" + i + "]"), l.qa);
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLCos[" + i + "]"), l.cosSpot);
-        }
     }
 
     // ── Matrix utility ─────────────────────────────────────────────────
