@@ -256,105 +256,68 @@ public final class GpuDisplayRenderer {
             float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
             float[] NORMAL_ID = {1,0,0, 0,1,0, 0,0,1};
 
-            // ── Textured prims FIRST (ground/background) ─────────
-            for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture != null) {
+            // Compute camera position from view matrix for CPU-side lighting
+            float[] vv = snap.view;
+            float cvx = -(vv[0]*vv[12] + vv[1]*vv[13] + vv[2]*vv[14]);
+            float cvy = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
+            float cvz = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
+
+            // ── Render ALL prims in list order (preserves layer ordering) ──
+            // Textured/BILLBOARD prims are drawn individually; solid POLY prims
+            // are batched in contiguous runs for efficiency.
+            int solidBatchStart = -1;
+            int solidBatchVertCount = 0;
+
+            for (int pi = 0; pi <= snap.prims.size(); pi++) {
+                AndroidScene3D.Prim p = pi < snap.prims.size() ? snap.prims.get(pi) : null;
+                boolean isSolid = p != null && p.kind == AndroidScene3D.POLY && p.texture == null;
+
+                // Flush solid batch when run ends
+                if (!isSolid && solidBatchVertCount > 0) {
+                    // Flush the accumulated batch
+                    drawSolidBatchRun(snap, solidBatchStart, pi, solidBatchVertCount, mvp, IDENTITY4, cvx, cvy, cvz);
+                    solidBatchVertCount = 0;
+                    solidBatchStart = -1;
+                }
+
+                if (p == null) break;
+
+                if (isSolid) {
+                    if (solidBatchStart < 0) solidBatchStart = pi;
+                    int nv = p.v.length / 3;
+                    solidBatchVertCount += Math.max(0, (nv - 2) * 3);
+                } else if (p.kind == AndroidScene3D.POLY && p.texture != null) {
                     drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true);
                 } else if (p.kind == AndroidScene3D.BILLBOARD) {
                     drawBillboard(p, snap, IDENTITY4, NORMAL_ID);
+                } else if (p.kind == AndroidScene3D.LINE) {
+                    // Draw lines individually (small cost)
+                    int lineVertCount = 2;
+                    float[] lineBuf = new float[lineVertCount * 7];
+                    int li = 0;
+                    float r = ((p.border >> 16) & 0xFF) / 255f;
+                    float g = ((p.border >> 8) & 0xFF) / 255f;
+                    float b = (p.border & 0xFF) / 255f;
+                    float a = ((p.border >> 24) & 0xFF) / 255f;
+                    lineBuf[li++] = p.v[0]; lineBuf[li++] = p.v[1]; lineBuf[li++] = p.v[2];
+                    lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
+                    lineBuf[li++] = p.v[3]; lineBuf[li++] = p.v[4]; lineBuf[li++] = p.v[5];
+                    lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
+                    drawLineBatch(lineBuf, lineVertCount, mvp);
                 }
             }
 
-            // ── Solid batch (on top of textured background) ──────
-            int solidVertCount = 0;
-            for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture == null) {
-                    int nv = p.v.length / 3;
-                    solidVertCount += Math.max(0, (nv - 2) * 3);
-                }
-            }
-            if (solidVertCount > 0) {
-                // Compute camera position from view matrix for CPU-side lighting
-                float[] vv = snap.view;
-                float cvx = -(vv[0]*vv[12] + vv[1]*vv[13] + vv[2]*vv[14]);
-                float cvy = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
-                float cvz = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
-
-                // pos3 + col4 + uv2 + norm3 = 12 floats/vertex (BasicShader layout)
-                float[] solidBuf = new float[solidVertCount * 12];
-                int si = 0;
-                int primZOrder = 0;
-                for (AndroidScene3D.Prim p : snap.prims) {
-                    if (p.kind == AndroidScene3D.POLY && p.texture == null) {
-                        int nv = p.v.length / 3;
-                        // Use fill color; if fill=0 (transparent), fall back to border or white
-                        int fill = p.fill;
-                        if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
-                        int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
-                        float r = ((litFill >> 16) & 0xFF) / 255f;
-                        float g = ((litFill >> 8) & 0xFF) / 255f;
-                        float b = (litFill & 0xFF) / 255f;
-                        float a = ((litFill >>> 24) & 0xFF) / 255f;
-                        for (int ti = 1; ti + 1 < nv; ti++) {
-                            int[] idx = {0, ti, ti + 1};
-                            for (int vi : idx) {
-                                // aPos (location 0) — nudge z per prim for depth ordering
-                                solidBuf[si++] = p.v[vi * 3];
-                                solidBuf[si++] = p.v[vi * 3 + 1];
-                                solidBuf[si++] = p.v[vi * 3 + 2] - primZOrder * 1e-5f;
-                                // aColor (location 1)
-                                solidBuf[si++] = r;
-                                solidBuf[si++] = g;
-                                solidBuf[si++] = b;
-                                solidBuf[si++] = a;
-                                // aTexCoord (location 2) - unused for solid
-                                solidBuf[si++] = 0;
-                                solidBuf[si++] = 0;
-                                // aNormal (location 3) — avoid zero normal (NaN in normalize)
-                                float nx = p.lnx, ny = p.lny, nz = p.lnz;
-                                if (nx == 0 && ny == 0 && nz == 0) { nx = 0; ny = 0; nz = 1; }
-                                solidBuf[si++] = nx;
-                                solidBuf[si++] = ny;
-                                solidBuf[si++] = nz;
-                            }
-                        }
-                        primZOrder++;
-                    }
-                }
-                drawSolidBatch(solidBuf, solidVertCount, mvp, IDENTITY4, snap);
-            }
-
-            // ── Lines (LINE prims + POLY borders) ───────────────────
-            int lineVertCount = 0;
-            for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.LINE) lineVertCount += 2;
-            }
-            // Count POLY border edges (each closed polygon: nv edges)
+            // ── POLY border edges (drawn last, on top) ────────────
             int polyBorderVertCount = 0;
             for (AndroidScene3D.Prim p : snap.prims) {
                 if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
                     int nv = p.v.length / 3;
-                    polyBorderVertCount += nv * 2; // each edge = 2 verts for GL_LINES
+                    polyBorderVertCount += nv * 2;
                 }
             }
-            int totalLineVerts = lineVertCount + polyBorderVertCount;
-            if (totalLineVerts > 0) {
-                float[] lineBuf = new float[totalLineVerts * 7]; // pos3+col4
+            if (polyBorderVertCount > 0) {
+                float[] lineBuf = new float[polyBorderVertCount * 7];
                 int li = 0;
-                // LINE prims
-                for (AndroidScene3D.Prim p : snap.prims) {
-                    if (p.kind == AndroidScene3D.LINE) {
-                        float r = ((p.border >> 16) & 0xFF) / 255f;
-                        float g = ((p.border >> 8) & 0xFF) / 255f;
-                        float b = (p.border & 0xFF) / 255f;
-                        float a = ((p.border >> 24) & 0xFF) / 255f;
-                        lineBuf[li++] = p.v[0]; lineBuf[li++] = p.v[1]; lineBuf[li++] = p.v[2];
-                        lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
-                        lineBuf[li++] = p.v[3]; lineBuf[li++] = p.v[4]; lineBuf[li++] = p.v[5];
-                        lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
-                    }
-                }
-                // POLY border edges
                 for (AndroidScene3D.Prim p : snap.prims) {
                     if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
                         int nv = p.v.length / 3;
@@ -371,7 +334,7 @@ public final class GpuDisplayRenderer {
                         }
                     }
                 }
-                drawLineBatch(lineBuf, totalLineVerts, mvp);
+                drawLineBatch(lineBuf, polyBorderVertCount, mvp);
             }
 
             // ── GL error check ──────────────────────────────────────
@@ -478,6 +441,41 @@ public final class GpuDisplayRenderer {
         GLES20.glDisableVertexAttribArray(1);
         if (aTex >= 0) GLES20.glDisableVertexAttribArray(2);
         GLES20.glDisableVertexAttribArray(3);
+    }
+
+    /** Draw a contiguous run of solid POLY prims [start, end) from snap.prims as one batch. */
+    private void drawSolidBatchRun(GpuSnapshot snap, int start, int end, int vertCount,
+                                   float[] mvp, float[] modelMatrix, float cvx, float cvy, float cvz) {
+        // pos3 + col4 + uv2 + norm3 = 12 floats/vertex
+        float[] buf = new float[vertCount * 12];
+        int si = 0;
+        for (int pi = start; pi < end; pi++) {
+            AndroidScene3D.Prim p = snap.prims.get(pi);
+            if (p.kind != AndroidScene3D.POLY || p.texture != null) continue;
+            int nv = p.v.length / 3;
+            int fill = p.fill;
+            if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
+            int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
+            float r = ((litFill >> 16) & 0xFF) / 255f;
+            float g = ((litFill >> 8) & 0xFF) / 255f;
+            float b = (litFill & 0xFF) / 255f;
+            float a = ((litFill >>> 24) & 0xFF) / 255f;
+            // Use prim's own Z for depth (no synthetic offset — z-buffer handles order)
+            for (int ti = 1; ti + 1 < nv; ti++) {
+                int[] idx = {0, ti, ti + 1};
+                for (int vi : idx) {
+                    buf[si++] = p.v[vi * 3];
+                    buf[si++] = p.v[vi * 3 + 1];
+                    buf[si++] = p.v[vi * 3 + 2];
+                    buf[si++] = r; buf[si++] = g; buf[si++] = b; buf[si++] = a;
+                    buf[si++] = 0; buf[si++] = 0;
+                    float nx = p.lnx, ny = p.lny, nz = p.lnz;
+                    if (nx == 0 && ny == 0 && nz == 0) { nx = 0; ny = 0; nz = 1; }
+                    buf[si++] = nx; buf[si++] = ny; buf[si++] = nz;
+                }
+            }
+        }
+        drawSolidBatch(buf, vertCount, mvp, modelMatrix, snap);
     }
 
     private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate) {
