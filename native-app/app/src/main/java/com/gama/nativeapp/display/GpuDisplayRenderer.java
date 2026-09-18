@@ -310,10 +310,12 @@ public final class GpuDisplayRenderer {
                                 // aTexCoord (location 2) - unused for solid
                                 solidBuf[si++] = 0;
                                 solidBuf[si++] = 0;
-                                // aNormal (location 3)
-                                solidBuf[si++] = p.lnx;
-                                solidBuf[si++] = p.lny;
-                                solidBuf[si++] = p.lnz;
+                                // aNormal (location 3) — avoid zero normal (NaN in normalize)
+                                float nx = p.lnx, ny = p.lny, nz = p.lnz;
+                                if (nx == 0 && ny == 0 && nz == 0) { nx = 0; ny = 0; nz = 1; }
+                                solidBuf[si++] = nx;
+                                solidBuf[si++] = ny;
+                                solidBuf[si++] = nz;
                             }
                         }
                         primZOrder++;
@@ -535,6 +537,9 @@ public final class GpuDisplayRenderer {
 
         // triCount already computed above for fan case
         // Build buffer: pos3 + col4 + uv2 + norm3 = 12 floats per vertex
+        // Avoid zero normals (normalize(0,0,0) = NaN → white on Adreno GPUs)
+        float pnx = p.lnx, pny = p.lny, pnz = p.lnz;
+        if (pnx == 0 && pny == 0 && pnz == 0) { pnx = 0; pny = 0; pnz = 1; }
         float[] buf = new float[triCount * 12];
         int bi = 0;
         if (fanTriangulate) {
@@ -547,7 +552,7 @@ public final class GpuDisplayRenderer {
                     if (p.uv != null && vi * 2 + 1 < p.uv.length) {
                         buf[bi++] = p.uv[vi * 2]; buf[bi++] = p.uv[vi * 2 + 1];
                     } else { buf[bi++] = 0; buf[bi++] = 0; }
-                    buf[bi++] = p.lnx; buf[bi++] = p.lny; buf[bi++] = p.lnz;
+                    buf[bi++] = pnx; buf[bi++] = pny; buf[bi++] = pnz;
                 }
             }
         } else {
@@ -558,7 +563,7 @@ public final class GpuDisplayRenderer {
                 if (p.uv != null && vi * 2 + 1 < p.uv.length) {
                     buf[bi++] = p.uv[vi * 2]; buf[bi++] = p.uv[vi * 2 + 1];
                 } else { buf[bi++] = 0; buf[bi++] = 0; }
-                buf[bi++] = p.lnx; buf[bi++] = p.lny; buf[bi++] = p.lnz;
+                buf[bi++] = pnx; buf[bi++] = pny; buf[bi++] = pnz;
             }
         }
         FloatBuffer fb = ByteBuffer.allocateDirect(buf.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
@@ -607,10 +612,33 @@ public final class GpuDisplayRenderer {
         if (cached != null) return cached;
         int[] tex = new int[1];
         GLES20.glGenTextures(1, tex, 0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
-        texCache.put(bmp, tex[0]);
-        return tex[0];
+        int texId = tex[0];
+        if (texId == 0) {
+            Log.e(TAG, "glGenTextures returned 0");
+            return 0;
+        }
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId);
+        // Samsung Adreno GPUs reject HARDWARE bitmaps — copy to ARGB_8888
+        if (bmp.getConfig() != Bitmap.Config.ARGB_8888) {
+            Bitmap safe = bmp.copy(Bitmap.Config.ARGB_8888, false);
+            if (safe != null) {
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, safe, 0);
+                safe.recycle();
+            } else {
+                GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+            }
+        } else {
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+        }
+        int texErr = GLES20.glGetError();
+        if (texErr != GLES20.GL_NO_ERROR) {
+            Log.e(TAG, "texImage2D failed: 0x" + Integer.toHexString(texErr)
+                    + " bmp=" + bmp.getWidth() + "x" + bmp.getHeight() + " config=" + bmp.getConfig());
+            GLES20.glDeleteTextures(1, new int[]{texId}, 0);
+            return 0;
+        }
+        texCache.put(bmp, texId);
+        return texId;
     }
 
     private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix) {
