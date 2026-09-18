@@ -182,6 +182,8 @@ public final class GpuDisplayRenderer {
     private void initShaders() {
         // ── Solid/textured shader: reuse opengl4 BasicShader ─────────
         basicShader = new BasicShader(new Gles2GLWrapper());
+        int bsErr = GLES20.glGetError();
+        Log.i(TAG, "BasicShader created: programID=" + basicShader.getProgramID() + " glErr=0x" + Integer.toHexString(bsErr));
 
         // ── Line shader ──────────────────────────────────────────────
         String lineVert =
@@ -254,10 +256,19 @@ public final class GpuDisplayRenderer {
             float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
             float[] NORMAL_ID = {1,0,0, 0,1,0, 0,0,1};
 
-            // ── Solid batch ──────────────────────────────────────────
+            // ── Textured prims FIRST (ground/background) ─────────
+            for (AndroidScene3D.Prim p : snap.prims) {
+                if (p.kind == AndroidScene3D.POLY && p.texture != null) {
+                    drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true);
+                } else if (p.kind == AndroidScene3D.BILLBOARD) {
+                    drawBillboard(p, snap, IDENTITY4, NORMAL_ID);
+                }
+            }
+
+            // ── Solid batch (on top of textured background) ──────
             int solidVertCount = 0;
             for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture == null && p.fill != 0) {
+                if (p.kind == AndroidScene3D.POLY && p.texture == null) {
                     int nv = p.v.length / 3;
                     solidVertCount += Math.max(0, (nv - 2) * 3);
                 }
@@ -267,12 +278,15 @@ public final class GpuDisplayRenderer {
                 float[] solidBuf = new float[solidVertCount * 12];
                 int si = 0;
                 for (AndroidScene3D.Prim p : snap.prims) {
-                    if (p.kind == AndroidScene3D.POLY && p.texture == null && p.fill != 0) {
+                    if (p.kind == AndroidScene3D.POLY && p.texture == null) {
                         int nv = p.v.length / 3;
-                        float r = ((p.fill >> 16) & 0xFF) / 255f;
-                        float g = ((p.fill >> 8) & 0xFF) / 255f;
-                        float b = (p.fill & 0xFF) / 255f;
-                        float a = ((p.fill >>> 24) & 0xFF) / 255f;
+                        // Use fill color; if fill=0 (transparent), fall back to border or white
+                        int fill = p.fill;
+                        if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
+                        float r = ((fill >> 16) & 0xFF) / 255f;
+                        float g = ((fill >> 8) & 0xFF) / 255f;
+                        float b = (fill & 0xFF) / 255f;
+                        float a = ((fill >>> 24) & 0xFF) / 255f;
                         for (int ti = 1; ti + 1 < nv; ti++) {
                             int[] idx = {0, ti, ti + 1};
                             for (int vi : idx) {
@@ -299,14 +313,24 @@ public final class GpuDisplayRenderer {
                 drawSolidBatch(solidBuf, solidVertCount, mvp, IDENTITY4, snap);
             }
 
-            // ── Lines ───────────────────────────────────────────────
+            // ── Lines (LINE prims + POLY borders) ───────────────────
             int lineVertCount = 0;
             for (AndroidScene3D.Prim p : snap.prims) {
                 if (p.kind == AndroidScene3D.LINE) lineVertCount += 2;
             }
-            if (lineVertCount > 0) {
-                float[] lineBuf = new float[lineVertCount * 7]; // pos3+col4
+            // Count POLY border edges (each closed polygon: nv edges)
+            int polyBorderVertCount = 0;
+            for (AndroidScene3D.Prim p : snap.prims) {
+                if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
+                    int nv = p.v.length / 3;
+                    polyBorderVertCount += nv * 2; // each edge = 2 verts for GL_LINES
+                }
+            }
+            int totalLineVerts = lineVertCount + polyBorderVertCount;
+            if (totalLineVerts > 0) {
+                float[] lineBuf = new float[totalLineVerts * 7]; // pos3+col4
                 int li = 0;
+                // LINE prims
                 for (AndroidScene3D.Prim p : snap.prims) {
                     if (p.kind == AndroidScene3D.LINE) {
                         float r = ((p.border >> 16) & 0xFF) / 255f;
@@ -319,16 +343,24 @@ public final class GpuDisplayRenderer {
                         lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
                     }
                 }
-                drawLineBatch(lineBuf, lineVertCount, mvp);
-            }
-
-            // ── Textured prims (per-draw, small vertex counts) ─────
-            for (AndroidScene3D.Prim p : snap.prims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture != null) {
-                    drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true);
-                } else if (p.kind == AndroidScene3D.BILLBOARD) {
-                    drawBillboard(p, snap, IDENTITY4, NORMAL_ID);
+                // POLY border edges
+                for (AndroidScene3D.Prim p : snap.prims) {
+                    if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
+                        int nv = p.v.length / 3;
+                        float r = ((p.border >> 16) & 0xFF) / 255f;
+                        float g = ((p.border >> 8) & 0xFF) / 255f;
+                        float b = (p.border & 0xFF) / 255f;
+                        float a = ((p.border >> 24) & 0xFF) / 255f;
+                        for (int i = 0; i < nv; i++) {
+                            int ni = (i + 1) % nv;
+                            lineBuf[li++] = p.v[i * 3]; lineBuf[li++] = p.v[i * 3 + 1]; lineBuf[li++] = p.v[i * 3 + 2];
+                            lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
+                            lineBuf[li++] = p.v[ni * 3]; lineBuf[li++] = p.v[ni * 3 + 1]; lineBuf[li++] = p.v[ni * 3 + 2];
+                            lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
+                        }
+                    }
                 }
+                drawLineBatch(lineBuf, totalLineVerts, mvp);
             }
 
             // ── GL error check ──────────────────────────────────────
@@ -399,8 +431,28 @@ public final class GpuDisplayRenderer {
         if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
 
         basicShader.loadUseTexture(false);
-        basicShader.loadUseLighting(false);
-        basicShader.loadAmbientColor(1f, 1f, 1f);
+        basicShader.loadUseLighting(snap.lights.length > 0);
+        basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
+        if (snap.lights.length > 0) {
+            AndroidScene3D.GamaLight l = snap.lights[0];
+            if (l.type == 1) {
+                // Directional light: place far away in light direction
+                float far = 10000f;
+                basicShader.loadLightPosition(l.ldx * far, l.ldy * far, l.ldz * far);
+            } else {
+                basicShader.loadLightPosition(l.px, l.py, l.pz);
+            }
+            basicShader.loadLightColor(l.r, l.g, l.b);
+        } else {
+            basicShader.loadLightPosition(0, 0, 1);
+            basicShader.loadLightColor(1, 1, 1);
+        }
+        float[] v = snap.view;
+        float camX = -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14]);
+        float camY = -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14]);
+        float camZ = -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14]);
+        basicShader.loadViewPos(camX, camY, camZ);
+        basicShader.loadShininess(32f);
 
         // Bind texture sampler to unit 0
         loc = GLES20.glGetUniformLocation(pid, "texture1");
@@ -429,6 +481,12 @@ public final class GpuDisplayRenderer {
         GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertCount);
+
+        // Clean up: disable all attrib arrays
+        GLES20.glDisableVertexAttribArray(0);
+        GLES20.glDisableVertexAttribArray(1);
+        if (aTex >= 0) GLES20.glDisableVertexAttribArray(2);
+        GLES20.glDisableVertexAttribArray(3);
     }
 
     private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate) {
@@ -456,7 +514,12 @@ public final class GpuDisplayRenderer {
         basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
         if (snap.lights.length > 0) {
             AndroidScene3D.GamaLight l = snap.lights[0];
-            basicShader.loadLightPosition(l.px, l.py, l.pz);
+            if (l.type == 1) {
+                float far = 10000f;
+                basicShader.loadLightPosition(l.ldx * far, l.ldy * far, l.ldz * far);
+            } else {
+                basicShader.loadLightPosition(l.px, l.py, l.pz);
+            }
             basicShader.loadLightColor(l.r, l.g, l.b);
         } else {
             basicShader.loadLightPosition(0, 0, 1);
