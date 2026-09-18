@@ -274,26 +274,34 @@ public final class GpuDisplayRenderer {
                 }
             }
             if (solidVertCount > 0) {
+                // Compute camera position from view matrix for CPU-side lighting
+                float[] vv = snap.view;
+                float cvx = -(vv[0]*vv[12] + vv[1]*vv[13] + vv[2]*vv[14]);
+                float cvy = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
+                float cvz = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
+
                 // pos3 + col4 + uv2 + norm3 = 12 floats/vertex (BasicShader layout)
                 float[] solidBuf = new float[solidVertCount * 12];
                 int si = 0;
+                int primZOrder = 0;
                 for (AndroidScene3D.Prim p : snap.prims) {
                     if (p.kind == AndroidScene3D.POLY && p.texture == null) {
                         int nv = p.v.length / 3;
                         // Use fill color; if fill=0 (transparent), fall back to border or white
                         int fill = p.fill;
                         if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
-                        float r = ((fill >> 16) & 0xFF) / 255f;
-                        float g = ((fill >> 8) & 0xFF) / 255f;
-                        float b = (fill & 0xFF) / 255f;
-                        float a = ((fill >>> 24) & 0xFF) / 255f;
+                        int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
+                        float r = ((litFill >> 16) & 0xFF) / 255f;
+                        float g = ((litFill >> 8) & 0xFF) / 255f;
+                        float b = (litFill & 0xFF) / 255f;
+                        float a = ((litFill >>> 24) & 0xFF) / 255f;
                         for (int ti = 1; ti + 1 < nv; ti++) {
                             int[] idx = {0, ti, ti + 1};
                             for (int vi : idx) {
-                                // aPos (location 0)
+                                // aPos (location 0) — nudge z per prim for depth ordering
                                 solidBuf[si++] = p.v[vi * 3];
                                 solidBuf[si++] = p.v[vi * 3 + 1];
-                                solidBuf[si++] = p.v[vi * 3 + 2];
+                                solidBuf[si++] = p.v[vi * 3 + 2] - primZOrder * 1e-5f;
                                 // aColor (location 1)
                                 solidBuf[si++] = r;
                                 solidBuf[si++] = g;
@@ -308,6 +316,7 @@ public final class GpuDisplayRenderer {
                                 solidBuf[si++] = p.lnz;
                             }
                         }
+                        primZOrder++;
                     }
                 }
                 drawSolidBatch(solidBuf, solidVertCount, mvp, IDENTITY4, snap);
@@ -431,28 +440,8 @@ public final class GpuDisplayRenderer {
         if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
 
         basicShader.loadUseTexture(false);
-        basicShader.loadUseLighting(snap.lights.length > 0);
-        basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
-        if (snap.lights.length > 0) {
-            AndroidScene3D.GamaLight l = snap.lights[0];
-            if (l.type == 1) {
-                // Directional light: place far away in light direction
-                float far = 10000f;
-                basicShader.loadLightPosition(l.ldx * far, l.ldy * far, l.ldz * far);
-            } else {
-                basicShader.loadLightPosition(l.px, l.py, l.pz);
-            }
-            basicShader.loadLightColor(l.r, l.g, l.b);
-        } else {
-            basicShader.loadLightPosition(0, 0, 1);
-            basicShader.loadLightColor(1, 1, 1);
-        }
-        float[] v = snap.view;
-        float camX = -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14]);
-        float camY = -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14]);
-        float camZ = -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14]);
-        basicShader.loadViewPos(camX, camY, camZ);
-        basicShader.loadShininess(32f);
+        basicShader.loadUseLighting(false);
+        basicShader.loadAmbientColor(1f, 1f, 1f);
 
         // Bind texture sampler to unit 0
         loc = GLES20.glGetUniformLocation(pid, "texture1");
@@ -720,6 +709,66 @@ public final class GpuDisplayRenderer {
         float sx = (px / pw + 1f) / 2f * snap.viewW;
         float sy = (1f - py / pw) / 2f * snap.viewH;
         return new float[]{ sx, sy };
+    }
+
+    // ── CPU-side lighting (matches AndroidScene3D.litColor) ───────────
+
+    private static final int LT_DIR = 1, LT_SPOT = 3;
+    private static final float SPEC_SHINE = 14f;
+    private static final float SPEC_INTENSITY = 1.0f;
+
+    /** Bake lighting into a vertex color, matching AndroidScene3D.litColor(). */
+    private static int cpuLitColor(int argb, float nx, float ny, float nz,
+            AndroidScene3D.GamaLight[] lights, float ambR, float ambG, float ambB,
+            float camX, float camY, float camZ) {
+        if (nx == 0 && ny == 0 && nz == 0) return argb;
+        float fr = ambR, fg = ambG, fb = ambB;
+        int a = (argb >>> 24) & 0xFF;
+        int ri = (argb >>> 16) & 0xFF, gi = (argb >>> 8) & 0xFF, bi = argb & 0xFF;
+        for (AndroidScene3D.GamaLight l : lights) {
+            if (!l.active) continue;
+            float lx, ly, lz, atten = 1f;
+            if (l.type == LT_DIR) {
+                lx = l.ldx; ly = l.ldy; lz = l.ldz;
+            } else {
+                float ovx = l.px, ovy = l.py, ovz = l.pz;
+                float d = (float) Math.sqrt(ovx * ovx + ovy * ovy + ovz * ovz);
+                if (d < 1e-6f) { lx = 0; ly = 0; lz = 1; }
+                else { lx = ovx / d; ly = ovy / d; lz = ovz / d; }
+                if (l.type == LT_SPOT) {
+                    float dot = -(lx * l.ldx + ly * l.ldy + lz * l.ldz);
+                    if (dot < l.cosSpot) continue;
+                }
+                atten = Math.min(1f, 1f / (l.ca + l.la * d + l.qa * d * d));
+            }
+            float nd = nx * lx + ny * ly + nz * lz;
+            if (nd < 0) {
+                if (l.type == LT_SPOT) continue;
+                nd = -nd;
+            }
+            float dl = Math.min(1f, nd * atten);
+            fr += l.r * dl;
+            fg += l.g * dl;
+            fb += l.b * dl;
+            float hx = lx + camX, hy = ly + camY, hz = lz + camZ;
+            float hl = (float) Math.sqrt(hx * hx + hy * hy + hz * hz);
+            if (hl > 1e-6f) {
+                float dh = (nx * hx + ny * hy + nz * hz) / hl;
+                if (dh > 0) {
+                    float spec = (float) Math.pow(dh, SPEC_SHINE) * SPEC_INTENSITY;
+                    fr += l.r * spec;
+                    fg += l.g * spec;
+                    fb += l.b * spec;
+                }
+            }
+        }
+        if (fr > 1f) fr = 1f;
+        if (fg > 1f) fg = 1f;
+        if (fb > 1f) fb = 1f;
+        int rr = Math.round(ri * fr); if (rr > 255) rr = 255;
+        int gg = Math.round(gi * fg); if (gg > 255) gg = 255;
+        int bb = Math.round(bi * fb); if (bb > 255) bb = 255;
+        return (a << 24) | (rr << 16) | (gg << 8) | bb;
     }
 
     // ── Matrix utility ─────────────────────────────────────────────────
