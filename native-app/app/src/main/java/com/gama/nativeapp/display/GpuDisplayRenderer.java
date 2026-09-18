@@ -21,6 +21,7 @@ import java.util.Map;
 import android.opengl.GLES20;
 
 import gama.ui.display.opengl4.renderer.shaders.BasicShader;
+import gama.ui.display.opengl4.renderer.gl.Gles2GLWrapper;
 
 /**
  * GPU-accelerated 3D renderer using OpenGL ES 2.0.
@@ -180,7 +181,7 @@ public final class GpuDisplayRenderer {
 
     private void initShaders() {
         // ── Solid/textured shader: reuse opengl4 BasicShader ─────────
-        basicShader = new BasicShader();
+        basicShader = new BasicShader(new Gles2GLWrapper());
 
         // ── Line shader ──────────────────────────────────────────────
         String lineVert =
