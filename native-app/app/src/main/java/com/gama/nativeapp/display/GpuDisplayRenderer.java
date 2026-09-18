@@ -15,7 +15,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import android.opengl.GLES20;
@@ -55,6 +58,39 @@ public final class GpuDisplayRenderer {
     private int lineProgram;
     private int solidVbo, lineVbo;
     private int[] intBuf;
+
+    // Sorted prims buffer (reused across frames to avoid allocation)
+    private final List<AndroidScene3D.Prim> sortedPrims = new ArrayList<>();
+
+    /**
+     * Replicates AndroidScene3D.depthSorter: sorts prims so that the GPU renderer
+     * draws them in the correct painter's-algorithm order (back to front).
+     */
+    private static final Comparator<AndroidScene3D.Prim> DEPTH_SORTER = (a, b) -> {
+        // Background draws first (behind everything)
+        int ba = a.background ? -1 : 0;
+        int bb = b.background ? -1 : 0;
+        int c = Integer.compare(ba, bb);
+        if (c != 0) return c;
+        // Billboards draw last (on top)
+        int ka = a.kind == AndroidScene3D.BILLBOARD ? 1 : 0;
+        int kb = b.kind == AndroidScene3D.BILLBOARD ? 1 : 0;
+        c = Integer.compare(ka, kb);
+        if (c != 0) return c;
+        // Order by world altitude: higher z draws over lower
+        int qa = (int) (a.altZ * 20f);
+        int qb = (int) (b.altZ * 20f);
+        c = Integer.compare(qa, qb);
+        if (c != 0) return c;
+        // Same altitude: by layer index (later layers on top)
+        c = Integer.compare(a.layerIdx, b.layerIdx);
+        if (c != 0) return c;
+        // Same altitude + layer: textured above non-textured
+        int ta = (a.kind == AndroidScene3D.POLY && a.texture != null) ? 1 : 0;
+        int tb = (b.kind == AndroidScene3D.POLY && b.texture != null) ? 1 : 0;
+        c = Integer.compare(ta, tb);
+        return c;
+    };
     private int renderW, renderH;
     private boolean initialized = false;
 
@@ -213,8 +249,7 @@ public final class GpuDisplayRenderer {
         lineVbo = bufs[1];
         texVbo = bufs[2];
 
-        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
-        GLES20.glDepthFunc(GLES20.GL_LEQUAL);
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
@@ -227,9 +262,14 @@ public final class GpuDisplayRenderer {
         try {
             if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return;
 
+            // Sort prims using the same depth comparator as AndroidScene3D CPU renderer
+            sortedPrims.clear();
+            sortedPrims.addAll(snap.prims);
+            sortedPrims.sort(DEPTH_SORTER);
+
             // Diagnostic: count prims by type
             int nSolid = 0, nTex = 0, nLine = 0, nBill = 0, nText = 0;
-            for (AndroidScene3D.Prim p : snap.prims) {
+            for (AndroidScene3D.Prim p : sortedPrims) {
                 switch (p.kind) {
                     case AndroidScene3D.POLY: if (p.texture != null) nTex++; else nSolid++; break;
                     case AndroidScene3D.LINE: nLine++; break;
@@ -246,7 +286,7 @@ public final class GpuDisplayRenderer {
             float bgG = ((snap.bgColor >> 8) & 0xFF) / 255f;
             float bgB = (snap.bgColor & 0xFF) / 255f;
             GLES20.glClearColor(bgR, bgG, bgB, 1f);
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
 
             // Matrices: column-major, passed directly to GL
             float[] mvp = new float[16];
@@ -268,8 +308,8 @@ public final class GpuDisplayRenderer {
             int solidBatchStart = -1;
             int solidBatchVertCount = 0;
 
-            for (int pi = 0; pi <= snap.prims.size(); pi++) {
-                AndroidScene3D.Prim p = pi < snap.prims.size() ? snap.prims.get(pi) : null;
+            for (int pi = 0; pi <= sortedPrims.size(); pi++) {
+                AndroidScene3D.Prim p = pi < sortedPrims.size() ? sortedPrims.get(pi) : null;
                 boolean isSolid = p != null && p.kind == AndroidScene3D.POLY && p.texture == null;
 
                 // Flush solid batch when run ends
@@ -309,7 +349,7 @@ public final class GpuDisplayRenderer {
 
             // ── POLY border edges (drawn last, on top) ────────────
             int polyBorderVertCount = 0;
-            for (AndroidScene3D.Prim p : snap.prims) {
+            for (AndroidScene3D.Prim p : sortedPrims) {
                 if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
                     int nv = p.v.length / 3;
                     polyBorderVertCount += nv * 2;
@@ -318,7 +358,7 @@ public final class GpuDisplayRenderer {
             if (polyBorderVertCount > 0) {
                 float[] lineBuf = new float[polyBorderVertCount * 7];
                 int li = 0;
-                for (AndroidScene3D.Prim p : snap.prims) {
+                for (AndroidScene3D.Prim p : sortedPrims) {
                     if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
                         int nv = p.v.length / 3;
                         float r = ((p.border >> 16) & 0xFF) / 255f;
@@ -443,14 +483,14 @@ public final class GpuDisplayRenderer {
         GLES20.glDisableVertexAttribArray(3);
     }
 
-    /** Draw a contiguous run of solid POLY prims [start, end) from snap.prims as one batch. */
+    /** Draw a contiguous run of solid POLY prims [start, end) from sortedPrims as one batch. */
     private void drawSolidBatchRun(GpuSnapshot snap, int start, int end, int vertCount,
                                    float[] mvp, float[] modelMatrix, float cvx, float cvy, float cvz) {
         // pos3 + col4 + uv2 + norm3 = 12 floats/vertex
         float[] buf = new float[vertCount * 12];
         int si = 0;
         for (int pi = start; pi < end; pi++) {
-            AndroidScene3D.Prim p = snap.prims.get(pi);
+            AndroidScene3D.Prim p = sortedPrims.get(pi);
             if (p.kind != AndroidScene3D.POLY || p.texture != null) continue;
             int nv = p.v.length / 3;
             int fill = p.fill;
@@ -703,7 +743,7 @@ public final class GpuDisplayRenderer {
 
     private void drawTextPrims(GpuSnapshot snap, Bitmap targetBitmap) {
         Canvas c = new Canvas(targetBitmap);
-        for (AndroidScene3D.Prim p : snap.prims) {
+        for (AndroidScene3D.Prim p : sortedPrims) {
             if (p.kind != AndroidScene3D.TEXT || p.text == null) continue;
             float[] screen = project3Dto2D(p.v[0], p.v[1], p.v[2], snap);
             if (screen == null) continue;
