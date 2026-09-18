@@ -1,101 +1,99 @@
 # TODO: GPU 3D Renderer — opengl4 BasicShader Integration
 
-## Status: Partial integration, rendering works but needs refinement
+## Status: GL abstraction layer complete, ready for device testing
+
+## Architecture: GL Abstraction Layer
+
+### New files in mygama/gama (opengl4 module)
+```
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/gl/
+├── GLWrapper.java         ← Interface: 78 GL methods
+├── GLConstants.java       ← All GL constants (no more GL4.GL_* imports)
+├── JoglGLWrapper.java     ← JOGL impl: delegates to GL4 instance
+├── GLWrapperFactory.java  ← Platform detection
+gama.ui.display.opengl4/src-android/gama/ui/display/opengl4/renderer/gl/
+└── Gles2GLWrapper.java    ← GLES2 impl: delegates to GLES20 static methods
+```
+
+### How it works
+1. `travis/build.sh` builds the full platform — JOGL-only (Maven passes)
+2. Android JAR compiled separately: `src/` + `src-android/` with `android.jar` on classpath
+3. `GpuDisplayRenderer` creates `new BasicShader(new Gles2GLWrapper())`
+4. At runtime on Android, only GLES2 code path executes
+
+### Files modified in mygama/gama
+- `AbstractShader.java` — `GL4 gl` → `GLWrapper gl`
+- `BasicShader.java` — constructor takes `GLWrapper`
+- `FrameBufferObject.java` — `GL4 gl` → `GLWrapper gl`
+- `AbstractPostprocessingShader.java` — constructor takes `GLWrapper`
+- `KeystoneShaderProgram.java` — constructor takes `GLWrapper`
+- `OpenGL.java` — `GLWrapper gl` field, `getGLWrapper()` method
+- `GeometryCache.java` — GL4.GL_* → GLConstants.*
+- `MeshDrawer.java` — GL4.GL_* → GLConstants.*
+- `OverlayLayerObject.java` — GL4.GL_* → GLConstants.*
+- Helpers (KeystoneHelper, CameraHelper, PickingHelper, AbstractRendererHelper) — GLConstants.*
 
 ## What was done
 
 ### opengl4 module (mygama/gama) — COMMITTED
-- Ported 30 files from JOGL to GLES 2.0 (Android-compatible)
-- GLSL shaders downgraded from `#version 120` to `#version 100` (ES)
-- Replaced GL instance calls with `GLES20` static methods
-- Removed VAO (not in GLES 2.0), replaced NIO Buffers with ByteBuffer
-- Replaced `gluProject` with pure-Java perspective division
-- Replaced GLU tessellator with ear-clipping triangulation
-- Built JAR: `gama.ui.display.opengl4_0.0.0.20260917.jar` (includes glsl/ shaders)
-- Copied JAR + joml-1.10.5.jar to `native-app/app/libs/`
+- GL abstraction layer (GLWrapper, GLConstants, JoglGLWrapper, Gles2GLWrapper)
+- GLSL shaders: `#version 100` (ES compatible)
+- Maven build passes (`travis/build.sh` → BUILD SUCCESS)
+- Gles2GLWrapper in `src-android/` (excluded from desktop build)
 
 ### GpuDisplayRenderer (gama-android) — COMMITTED
-- Replaced inline GLSL shader compilation with `new BasicShader()`
-- Raw column-major `float[]` passed directly to `glUniformMatrix4fv` (bypasses JOML `Matrix4f.set()` row-major interpretation)
-- Fan triangulation for textured POLY prims (4+ vertices → triangles)
-- Billboard quads bypass fan triangulation (already 6 verts = 2 tris)
+- Uses `new BasicShader(new Gles2GLWrapper())`
+- Raw column-major `float[]` passed directly to `glUniformMatrix4fv`
+- Fan triangulation for textured POLY prims
+- Billboard quads bypass fan triangulation
 - `AnimatedTexture` support in `getOrCreateTexture()`
-- `GL_LEQUAL` depth test (needed for 2D scenes where polygons share z)
-- Skips `fill==0` prims in solid batch (matches Canvas renderer behavior)
-- Disabled GL lighting for solid batch (Canvas applies `litColor()` on CPU)
+- `GL_LEQUAL` depth test for 2D scenes
+- Skips `fill==0` prims (matches Canvas renderer)
+- Disabled GL lighting for solid batch (flat colors)
 - Proper vertex attribute enable/disable between draw calls
-
-## Known Issues (TODO)
-
-### 1. Lighting not working properly
-- **Problem:** BasicShader uses Phong model with per-fragment lighting. Canvas renderer applies `litColor()` on CPU before prims reach GL renderer. Solid batch now has `useLighting=false` (flat colors) to avoid double-lighting.
-- **Fix needed:** Either:
-  - (a) Apply `litColor()` on CPU in `captureGpuFrame()` before handing prims to GL renderer, then enable `useLighting=true` in shader — OR
-  - (b) Pre-lit vertex colors in the solid batch buffer by calling `litColor()` per-prim when building `solidBuf` — OR
-  - (c) Keep shader lighting but fix normals: many prims (from `addQuad`) have zero normals; need to compute face normals for all POLYs in `captureGpuFrame()`
-- **Preferred:** Option (b) — bake lighting into vertex colors during solid batch build, matching what Canvas does
-
-### 2. Trail / food / arrows visibility
-- **Problem:** 852 solid + 201 textured + 3 lines are in the data but trail/food/arrows may not be visible.
-- **Root cause (partially fixed):** `fill==0` prims were drawn as transparent-black with depth writes. Now skipped.
-- **Still needs testing:** After the `fill==0` skip and flat-color fix, verify trail, food, and arrows render. If not, investigate:
-  - Check if trail prims have correct fill colors (log first few `p.fill` values)
-  - Check if textured prims (food) have valid textures
-  - Check if line prims have correct vertex data
-
-### 3. Texture rendering
-- **Problem:** Textured prims (food, agents) may not show correctly.
-- **Check:** The `drawTexturedPrim` method sets `useTexture=true` and binds the texture. Verify:
-  - `getOrCreateTexture()` returns valid texture ID for `Bitmap` and `AnimatedTexture`
-  - UV coordinates are correct (some prims may have `uv=null`)
-  - Texture sampler `texture1` is bound to unit 0
-
-### 4. Billboard rendering
-- **Status:** Ants (billboards) now visible. The `drawBillboard` method creates a 6-vertex camera-facing quad.
-- **Check:** Verify billboard size (`bbW`, `bbH`) and rotation (`bbRot`) work correctly
-
-### 5. Alpha / transparency
-- **Problem:** Trail layers need alpha blending to show transparent overlays.
-- **Status:** `GL_BLEND` enabled with `SRC_ALPHA, ONE_MINUS_SRC_ALPHA`. Fragment shader preserves `baseColor.a`. Readback to Bitmap preserves alpha channel.
-- **Verify:** Check that transparent prims composite correctly over the ground
-
-### 6. JOML Matrix4f transpose issue
-- **Workaround:** Raw `float[]` arrays passed directly to `glUniformMatrix4fv(loc, 1, false, arr, 0)` bypassing `Matrix4f.set()`/`Matrix4f.get()`
-- **Still applies:** Any code using `Matrix4f` for matrix math must be aware that `Matrix4f.set(float[])` reads row-major but `matrix.get(float[])` outputs row-major, while `glUniformMatrix4fv(false)` expects column-major. The double-transposition cancels for individual matrices but REVERSES multiplication order in `projMat.mul(viewMat)`.
-
-### 7. Performance
-- Each textured prim is a separate draw call (per-draw VBO upload). OK for <200 prims but could be slow for dense scenes.
-- Consider batching textured prims with the same texture into a single draw call.
-
-### 8. CPU text pass
-- Text prims drawn on CPU after GL readback via `Canvas.drawText()`. Works but creates a Canvas per frame.
-- Consider rendering text as textured quads in the GL pipeline.
 
 ## Build Commands
 
 ### opengl4 JAR (from mygama/gama)
 ```bash
-# 1. Build full GAMA platform (produces target/ folders with JARs)
 cd /Users/hqnghi/git/mygama/gama
+
+# 1. Build full GAMA platform (Maven)
 bash travis/build.sh
 
-# 2. Compile opengl4 sources against target/ JARs
-SOURCES=$(find gama.ui.display.opengl4/src -name "*.java" ! -name "OpenGLDisplayView.java")
-CP="gama.ui.display.opengl4/target/classes"
-CP="$CP:$(find gama.dev/target -name '*.jar' | head -1)"
-CP="$CP:$(find gama application/plugins -name 'org.jts.core*.jar' | head -1)"
-CP="$CP:$(find gama.application/plugins -name 'streamex*.jar' | head -1)"
-CP="$CP:$(find gama.application/plugins -name 'org.jogl*.jar' | head -1)"
-CP="$CP:$(find gama.application/plugins -name 'org.mitridate*.jar' | head -1)"
-CP="$CP:/Users/hqnghi/git/gama-android/native-app/app/libs/joml-1.10.5.jar"
-CP="$CP:$(find /path/to/android-sdk -name 'android.jar' | head -1)"
-javac --release 16 -cp "$CP" -d /tmp/opengl4-build $SOURCES
+# 2. Compile Android GL JAR (minimal: 10 files)
+ANDROID_JAR=$(find ~/Library/Android/sdk/platforms -name "android.jar" | sort -V | tail -1)
+JOML_JAR="/Users/hqnghi/git/gama-android/native-app/app/libs/joml-1.10.5.jar"
+REPO="gama.product/target/configuration/target/repository/plugins"
+PWD=$(pwd)
 
-# 3. Copy GLSL shaders into build dir
+cat > /tmp/opengl4-android-sources.txt << 'EOF'
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/gl/GLWrapper.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/gl/GLConstants.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/gl/JoglGLWrapper.java
+gama.ui.display.opengl4/src-android/gama/ui/display/opengl4/renderer/gl/Gles2GLWrapper.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/gl/GLWrapperFactory.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/AbstractShader.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/BasicShader.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/AbstractPostprocessingShader.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/KeystoneShaderProgram.java
+gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/FrameBufferObject.java
+EOF
+
+CP="$ANDROID_JAR:$JOML_JAR"
+CP="$CP:$PWD/gama.ui.display.opengl/libs/jogl 2.6.0/jogl-all.jar"
+CP="$CP:$PWD/gama.ui.display.opengl/libs/jogl 2.6.0/gluegen-rt.jar"
+CP="$CP:$PWD/gama.dev/target/gama.dev-0.0.0-SNAPSHOT.jar"
+CP="$CP:$PWD/gama.api/target/gama.api-0.0.0-SNAPSHOT.jar"
+
+rm -rf /tmp/opengl4-build && mkdir -p /tmp/opengl4-build
+javac --release 16 -cp "$CP" -d /tmp/opengl4-build @/tmp/opengl4-android-sources.txt
+
+# 3. Copy GLSL shaders
 cp gama.ui.display.opengl4/src/gama/ui/display/opengl4/renderer/shaders/glsl/* \
    /tmp/opengl4-build/gama/ui/display/opengl4/renderer/shaders/glsl/
 
-# 4. Package JAR and copy to Android
+# 4. Package JAR
 cd /tmp/opengl4-build && jar cf gama.ui.display.opengl4_0.0.0.20260917.jar gama/
 cp gama.ui.display.opengl4_0.0.0.20260917.jar \
    /Users/hqnghi/git/gama-android/native-app/app/libs/
@@ -103,43 +101,25 @@ cp gama.ui.display.opengl4_0.0.0.20260917.jar \
 
 ### Android APK
 ```bash
-# Build APK
 cd /Users/hqnghi/git/gama-android/native-app && ./gradlew assembleDebug
-
-# Build APK (skip deps)
-scripts/build_app.sh --repo /Users/hqnghi/git/gama-android --skip-deps
-
-# Install
-adb install -r native-app/app/build/outputs/apk/debug/app-debug.apk
-
-# Check logs
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb logcat -d | grep GpuDisplay
 ```
 
 ## Key File Locations
 | File | Purpose |
 |------|---------|
-| `native-app/app/src/main/java/com/gama/nativeapp/display/GpuDisplayRenderer.java` | Main GL renderer (THE primary file being modified) |
-| `native-app/app/src/main/java/com/gama/nativeapp/display/AndroidScene3D.java` | Scene graph, Prim class, Canvas rendering path, `captureGpuFrame()` |
-| `native-app/app/src/main/java/com/gama/nativeapp/display/GpuSnapshot.java` | Immutable snapshot passed to GL thread |
-| `native-app/app/src/main/java/com/gama/nativeapp/display/AndroidDisplayGraphics.java` | Calls `captureGpuFrame()`, manages scene lifecycle |
-| `native-app/app/src/main/java/com/gama/nativeapp/display/AndroidDisplaySurface.java` | EGL surface, `useGpu3D()` flag, `gpuRenderer.renderSync()` |
-| `native-app/app/libs/gama.ui.display.opengl4_0.0.0.20260917.jar` | opengl4 JAR with BasicShader |
-| `native-app/app/libs/joml-1.10.5.jar` | JOML math library |
-| `mygama/gama/gama.ui.display.opengl4/src/.../shaders/BasicShader.java` | Target shader class |
-| `mygama/gama/gama.ui.display.opengl4/src/.../shaders/AbstractShader.java` | Base class, loads shaders from resources |
-| `mygama/gama/gama.ui.display.opengl4/src/.../shaders/glsl/basic.vert` | GLSL ES 1.00 vertex shader |
-| `mygama/gama/gama.ui.display.opengl4/src/.../shaders/glsl/basic.frag` | GLSL ES 1.00 fragment shader (Phong) |
+| `gama-android/.../GpuDisplayRenderer.java` | Main GL renderer |
+| `gama-android/.../AndroidScene3D.java` | Scene graph, Prim class, `captureGpuFrame()` |
+| `gama-android/.../GpuSnapshot.java` | Immutable snapshot passed to GL thread |
+| `mygama/.../renderer/gl/GLWrapper.java` | GL abstraction interface |
+| `mygama/.../renderer/gl/Gles2GLWrapper.java` | Android GLES2 implementation |
+| `mygama/.../renderer/shaders/BasicShader.java` | Main shader (Phong lighting) |
+| `mygama/.../shaders/glsl/basic.vert` | GLSL ES 1.00 vertex shader |
+| `mygama/.../shaders/glsl/basic.frag` | GLSL ES 1.00 fragment shader |
 
-## Rendering Pipeline
-1. Sim thread calls `AndroidDisplayGraphics` → `scene3d.captureGpuFrame()` → `GpuSnapshot`
-2. Sim thread calls `gpuRenderer.renderSync(snap, targetBitmap)` → blocks
-3. GL thread: `renderFrame(snap, targetBitmap)`
-   - Clear (bg color from `snap.bgColor`)
-   - Solid batch: non-textured POLYs with `fill!=0` → `drawSolidBatch()` (flat colors, no lighting)
-   - Lines: LINE prims → `drawLineBatch()` (MVP only)
-   - Textured: textured POLYs → `drawTexturedPrim()` (per-draw, fan triangulation)
-   - Billboards: BILLBOARD prims → `drawBillboard()` (camera-facing quad, pre-triangulated)
-   - `glReadPixels` → RGBA→ARGB conversion + Y-flip → `targetBitmap`
-   - CPU text pass: `drawTextPrims()` (Canvas overlay)
-4. Sim thread resumes, paints `targetBitmap` to screen
+## Known Issues (TODO)
+1. **Lighting** — Bake `litColor()` into vertex colors in solid batch
+2. **Trail/food/arrows** — Verify visibility after fill==0 fix
+3. **Performance** — Batch textured prims with same texture
+4. **Test on device** — Connect device and run ant foraging model
