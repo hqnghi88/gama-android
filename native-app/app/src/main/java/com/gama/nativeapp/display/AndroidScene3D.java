@@ -227,7 +227,7 @@ public class AndroidScene3D {
     // When non-null, fillTexturedPoly reads from this instead of frameBmp.
     private Bitmap readBmp;
     private final Map<Bitmap, int[]> texCache = new HashMap<>();
-    private final Paint blitPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Paint blitPaint = new Paint();
     private final float[] scratch3 = new float[3];
     private final List<Prim> visibleBuf = new ArrayList<>();
     private static final Comparator<Prim> depthSorter =
