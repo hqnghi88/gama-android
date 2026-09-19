@@ -1560,16 +1560,102 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     // ---- GPU 3D support ---------------------------------------------------
 
+    /** Renderer preference keys/values stored in SharedPreferences. */
+    public static final String PREF_RENDERER_MODE = "gpu3d_renderer_mode";
+    public static final String MODE_AUTO  = "auto";  // try GPU, fall back to CPU
+    public static final String MODE_GPU   = "gpu";   // force GPU, fail if unavailable
+    public static final String MODE_CPU   = "cpu";   // always CPU
+
+    /** Cached GPU capability (probed once, then reused). */
+    private static volatile GpuDisplayRenderer.GpuCapability cachedGpuCap;
+
     /**
-     * Whether the GPU renderer should be used for the current display. Defaults
-     * on; falls back to software permanently if GL initialization fails, and
-     * can be disabled at launch with the "gama.gpu3d" system property set to 0.
+     * Probes GPU capability once and caches the result. Thread-safe.
+     */
+    public static GpuDisplayRenderer.GpuCapability getCachedGpuCapability() {
+        GpuDisplayRenderer.GpuCapability cap = cachedGpuCap;
+        if (cap == null) {
+            synchronized (AndroidDisplaySurface.class) {
+                cap = cachedGpuCap;
+                if (cap == null) {
+                    android.util.Log.i(TAG, "Probing GPU capabilities...");
+                    cap = GpuDisplayRenderer.probeGpu();
+                    cachedGpuCap = cap;
+                    android.util.Log.i(TAG, "GPU probe: supported=" + cap.supported
+                            + " glVersion=" + cap.glVersion
+                            + " renderer=" + cap.glRenderer
+                            + " vendor=" + cap.glVendor
+                            + (cap.reason != null ? " reason=" + cap.reason : ""));
+                }
+            }
+        }
+        return cap;
+    }
+
+    /**
+     * Returns the user-selected renderer mode from SharedPreferences.
+     * Defaults to MODE_AUTO.
+     */
+    public String getRendererMode() {
+        try {
+            return android.preference.PreferenceManager.getDefaultSharedPreferences(
+                    getContext()).getString(PREF_RENDERER_MODE, MODE_AUTO);
+        } catch (Throwable t) {
+            return MODE_AUTO;
+        }
+    }
+
+    /**
+     * Whether the GPU renderer should be used for the current display.
+     * <p>
+     * Logic:
+     * <ul>
+     *   <li>CPU mode → always false</li>
+     *   <li>GPU mode → true unless already failed</li>
+     *   <li>Auto mode → true only if GPU probe passed and not yet failed</li>
+     * </ul>
+     * On first GPU failure, {@code gpuRendererFailed} is set permanently for
+     * this surface and all subsequent frames use CPU.  A clear log message
+     * is emitted at the transition.
      */
     public boolean useGpu3D() {
+        // Already failed → CPU
         if (gpuRendererFailed) return false;
-        String p = System.getProperty("gama.gpu3d");
-        if (p != null && p.equals("0")) return false;
-        return true;
+
+        // System property kill-switch (legacy)
+        String prop = System.getProperty("gama.gpu3d");
+        if (prop != null && prop.equals("0")) return false;
+
+        String mode = getRendererMode();
+        switch (mode) {
+            case MODE_CPU:
+                return false;
+            case MODE_GPU:
+                // Force GPU — if probe failed we'll still try (will fail at init)
+                return true;
+            case MODE_AUTO:
+            default:
+                GpuDisplayRenderer.GpuCapability cap = getCachedGpuCapability();
+                if (!cap.supported) {
+                    android.util.Log.w(TAG, "Auto mode: GPU not available (" + cap.reason
+                            + "), using CPU renderer");
+                    return false;
+                }
+                return true;
+        }
+    }
+
+    /**
+     * Called when the GPU renderer fails — logs the reason clearly and
+     * permanently switches this surface to CPU for the rest of its lifetime.
+     */
+    void onGpuFallback(String reason) {
+        gpuRendererFailed = true;
+        android.util.Log.w(TAG, "╔══════════════════════════════════════════════════╗");
+        android.util.Log.w(TAG, "║  GPU RENDERER FAILED — falling back to CPU      ║");
+        android.util.Log.w(TAG, "║  Reason: " + reason);
+        android.util.Log.w(TAG, "║  All subsequent 3D frames will use CPU rasterizer");
+        android.util.Log.w(TAG, "╚══════════════════════════════════════════════════╝");
     }
 
     /**
@@ -1584,14 +1670,21 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             if (gpuRenderer == null) {
                 gpuRenderer = new GpuDisplayRenderer();
                 gpuRenderer.init(snap.viewW, snap.viewH);
+                if (!gpuRenderer.isInitialized()) {
+                    onGpuFallback("GL init failed (EGL/shader)");
+                    gpuRenderer.shutdown();
+                    gpuRenderer = null;
+                    return;
+                }
+                Log.i(TAG, "GPU renderer initialized: " + snap.viewW + "x" + snap.viewH);
             }
             ensureBuffers(snap.viewW, snap.viewH);
             Bitmap target = frameBuffers[workIndex];
             if (target == null) return;
             gpuRenderer.renderSync(snap, target);
         } catch (Throwable t) {
-            Log.w(TAG, "submitGpuFrame failed, falling back to software", t);
-            gpuRendererFailed = true;
+            onGpuFallback("exception in renderSync: " + t.getClass().getSimpleName()
+                    + ": " + t.getMessage());
             if (gpuRenderer != null) { gpuRenderer.shutdown(); gpuRenderer = null; }
         }
     }

@@ -63,6 +63,7 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private Bitmap overlayBitmap;
     private Canvas overlayCanvas;
     private boolean overlayActive = false;
+    private boolean rendererLogged3d = false;
     private final Paint fillPaint = new Paint();
     private final Paint strokePaint = new Paint();
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -2025,6 +2026,15 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         if (is3dMode()) {
             boolean useGpu = getSurface() instanceof AndroidDisplaySurface
                     && ((AndroidDisplaySurface) getSurface()).useGpu3D();
+            if (!rendererLogged3d) {
+                rendererLogged3d = true;
+                String mode = "unknown";
+                if (getSurface() instanceof AndroidDisplaySurface) {
+                    mode = ((AndroidDisplaySurface) getSurface()).getRendererMode();
+                }
+                android.util.Log.i("ANDROID_3D", "3D renderer mode=" + mode
+                        + " → " + (useGpu ? "GPU" : "CPU"));
+            }
             if (useGpu) {
                 renderScene3DGpu();
             } else {

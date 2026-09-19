@@ -41,6 +41,85 @@ public final class GpuDisplayRenderer {
 
     private static final String TAG = "GpuDisplayRenderer";
 
+    // ── GPU capability detection ────────────────────────────────────
+
+    /** Result of a GPU capability probe. */
+    public static final class GpuCapability {
+        public final boolean supported;
+        public final String glVersion;
+        public final String glRenderer;
+        public final String glVendor;
+        public final String reason; // null if supported, explanation if not
+
+        private GpuCapability(boolean supported, String glVersion, String glRenderer,
+                              String glVendor, String reason) {
+            this.supported = supported;
+            this.glVersion = glVersion;
+            this.glRenderer = glRenderer;
+            this.glVendor = glVendor;
+            this.reason = reason;
+        }
+    }
+
+    /**
+     * Probes whether the device can create an offscreen GLES 2.0 context.
+     * Creates a temporary EGL display + context, queries GL strings, then tears
+     * everything down. Safe to call from any thread; does not leak resources.
+     */
+    public static GpuCapability probeGpu() {
+        EGLDisplay dpy = EGL14.EGL_NO_DISPLAY;
+        EGLContext ctx = EGL14.EGL_NO_CONTEXT;
+        EGLSurface surf = EGL14.EGL_NO_SURFACE;
+        try {
+            dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
+            if (dpy == EGL14.EGL_NO_DISPLAY)
+                return new GpuCapability(false, "?", "?", "?", "eglGetDisplay returned NO_DISPLAY");
+
+            int[] vers = new int[2];
+            if (!EGL14.eglInitialize(dpy, vers, 0, vers, 1))
+                return new GpuCapability(false, "?", "?", "?", "eglInitialize failed");
+
+            int[] cfgAttribs = {
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8,
+                EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
+                EGL14.EGL_DEPTH_SIZE, 16, EGL14.EGL_STENCIL_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                EGL14.EGL_NONE
+            };
+            EGLConfig[] cfg = new EGLConfig[1];
+            int[] numCfg = new int[1];
+            if (!EGL14.eglChooseConfig(dpy, cfgAttribs, 0, cfg, 0, 1, numCfg, 0) || numCfg[0] == 0)
+                return new GpuCapability(false, "?", "?", "?", "eglChooseConfig failed (no matching config)");
+
+            int[] pbAttribs = { EGL14.EGL_WIDTH, 64, EGL14.EGL_HEIGHT, 64, EGL14.EGL_NONE };
+            surf = EGL14.eglCreatePbufferSurface(dpy, cfg[0], pbAttribs, 0);
+            if (surf == EGL14.EGL_NO_SURFACE)
+                return new GpuCapability(false, "?", "?", "?", "eglCreatePbufferSurface failed");
+
+            int[] ctxAttribs = { EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE };
+            ctx = EGL14.eglCreateContext(dpy, cfg[0], EGL14.EGL_NO_CONTEXT, ctxAttribs, 0);
+            if (ctx == EGL14.EGL_NO_CONTEXT)
+                return new GpuCapability(false, "?", "?", "?", "eglCreateContext(GLES 2.0) failed");
+
+            if (!EGL14.eglMakeCurrent(dpy, surf, surf, ctx))
+                return new GpuCapability(false, "?", "?", "?", "eglMakeCurrent failed");
+
+            String ver   = GLES20.glGetString(GLES20.GL_VERSION);
+            String rend  = GLES20.glGetString(GLES20.GL_RENDERER);
+            String vend   = GLES20.glGetString(GLES20.GL_VENDOR);
+
+            return new GpuCapability(true, ver != null ? ver : "?", rend != null ? rend : "?",
+                    vend != null ? vend : "?", null);
+        } catch (Throwable t) {
+            return new GpuCapability(false, "?", "?", "?", "exception: " + t.getMessage());
+        } finally {
+            if (ctx != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, ctx);
+            if (surf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, surf);
+            if (dpy != EGL14.EGL_NO_DISPLAY) EGL14.eglTerminate(dpy);
+        }
+    }
+
     private final GlThread glThread = new GlThread();
 
     // Sync state
@@ -81,6 +160,9 @@ public final class GpuDisplayRenderer {
             Log.e(TAG, "GL init failed; GPU rendering disabled");
         }
     }
+
+    /** Whether the GL context was successfully created and shaders compiled. */
+    public boolean isInitialized() { return initialized; }
 
     /**
      * Renders the given snapshot synchronously into targetBitmap.

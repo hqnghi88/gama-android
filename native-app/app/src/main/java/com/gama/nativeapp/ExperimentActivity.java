@@ -36,6 +36,7 @@ import androidx.core.content.ContextCompat;
 import androidx.core.graphics.drawable.DrawableCompat;
 
 import com.gama.nativeapp.display.AndroidDisplaySurface;
+import android.preference.PreferenceManager;
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.card.MaterialCardView;
@@ -86,6 +87,7 @@ public class ExperimentActivity extends Activity {
     private TextView logView;
     private ScrollView logScroll;
     private TextView cycleText;
+    private TextView rendererModeBtn;
     private LinearLayout rootLayout;
     private ViewGroup contentArea;
     private FrameLayout contentFrame;
@@ -344,6 +346,16 @@ public class ExperimentActivity extends Activity {
         themeBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
         themeBtn.setOnClickListener(v -> toggleTheme());
         toolbarContent.addView(themeBtn);
+
+        // ── GPU/CPU renderer mode toggle ──
+        rendererModeBtn = new TextView(this);
+        rendererModeBtn.setTextSize(11);
+        rendererModeBtn.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
+        rendererModeBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+        rendererModeBtn.setBackground(ContextCompat.getDrawable(this, R.drawable.bg_pill));
+        rendererModeBtn.setOnClickListener(v -> cycleRendererMode());
+        updateRendererModeLabel();
+        toolbarContent.addView(rendererModeBtn);
 
         toolbar.addView(toolbarContent);
         root.addView(toolbar, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
@@ -1337,12 +1349,49 @@ public class ExperimentActivity extends Activity {
         applyThemeColors();
     }
 
+    // ── GPU/CPU renderer mode ────────────────────────────────────────
+
+    private static final String[] RENDERER_MODES = {
+            AndroidDisplaySurface.MODE_AUTO,
+            AndroidDisplaySurface.MODE_GPU,
+            AndroidDisplaySurface.MODE_CPU
+    };
+    private static final String[] RENDERER_LABELS = { "3D:Auto", "3D:GPU", "3D:CPU" };
+    private static final String[] RENDERER_ICONS = { "\u2699", "\u26A1", "\u2699" };
+
+    private void cycleRendererMode() {
+        String current = PreferenceManager.getDefaultSharedPreferences(this)
+                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_AUTO);
+        int idx = 0;
+        for (int i = 0; i < RENDERER_MODES.length; i++) {
+            if (RENDERER_MODES[i].equals(current)) { idx = i; break; }
+        }
+        String next = RENDERER_MODES[(idx + 1) % RENDERER_MODES.length];
+        PreferenceManager.getDefaultSharedPreferences(this).edit()
+                .putString(AndroidDisplaySurface.PREF_RENDERER_MODE, next).apply();
+        updateRendererModeLabel();
+        Log.i(TAG, "3D renderer mode changed to: " + next);
+        Toast.makeText(this, "3D renderer: " + next.toUpperCase(), Toast.LENGTH_SHORT).show();
+    }
+
+    private void updateRendererModeLabel() {
+        if (rendererModeBtn == null) return;
+        String current = PreferenceManager.getDefaultSharedPreferences(this)
+                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_AUTO);
+        int idx = 0;
+        for (int i = 0; i < RENDERER_MODES.length; i++) {
+            if (RENDERER_MODES[i].equals(current)) { idx = i; break; }
+        }
+        rendererModeBtn.setText(RENDERER_LABELS[idx]);
+    }
+
     /** Re-skin all programmatic views for the current theme without recreating
      *  the Activity (which would kill the running simulation). */
     private void applyThemeColors() {
         if (toolbar != null) toolbar.setBackgroundColor(thc(0xFF388E3C, 0xFF2E7D32));
         if (toolbarTitle != null) toolbarTitle.setTextColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
         if (cycleText != null) cycleText.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
+        if (rendererModeBtn != null) rendererModeBtn.setTextColor(thc(0xB3FFFFFF, 0xB3E0E0E0));
         if (transportBar != null) transportBar.setBackgroundColor(thc(0xFFEEEEEE, thc(0xFF1E1E2E, 0xFF2D2D2D)));
         if (displayColumn != null) displayColumn.setBackgroundColor(thc(0xFFF5F5F5, thc(0xFF2D2D2D, 0xFF37474F)));
         if (displayTabScroll != null) displayTabScroll.setBackgroundColor(thc(0xFFFFFFFF, 0xFF1E1E2E));
