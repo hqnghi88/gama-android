@@ -279,10 +279,12 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
             boolean hasFill = !isLine && !attributes.isEmpty();
             if (hasFill) {
                 fillPaint.setStyle(Paint.Style.FILL);
+                fillPaint.setAntiAlias(false);
                 fillPaint.setColor(colorWithAlpha(attributes.getColor(), currentAlpha));
                 canvas.drawRect(x0, y0, x1, y1, fillPaint);
             }
             if (border != null || attributes.isEmpty()) {
+                strokePaint.setAntiAlias(false);
                 strokePaint.setColor(colorWithAlpha(
                         border != null ? border : attributes.getColor(), currentAlpha));
                 canvas.drawRect(x0, y0, x1, y1, strokePaint);
