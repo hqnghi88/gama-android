@@ -537,6 +537,7 @@ public class AndroidScene3D {
         fitNeed = -1f;
         fitDist = -1;
         fitStartMs = -1;
+        frameBoundsSet = false;
     }
 
     // User dolly zoom (1.0 = fit framing). The camera distance is scaled about
