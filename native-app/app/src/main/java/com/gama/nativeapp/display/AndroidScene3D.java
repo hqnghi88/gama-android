@@ -244,25 +244,21 @@ public class AndroidScene3D {
                 int kb = b.kind == BILLBOARD ? 1 : 0;
                 c = Integer.compare(ka, kb);
                 if (c != 0) return c;
-                // Order by world altitude first: a shape lying higher (larger z) draws
-                // over one lying lower, e.g. an elevated/3D object stays above a flat
-                // ground/water polygon no matter which GAML layer declared it. Real 3D
-                // depth must win over declared layer order (desktop GAMA depth-buffers),
-                // otherwise a later-declared water plane would cover an OBJ sitting on it.
-                // Quantized so genuinely same-altitude pieces compare equal and fall
-                // through to layer/draw (insertion) order — which keeps flat 2D and
-                // translucent overlays stacked the way the model declares them.
-                int qa = (int) (a.altZ * 20f);
-                int qb = (int) (b.altZ * 20f);
+                // Quantize view-space depth so coplanar / same-plane prims compare
+                // equal and fall through to layer/insertion order.  Coarse bucket
+                // (×2) keeps truly separate depth planes (elevated 3D object vs
+                // ground) in different buckets while grouping flat-2D content that
+                // has only perspective-induced depth differences.
+                int qa = (int) (a.depth * 2f);
+                int qb = (int) (b.depth * 2f);
                 c = Integer.compare(qa, qb);
                 if (c != 0) return c;
-                // Among same-altitude (typically flat 2D/translucent overlay) content,
-                // GAML layers composite bottom-to-top: a later layer draws over earlier
-                // ones, preserving declared layer order regardless of tiny depth diffs.
+                // Among same-bucket content, GAML layers composite bottom-to-top:
+                // a later layer draws over earlier ones.
                 c = Integer.compare(a.layerIdx, b.layerIdx);
                 if (c != 0) return c;
-                // At equal altitude, textured sprites (agents) draw above non-textured
-                // overlays (trail, grid), so ants stay visible on top of the trail.
+                // At equal depth+layer, textured sprites (agents) draw above
+                // non-textured overlays (trail, grid).
                 int ta = (a.kind == POLY && a.texture != null) ? 1 : 0;
                 int tb = (b.kind == POLY && b.texture != null) ? 1 : 0;
                 c = Integer.compare(ta, tb);
@@ -1200,6 +1196,18 @@ public class AndroidScene3D {
 
         addAxesPrims(minX, minY, minZ, maxX, maxY, maxZ);
 
+        // Compute altZ and view-space depth for each prim so the GPU renderer can sort correctly
+        for (Prim p : prims) {
+            p.altZ = avgWorldZ(p);
+            float wx = 0, wy = 0, wz = 0;
+            int n = p.v.length / 3;
+            for (int i = 0; i < p.v.length; i += 3) {
+                wx += p.v[i]; wy += p.v[i + 1]; wz += p.v[i + 2];
+            }
+            if (n > 0) { wx /= n; wy /= n; wz /= n; }
+            p.depth = view[2] * wx + view[6] * wy + view[10] * wz + view[14];
+        }
+
         return new GpuSnapshot(prims, view, proj, rw, rh,
                 bgColor, (float) near, (float) far, ambR, ambG, ambB, lights);
     }
@@ -1318,16 +1326,17 @@ public class AndroidScene3D {
         return wz / n;
     }
 
-    /** View-space z of a primitive's centroid (used for painter's sorting). */
+    /** View-space z of a primitive's centroid (used for painter's sorting).
+     *  The view matrix already includes the camera-position translation, so we
+     *  just multiply the world centroid by the view matrix directly. More-negative
+     *  Z = farther from camera = drawn first (back-to-front). */
     private float viewZ(Prim p, float cx, float cy, float cz) {
         float wx = 0, wy = 0, wz = 0;
         int n = p.v.length / 3;
         for (int i = 0; i < p.v.length; i += 3) {
             wx += p.v[i]; wy += p.v[i + 1]; wz += p.v[i + 2];
         }
-        wx = (wx / n - cx);
-        wy = (wy / n - cy);
-        wz = (wz / n - cz);
+        wx /= n; wy /= n; wz /= n;
         return view[2] * wx + view[6] * wy + view[10] * wz + view[14];
     }
 

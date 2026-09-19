@@ -16,7 +16,6 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,8 +30,8 @@ import gama.ui.display.opengl4.renderer.gl.Gles2GLWrapper;
  * <p>
  * Renders the {@link AndroidScene3D.Prim} scene graph on a dedicated GL thread
  * with Phong lighting (ambient + directional/point/spot), texture mapping,
- * depth testing, and backface culling. Text prims are drawn on the CPU after
- * readback so the existing Canvas overlay system stays unchanged.
+ * depth testing, and backface culling. Primitives are drawn in insertion order
+ * with per-prim z-offsets and GL depth buffer, matching desktop GAMA's approach.
  * <p>
  * Thread model: the simulation thread calls {@link #renderSync} which blocks
  * until the GL thread finishes rendering into the target bitmap (triple-buffer
@@ -59,38 +58,8 @@ public final class GpuDisplayRenderer {
     private int solidVbo, lineVbo;
     private int[] intBuf;
 
-    // Sorted prims buffer (reused across frames to avoid allocation)
-    private final List<AndroidScene3D.Prim> sortedPrims = new ArrayList<>();
+    private static final float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
-    /**
-     * Replicates AndroidScene3D.depthSorter: sorts prims so that the GPU renderer
-     * draws them in the correct painter's-algorithm order (back to front).
-     */
-    private static final Comparator<AndroidScene3D.Prim> DEPTH_SORTER = (a, b) -> {
-        // Background draws first (behind everything)
-        int ba = a.background ? -1 : 0;
-        int bb = b.background ? -1 : 0;
-        int c = Integer.compare(ba, bb);
-        if (c != 0) return c;
-        // Billboards draw last (on top)
-        int ka = a.kind == AndroidScene3D.BILLBOARD ? 1 : 0;
-        int kb = b.kind == AndroidScene3D.BILLBOARD ? 1 : 0;
-        c = Integer.compare(ka, kb);
-        if (c != 0) return c;
-        // Order by world altitude: higher z draws over lower
-        int qa = (int) (a.altZ * 20f);
-        int qb = (int) (b.altZ * 20f);
-        c = Integer.compare(qa, qb);
-        if (c != 0) return c;
-        // Same altitude: by layer index (later layers on top)
-        c = Integer.compare(a.layerIdx, b.layerIdx);
-        if (c != 0) return c;
-        // Same altitude + layer: textured above non-textured
-        int ta = (a.kind == AndroidScene3D.POLY && a.texture != null) ? 1 : 0;
-        int tb = (b.kind == AndroidScene3D.POLY && b.texture != null) ? 1 : 0;
-        c = Integer.compare(ta, tb);
-        return c;
-    };
     private int renderW, renderH;
     private boolean initialized = false;
 
@@ -149,6 +118,7 @@ public final class GpuDisplayRenderer {
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
             EGL14.EGL_DEPTH_SIZE, 16,
+            EGL14.EGL_STENCIL_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
             EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
             EGL14.EGL_NONE
@@ -262,14 +232,14 @@ public final class GpuDisplayRenderer {
         try {
             if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return;
 
-            // Sort prims using the same depth comparator as AndroidScene3D CPU renderer
-            sortedPrims.clear();
-            sortedPrims.addAll(snap.prims);
-            sortedPrims.sort(DEPTH_SORTER);
+            // Draw prims in insertion order (matching desktop GAMA).
+            // Desktop GAMA does NOT sort primitives — it draws them in execution
+            // order and relies on GL depth buffer + per-object z-increment for
+            // correct occlusion at any camera angle.
+            List<AndroidScene3D.Prim> prims = snap.prims;
 
-            // Diagnostic: count prims by type
             int nSolid = 0, nTex = 0, nLine = 0, nBill = 0, nText = 0;
-            for (AndroidScene3D.Prim p : sortedPrims) {
+            for (AndroidScene3D.Prim p : prims) {
                 switch (p.kind) {
                     case AndroidScene3D.POLY: if (p.texture != null) nTex++; else nSolid++; break;
                     case AndroidScene3D.LINE: nLine++; break;
@@ -282,18 +252,20 @@ public final class GpuDisplayRenderer {
             int w = snap.viewW, h = snap.viewH;
             GLES20.glViewport(0, 0, w, h);
 
+            GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+            GLES20.glDepthFunc(GLES20.GL_LEQUAL);
+
             float bgR = ((snap.bgColor >> 16) & 0xFF) / 255f;
             float bgG = ((snap.bgColor >> 8) & 0xFF) / 255f;
             float bgB = (snap.bgColor & 0xFF) / 255f;
             GLES20.glClearColor(bgR, bgG, bgB, 1f);
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
             // Matrices: column-major, passed directly to GL
             float[] mvp = new float[16];
             mat4Mul(mvp, snap.proj, snap.view);
 
             // Identity model matrix
-            float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
             float[] NORMAL_ID = {1,0,0, 0,1,0, 0,0,1};
 
             // Compute camera position from view matrix for CPU-side lighting
@@ -302,36 +274,39 @@ public final class GpuDisplayRenderer {
             float cvy = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
             float cvz = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
 
-            // ── Render ALL prims in list order (preserves layer ordering) ──
-            // Textured/BILLBOARD prims are drawn individually; solid POLY prims
-            // are batched in contiguous runs for efficiency.
-            int solidBatchStart = -1;
-            int solidBatchVertCount = 0;
+            // ── Render ALL prims in insertion order with per-prim zOffset ──
+            // Matching desktop GAMA: each object gets a cumulative z-increment
+            // so the GL depth buffer handles occlusion correctly at any angle.
+            int totalPrims = prims.size();
+            float zStep = totalPrims > 1 ? 2.0f / totalPrims : 0f;
+            for (int pi = 0; pi < totalPrims; pi++) {
+                AndroidScene3D.Prim p = prims.get(pi);
+                float zOffset = 1.0f - pi * zStep;
 
-            for (int pi = 0; pi <= sortedPrims.size(); pi++) {
-                AndroidScene3D.Prim p = pi < sortedPrims.size() ? sortedPrims.get(pi) : null;
-                boolean isSolid = p != null && p.kind == AndroidScene3D.POLY && p.texture == null;
-
-                // Flush solid batch when run ends
-                if (!isSolid && solidBatchVertCount > 0) {
-                    // Flush the accumulated batch
-                    drawSolidBatchRun(snap, solidBatchStart, pi, solidBatchVertCount, mvp, IDENTITY4, cvx, cvy, cvz);
-                    solidBatchVertCount = 0;
-                    solidBatchStart = -1;
-                }
-
-                if (p == null) break;
-
-                if (isSolid) {
-                    if (solidBatchStart < 0) solidBatchStart = pi;
-                    int nv = p.v.length / 3;
-                    solidBatchVertCount += Math.max(0, (nv - 2) * 3);
+                if (p.kind == AndroidScene3D.POLY && p.texture == null) {
+                    drawSingleSolidPrim(p, pi, totalPrims, snap, mvp, IDENTITY4, cvx, cvy, cvz, zOffset);
+                    if (p.border != 0 && p.border != p.fill) {
+                        int nv = p.v.length / 3;
+                        float[] borderBuf = new float[nv * 2 * 7];
+                        int li = 0;
+                        float br = ((p.border >> 16) & 0xFF) / 255f;
+                        float bg = ((p.border >> 8) & 0xFF) / 255f;
+                        float bb = (p.border & 0xFF) / 255f;
+                        float ba = ((p.border >> 24) & 0xFF) / 255f;
+                        for (int i = 0; i < nv; i++) {
+                            int ni = (i + 1) % nv;
+                            borderBuf[li++] = p.v[i * 3]; borderBuf[li++] = p.v[i * 3 + 1]; borderBuf[li++] = p.v[i * 3 + 2];
+                            borderBuf[li++] = br; borderBuf[li++] = bg; borderBuf[li++] = bb; borderBuf[li++] = ba;
+                            borderBuf[li++] = p.v[ni * 3]; borderBuf[li++] = p.v[ni * 3 + 1]; borderBuf[li++] = p.v[ni * 3 + 2];
+                            borderBuf[li++] = br; borderBuf[li++] = bg; borderBuf[li++] = bb; borderBuf[li++] = ba;
+                        }
+                        drawLineBatch(borderBuf, nv * 2, mvp);
+                    }
                 } else if (p.kind == AndroidScene3D.POLY && p.texture != null) {
-                    drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true);
+                    drawTexturedPrim(p, snap, IDENTITY4, NORMAL_ID, true, zOffset);
                 } else if (p.kind == AndroidScene3D.BILLBOARD) {
-                    drawBillboard(p, snap, IDENTITY4, NORMAL_ID);
+                    drawBillboard(p, snap, IDENTITY4, NORMAL_ID, zOffset);
                 } else if (p.kind == AndroidScene3D.LINE) {
-                    // Draw lines individually (small cost)
                     int lineVertCount = 2;
                     float[] lineBuf = new float[lineVertCount * 7];
                     int li = 0;
@@ -347,35 +322,7 @@ public final class GpuDisplayRenderer {
                 }
             }
 
-            // ── POLY border edges (drawn last, on top) ────────────
-            int polyBorderVertCount = 0;
-            for (AndroidScene3D.Prim p : sortedPrims) {
-                if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
-                    int nv = p.v.length / 3;
-                    polyBorderVertCount += nv * 2;
-                }
-            }
-            if (polyBorderVertCount > 0) {
-                float[] lineBuf = new float[polyBorderVertCount * 7];
-                int li = 0;
-                for (AndroidScene3D.Prim p : sortedPrims) {
-                    if (p.kind == AndroidScene3D.POLY && p.texture == null && p.border != 0 && p.border != p.fill) {
-                        int nv = p.v.length / 3;
-                        float r = ((p.border >> 16) & 0xFF) / 255f;
-                        float g = ((p.border >> 8) & 0xFF) / 255f;
-                        float b = (p.border & 0xFF) / 255f;
-                        float a = ((p.border >> 24) & 0xFF) / 255f;
-                        for (int i = 0; i < nv; i++) {
-                            int ni = (i + 1) % nv;
-                            lineBuf[li++] = p.v[i * 3]; lineBuf[li++] = p.v[i * 3 + 1]; lineBuf[li++] = p.v[i * 3 + 2];
-                            lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
-                            lineBuf[li++] = p.v[ni * 3]; lineBuf[li++] = p.v[ni * 3 + 1]; lineBuf[li++] = p.v[ni * 3 + 2];
-                            lineBuf[li++] = r; lineBuf[li++] = g; lineBuf[li++] = b; lineBuf[li++] = a;
-                        }
-                    }
-                }
-                drawLineBatch(lineBuf, polyBorderVertCount, mvp);
-            }
+            // (Borders are drawn per-prim inside the sorted loop below)
 
             // ── GL error check ──────────────────────────────────────
             int glErr = GLES20.glGetError();
@@ -427,30 +374,160 @@ public final class GpuDisplayRenderer {
         }
     }
 
-    // ── Solid/textured batch draw ──────────────────────────────────────
+    // ── Ear-clipping triangulation ──────────────────────────────────────
 
-    private void drawSolidBatch(float[] buf, int vertCount, float[] mvp, float[] modelMatrix, GpuSnapshot snap) {
+    /** Compute signed area (2D, XY plane). Positive = CCW winding. */
+    private static float signedArea2D(float[] v, int n) {
+        float area = 0;
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            area += v[i * 3] * v[j * 3 + 1] - v[j * 3] * v[i * 3 + 1];
+        }
+        return area * 0.5f;
+    }
+
+    /** Check if point p is inside triangle (a,b,c) on XY plane. */
+    private static boolean pointInTriangle(float px, float py,
+                                           float ax, float ay, float bx, float by, float cx, float cy) {
+        float d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+        float d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+        float d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+        boolean hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+        boolean hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+        return !(hasNeg && hasPos);
+    }
+
+    /** Check if vertex at index curr is a convex ear among the live vertices. */
+    private static boolean isEar(float[] v, ArrayList<Integer> live, int pi, int ci, int ni, boolean ccw) {
+        int prev = live.get(pi), curr = live.get(ci), next = live.get(ni);
+        float ax = v[curr * 3], ay = v[curr * 3 + 1];
+        float bx = v[prev * 3], by = v[prev * 3 + 1];
+        float cx = v[next * 3], cy = v[next * 3 + 1];
+        float cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        boolean convex = ccw ? cross > 0 : cross < 0;
+        if (!convex) return false;
+        for (int k = 0; k < live.size(); k++) {
+            int idx = live.get(k);
+            if (idx == prev || idx == curr || idx == next) continue;
+            if (pointInTriangle(v[idx * 3], v[idx * 3 + 1], ax, ay, bx, by, cx, cy)) return false;
+        }
+        return true;
+    }
+
+    /** Triangulate a simple polygon using ear clipping. Returns triangle indices (triplets). */
+    static int[] triangulate(float[] v, int n) {
+        if (n < 3) return new int[0];
+        ArrayList<Integer> live = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) live.add(i);
+        boolean ccw = signedArea2D(v, n) >= 0;
+        ArrayList<Integer> result = new ArrayList<>(n);
+        int safety = n * 3;
+        while (live.size() > 2 && safety-- > 0) {
+            boolean earFound = false;
+            int sz = live.size();
+            for (int i = 0; i < sz; i++) {
+                int prev = (i + sz - 1) % sz;
+                int curr = i;
+                int next = (i + 1) % sz;
+                if (isEar(v, live, prev, curr, next, ccw)) {
+                    result.add(live.get(prev));
+                    result.add(live.get(curr));
+                    result.add(live.get(next));
+                    live.remove(curr);
+                    earFound = true;
+                    break;
+                }
+            }
+            if (!earFound) break;
+        }
+        int[] triIdx = new int[result.size()];
+        for (int i = 0; i < result.size(); i++) triIdx[i] = result.get(i);
+        return triIdx;
+    }
+
+    // ── Single-prim solid draw ──────────────────────────────────────
+
+    /**
+     * Draw a single solid POLY prim. Projects vertices to 2D screen space on the
+     * CPU first, then fan-triangulates the 2D polygon, matching the CPU renderer's
+     * Canvas.drawPath approach. This ensures correct fills for concave polygons
+     * under perspective projection.
+     */
+    private void drawSingleSolidPrim(AndroidScene3D.Prim p, int sortIdx, int totalPrims,
+                                     GpuSnapshot snap, float[] mvp, float[] modelMatrix,
+                                     float cvx, float cvy, float cvz, float zOffset) {
+        int nv = p.v.length / 3;
+        if (nv < 3) return;
+
+        int fill = p.fill;
+        if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
+        int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
+        float r = ((litFill >> 16) & 0xFF) / 255f;
+        float g = ((litFill >> 8) & 0xFF) / 255f;
+        float b = (litFill & 0xFF) / 255f;
+        float a = ((litFill >>> 24) & 0xFF) / 255f;
+        if (a < 0.004f) return;
+
+        // ── Project all vertices to 2D NDC on the CPU (matching CPU renderer) ──
+        float[] ndcX = new float[nv];
+        float[] ndcY = new float[nv];
+        float[] viewZArr = new float[nv];
+        boolean behindCamera = false;
+        for (int i = 0; i < nv; i++) {
+            float wx = p.v[i * 3], wy = p.v[i * 3 + 1], wz = p.v[i * 3 + 2];
+            float[] vv = snap.view;
+            float vx = vv[0]*wx + vv[4]*wy + vv[8]*wz + vv[12];
+            float vy = vv[1]*wx + vv[5]*wy + vv[9]*wz + vv[13];
+            float vz = vv[2]*wx + vv[6]*wy + vv[10]*wz + vv[14];
+            float vw = vv[3]*wx + vv[7]*wy + vv[11]*wz + vv[15];
+            float[] pp = snap.proj;
+            float px = pp[0]*vx + pp[4]*vy + pp[8]*vz + pp[12]*vw;
+            float py = pp[1]*vx + pp[5]*vy + pp[9]*vz + pp[13]*vw;
+            float pw = pp[3]*vx + pp[7]*vy + pp[11]*vz + pp[15]*vw;
+            if (pw <= 0.001f) { behindCamera = true; break; }
+            ndcX[i] = px / pw;
+            ndcY[i] = py / pw;
+            viewZArr[i] = vz;
+        }
+        if (behindCamera) return;
+
+        // ── Fan-triangulate the 2D NDC polygon ──
+        int triCount = Math.max(0, (nv - 2) * 3);
+        if (triCount == 0) return;
+
         int pid = basicShader.getProgramID();
         basicShader.start();
 
-        // Pass matrices as raw column-major floats (bypass JOML transpose issue)
         int loc;
         loc = GLES20.glGetUniformLocation(pid, "model");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, modelMatrix, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
         loc = GLES20.glGetUniformLocation(pid, "view");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.view, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
         loc = GLES20.glGetUniformLocation(pid, "projection");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.proj, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
         loc = GLES20.glGetUniformLocation(pid, "normalMatrix");
         if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
-
         basicShader.loadUseTexture(false);
         basicShader.loadUseLighting(false);
         basicShader.loadAmbientColor(1f, 1f, 1f);
-
-        // Bind texture sampler to unit 0
         loc = GLES20.glGetUniformLocation(pid, "texture1");
         if (loc >= 0) GLES20.glUniform1i(loc, 0);
+
+        float[] buf = new float[triCount * 12];
+        int si = 0;
+        for (int ti = 1; ti + 1 < nv; ti++) {
+            int i0 = 0, i1 = ti, i2 = ti + 1;
+            int[] idx = {i0, i1, i2};
+            for (int k = 0; k < 3; k++) {
+                int vi = idx[k];
+                buf[si++] = ndcX[vi];
+                buf[si++] = ndcY[vi];
+                buf[si++] = zOffset;
+                buf[si++] = r; buf[si++] = g; buf[si++] = b; buf[si++] = a;
+                buf[si++] = 0; buf[si++] = 0;
+                buf[si++] = 0; buf[si++] = 0; buf[si++] = 1;
+            }
+        }
 
         FloatBuffer fb = ByteBuffer.allocateDirect(buf.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
         fb.put(buf).flip();
@@ -458,10 +535,10 @@ public final class GpuDisplayRenderer {
         GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, buf.length * 4, fb, GLES20.GL_STREAM_DRAW);
 
         int stride = 12 * 4;
-        int aPos = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aPos");
-        int aCol = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aColor");
-        int aTex = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aTexCoord");
-        int aNorm = GLES20.glGetAttribLocation(basicShader.getProgramID(), "aNormal");
+        int aPos = GLES20.glGetAttribLocation(pid, "aPos");
+        int aCol = GLES20.glGetAttribLocation(pid, "aColor");
+        int aTex = GLES20.glGetAttribLocation(pid, "aTexCoord");
+        int aNorm = GLES20.glGetAttribLocation(pid, "aNormal");
 
         GLES20.glEnableVertexAttribArray(aPos);
         GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
@@ -474,51 +551,33 @@ public final class GpuDisplayRenderer {
         GLES20.glEnableVertexAttribArray(aNorm);
         GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
 
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertCount);
+        // ── Stencil-based even-odd fill (matches Canvas.drawPath) ──
+        GLES20.glEnable(GLES20.GL_STENCIL_TEST);
+        GLES20.glStencilMask(0xFF);
+        GLES20.glClearStencil(0);
+        GLES20.glClear(GLES20.GL_STENCIL_BUFFER_BIT);
 
-        // Clean up: disable all attrib arrays
+        // Pass 1: Increment stencil for each fragment coverage (count overlaps)
+        GLES20.glColorMask(false, false, false, false);
+        GLES20.glStencilFunc(GLES20.GL_ALWAYS, 0, 0xFF);
+        GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_INCR_WRAP);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, triCount);
+
+        // Pass 2: Draw color only where coverage count is odd (even-odd rule)
+        GLES20.glColorMask(true, true, true, true);
+        GLES20.glStencilFunc(GLES20.GL_EQUAL, 1, 1);
+        GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_KEEP);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, triCount);
+
+        GLES20.glDisable(GLES20.GL_STENCIL_TEST);
+
         GLES20.glDisableVertexAttribArray(0);
         GLES20.glDisableVertexAttribArray(1);
         if (aTex >= 0) GLES20.glDisableVertexAttribArray(2);
         GLES20.glDisableVertexAttribArray(3);
     }
 
-    /** Draw a contiguous run of solid POLY prims [start, end) from sortedPrims as one batch. */
-    private void drawSolidBatchRun(GpuSnapshot snap, int start, int end, int vertCount,
-                                   float[] mvp, float[] modelMatrix, float cvx, float cvy, float cvz) {
-        // pos3 + col4 + uv2 + norm3 = 12 floats/vertex
-        float[] buf = new float[vertCount * 12];
-        int si = 0;
-        for (int pi = start; pi < end; pi++) {
-            AndroidScene3D.Prim p = sortedPrims.get(pi);
-            if (p.kind != AndroidScene3D.POLY || p.texture != null) continue;
-            int nv = p.v.length / 3;
-            int fill = p.fill;
-            if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
-            int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
-            float r = ((litFill >> 16) & 0xFF) / 255f;
-            float g = ((litFill >> 8) & 0xFF) / 255f;
-            float b = (litFill & 0xFF) / 255f;
-            float a = ((litFill >>> 24) & 0xFF) / 255f;
-            // Use prim's own Z for depth (no synthetic offset — z-buffer handles order)
-            for (int ti = 1; ti + 1 < nv; ti++) {
-                int[] idx = {0, ti, ti + 1};
-                for (int vi : idx) {
-                    buf[si++] = p.v[vi * 3];
-                    buf[si++] = p.v[vi * 3 + 1];
-                    buf[si++] = p.v[vi * 3 + 2];
-                    buf[si++] = r; buf[si++] = g; buf[si++] = b; buf[si++] = a;
-                    buf[si++] = 0; buf[si++] = 0;
-                    float nx = p.lnx, ny = p.lny, nz = p.lnz;
-                    if (nx == 0 && ny == 0 && nz == 0) { nx = 0; ny = 0; nz = 1; }
-                    buf[si++] = nx; buf[si++] = ny; buf[si++] = nz;
-                }
-            }
-        }
-        drawSolidBatch(buf, vertCount, mvp, modelMatrix, snap);
-    }
-
-    private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate) {
+    private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate, float zOffset) {
         int nv = p.v.length / 3;
         if (nv == 0) return;
         int triCount = fanTriangulate ? Math.max(0, (nv - 2) * 3) : nv;
@@ -581,7 +640,6 @@ public final class GpuDisplayRenderer {
         float[] buf = new float[triCount * 12];
         int bi = 0;
         if (fanTriangulate) {
-            // Fan triangulation: [0, ti, ti+1]
             for (int ti = 1; ti + 1 < nv; ti++) {
                 int[] idx = {0, ti, ti + 1};
                 for (int vi : idx) {
@@ -594,7 +652,6 @@ public final class GpuDisplayRenderer {
                 }
             }
         } else {
-            // Pre-triangulated: pass all vertices as-is
             for (int vi = 0; vi < nv; vi++) {
                 buf[bi++] = p.v[vi * 3]; buf[bi++] = p.v[vi * 3 + 1]; buf[bi++] = p.v[vi * 3 + 2];
                 buf[bi++] = tr; buf[bi++] = tg; buf[bi++] = tb; buf[bi++] = ta;
@@ -679,7 +736,7 @@ public final class GpuDisplayRenderer {
         return texId;
     }
 
-    private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix) {
+    private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, float zOffset) {
         // Expand billboard into a textured quad using camera right/up from the view matrix
         float cx = p.v[0], cy = p.v[1], cz = p.v[2];
         // Camera right = view matrix row 0 (mvp columns are transposed; view[0,4,8] are right x,y,z)
@@ -710,7 +767,7 @@ public final class GpuDisplayRenderer {
         quad.texture = p.texture;
         quad.tint = p.tint;
         quad.lnx = -snap.view[8]; quad.lny = -snap.view[9]; quad.lnz = -snap.view[10]; // camera forward as normal
-        drawTexturedPrim(quad, snap, modelMatrix, normalMatrix, false);
+        drawTexturedPrim(quad, snap, modelMatrix, normalMatrix, false, zOffset);
     }
 
     // ── Line batch draw ────────────────────────────────────────────────
@@ -743,7 +800,7 @@ public final class GpuDisplayRenderer {
 
     private void drawTextPrims(GpuSnapshot snap, Bitmap targetBitmap) {
         Canvas c = new Canvas(targetBitmap);
-        for (AndroidScene3D.Prim p : sortedPrims) {
+        for (AndroidScene3D.Prim p : snap.prims) {
             if (p.kind != AndroidScene3D.TEXT || p.text == null) continue;
             float[] screen = project3Dto2D(p.v[0], p.v[1], p.v[2], snap);
             if (screen == null) continue;
