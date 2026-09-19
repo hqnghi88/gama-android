@@ -202,7 +202,7 @@ public class AndroidScene3D {
     // and is ADDED to each vertex before the builder negates Y for storage.
     private float layerOffX = 0f, layerOffY = 0f, layerOffZ = 0f;
     private final Paint fillPaint = new Paint();
-    private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint strokePaint = new Paint();
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path workPath = new Path();
     private final float[] view = new float[16];

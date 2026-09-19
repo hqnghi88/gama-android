@@ -63,8 +63,8 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
     private Bitmap overlayBitmap;
     private Canvas overlayCanvas;
     private boolean overlayActive = false;
-    private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint strokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint fillPaint = new Paint();
+    private final Paint strokePaint = new Paint();
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint bgPaint = new Paint();
