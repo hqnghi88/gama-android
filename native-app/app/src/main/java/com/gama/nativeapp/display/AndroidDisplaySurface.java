@@ -1137,7 +1137,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         lastSpeciesCacheTime = 0;
         cachedAgentCount = 0;
         if (androidGraphics != null) {
-            androidGraphics.resetSceneFit();
+            androidGraphics.resetForNewModel();
         }
         setDisplayScope(null);
         try {

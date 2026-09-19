@@ -2087,6 +2087,13 @@ public class AndroidDisplayGraphics extends AbstractDisplayGraphics {
         }
     }
 
+    /** Full session reset when switching to a new model/simulation. */
+    public void resetForNewModel() {
+        if (scene3d != null) {
+            scene3d.resetForNewModel();
+        }
+    }
+
     private void renderScene3D() {
         Canvas c = canvas;
         if (c == null || scene3d.size() == 0) return;

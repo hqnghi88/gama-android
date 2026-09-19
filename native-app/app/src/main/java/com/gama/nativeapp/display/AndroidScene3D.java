@@ -540,6 +540,23 @@ public class AndroidScene3D {
         frameBoundsSet = false;
     }
 
+    /** Full session reset when switching to a new model/simulation. Clears all
+     *  persistent caches and camera state that would otherwise leak across
+     *  model runs (static prim cache, frame bounds, fit, pan, zoom, rotation). */
+    public void resetForNewModel() {
+        staticCache.clear();
+        prims.clear();
+        resetFit();
+        zoomDolly = 1.0;
+        rotYawDeg = 0f;
+        rotPitchDeg = 0f;
+        panX = 0f;
+        panY = 0f;
+        explicitCamera = false;
+        drawAxes = false;
+        curLightX = 0; curLightY = 0; curLightZ = 0;
+    }
+
     // User dolly zoom (1.0 = fit framing). The camera distance is scaled about
     // the target so the viewport always fills the screen; zooming out reveals
     // more of the world instead of shrinking the framed area.
