@@ -229,7 +229,8 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         setClickable(true);
         setFocusable(true);
         setWillNotDraw(false);
-        setLayerType(LAYER_TYPE_SOFTWARE, null);
+        // HWUI-accelerated Canvas: drawPath/drawRect/drawBitmap are GPU-accelerated.
+        // Do NOT use LAYER_TYPE_SOFTWARE — it forces CPU-only rendering.
     }
 
     public AndroidDisplaySurface(Context context, AttributeSet attrs) {
@@ -1572,9 +1573,8 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     /** Renderer preference keys/values stored in SharedPreferences. */
     public static final String PREF_RENDERER_MODE = "gpu3d_renderer_mode";
-    public static final String MODE_AUTO  = "auto";  // try GPU, fall back to CPU
-    public static final String MODE_GPU   = "gpu";   // force GPU, fail if unavailable
-    public static final String MODE_CPU   = "cpu";   // always CPU
+    public static final String MODE_GPU   = "gpu";
+    public static final String MODE_CPU   = "cpu";
 
     /** Cached GPU capability (probed once, then reused). */
     private static volatile GpuDisplayRenderer.GpuCapability cachedGpuCap;
@@ -1604,55 +1604,28 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     /**
      * Returns the user-selected renderer mode from SharedPreferences.
-     * Defaults to MODE_AUTO.
+     * Defaults to MODE_CPU.
      */
     public String getRendererMode() {
         try {
             return android.preference.PreferenceManager.getDefaultSharedPreferences(
-                    getContext()).getString(PREF_RENDERER_MODE, MODE_AUTO);
+                    getContext()).getString(PREF_RENDERER_MODE, MODE_CPU);
         } catch (Throwable t) {
-            return MODE_AUTO;
+            return MODE_CPU;
         }
     }
 
     /**
      * Whether the GPU renderer should be used for the current display.
-     * <p>
-     * Logic:
-     * <ul>
-     *   <li>CPU mode → always false</li>
-     *   <li>GPU mode → true unless already failed</li>
-     *   <li>Auto mode → true only if GPU probe passed and not yet failed</li>
-     * </ul>
-     * On first GPU failure, {@code gpuRendererFailed} is set permanently for
-     * this surface and all subsequent frames use CPU.  A clear log message
-     * is emitted at the transition.
      */
     public boolean useGpu3D() {
-        // Already failed → CPU
         if (gpuRendererFailed) return false;
 
-        // System property kill-switch (legacy)
         String prop = System.getProperty("gama.gpu3d");
         if (prop != null && prop.equals("0")) return false;
 
         String mode = getRendererMode();
-        switch (mode) {
-            case MODE_CPU:
-                return false;
-            case MODE_GPU:
-                // Force GPU — if probe failed we'll still try (will fail at init)
-                return true;
-            case MODE_AUTO:
-            default:
-                GpuDisplayRenderer.GpuCapability cap = getCachedGpuCapability();
-                if (!cap.supported) {
-                    android.util.Log.w(TAG, "Auto mode: GPU not available (" + cap.reason
-                            + "), using CPU renderer");
-                    return false;
-                }
-                return true;
-        }
+        return MODE_GPU.equals(mode);
     }
 
     /**
@@ -1681,11 +1654,12 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             if (gpuRenderer == null) {
                 gpuRenderer = new GpuDisplayRenderer();
                 ensureGlTextureView();
-                // If TextureView surface is available, use window mode (no readback)
-                if (glTextureView != null && glTextureView.isAvailable()) {
-                    android.view.Surface surface = new android.view.Surface(glTextureView.getSurfaceTexture());
-                    gpuRenderer.setWindowSurface(surface);
-                    Log.i(TAG, "GPU renderer using TextureView window surface");
+                // Check if TextureView surface is already available
+                synchronized (GpuDisplayRenderer.surfaceLock) {
+                    if (GpuDisplayRenderer.pendingWindowSurface != null) {
+                        gpuRenderer.setWindowSurface(GpuDisplayRenderer.pendingWindowSurface);
+                        GpuDisplayRenderer.pendingWindowSurface = null;
+                    }
                 }
                 gpuRenderer.init(snap.viewW, snap.viewH);
                 if (!gpuRenderer.isInitialized()) {
@@ -1696,6 +1670,19 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 }
                 Log.i(TAG, "GPU renderer initialized: " + snap.viewW + "x" + snap.viewH
                         + " window=" + gpuRenderer.isWindowMode());
+            }
+            // Check for a new window surface (e.g., TextureView became available after init)
+            synchronized (GpuDisplayRenderer.surfaceLock) {
+                if (GpuDisplayRenderer.pendingWindowSurface != null && !gpuRenderer.isWindowMode()) {
+                    gpuRenderer.setWindowSurface(GpuDisplayRenderer.pendingWindowSurface);
+                    GpuDisplayRenderer.pendingWindowSurface = null;
+                    // Reinit with window surface
+                    gpuRenderer.shutdown();
+                    gpuRenderer = new GpuDisplayRenderer();
+                    gpuRenderer.setWindowSurface(GpuDisplayRenderer.pendingWindowSurface != null
+                            ? GpuDisplayRenderer.pendingWindowSurface : null);
+                    gpuRenderer.init(snap.viewW, snap.viewH);
+                }
             }
             // If we have a TextureView surface, render directly to it (no bitmap)
             if (gpuRenderer.isWindowMode()) {
@@ -1726,8 +1713,7 @@ public class AndroidDisplaySurface extends View implements OpenGL {
 
     /**
      * Ensures the TextureView exists and is attached to the display container.
-     * Called lazily on first GPU frame. Runs on the SIM thread but posts
-     * view operations to the UI thread.
+     * Called lazily on first GPU frame. Posts view operations to the UI thread.
      */
     private void ensureGlTextureView() {
         if (glTextureViewAttached || disposed) return;
@@ -1736,18 +1722,19 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             glTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
                 @Override public void onSurfaceTextureAvailable(android.graphics.SurfaceTexture st, int w, int h) {
                     Log.i(TAG, "TextureView surface available: " + w + "x" + h);
-                    // If renderer already exists, recreate with window surface
+                    synchronized (GpuDisplayRenderer.surfaceLock) {
+                        GpuDisplayRenderer.pendingWindowSurface = new android.view.Surface(st);
+                    }
                     if (gpuRenderer != null) {
-                        android.view.Surface surface = new android.view.Surface(st);
-                        gpuRenderer.setWindowSurface(surface);
-                        // Need to recreate EGL with window surface — shutdown and reinit
                         gpuRenderer.shutdown();
                         gpuRenderer = null;
                     }
                 }
                 @Override public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture st, int w, int h) {
                     Log.i(TAG, "TextureView surface size changed: " + w + "x" + h);
-                    // Surface recreated on resize — need reinit
+                    synchronized (GpuDisplayRenderer.surfaceLock) {
+                        GpuDisplayRenderer.pendingWindowSurface = new android.view.Surface(st);
+                    }
                     if (gpuRenderer != null) {
                         gpuRenderer.shutdown();
                         gpuRenderer = null;
@@ -1755,29 +1742,28 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                 }
                 @Override public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture st) {
                     Log.i(TAG, "TextureView surface destroyed");
-                    if (gpuRenderer != null) {
-                        gpuRenderer.setWindowSurface(null);
+                    synchronized (GpuDisplayRenderer.surfaceLock) {
+                        GpuDisplayRenderer.pendingWindowSurface = null;
                     }
                     return true;
                 }
                 @Override public void onSurfaceTextureUpdated(android.graphics.SurfaceTexture st) {}
             });
         }
-        // Add TextureView to the parent FrameLayout (behind this View)
-        try {
-            ViewGroup parent = (ViewGroup) getParent();
-            if (parent != null && glTextureView.getParent() == null) {
+        // Add TextureView to the parent FrameLayout on the UI thread
+        final ViewGroup parent = (ViewGroup) getParent();
+        if (parent == null) return;
+        uiHandler.post(() -> {
+            if (disposed || glTextureViewAttached) return;
+            if (glTextureView.getParent() == null) {
                 FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
                 flp.gravity = Gravity.CENTER;
                 parent.addView(glTextureView, 0, flp);
                 glTextureViewAttached = true;
-                glTextureView.setAlpha(1f);
                 Log.i(TAG, "TextureView added to display container (behind surface)");
             }
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to add TextureView: " + t);
-        }
+        });
     }
 
     /**

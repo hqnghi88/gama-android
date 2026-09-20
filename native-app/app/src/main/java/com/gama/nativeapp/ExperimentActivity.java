@@ -1352,16 +1352,14 @@ public class ExperimentActivity extends Activity {
     // ── GPU/CPU renderer mode ────────────────────────────────────────
 
     private static final String[] RENDERER_MODES = {
-            AndroidDisplaySurface.MODE_AUTO,
-            AndroidDisplaySurface.MODE_GPU,
-            AndroidDisplaySurface.MODE_CPU
+            AndroidDisplaySurface.MODE_CPU,
+            AndroidDisplaySurface.MODE_GPU
     };
-    private static final String[] RENDERER_LABELS = { "3D:Auto", "3D:GPU", "3D:CPU" };
-    private static final String[] RENDERER_ICONS = { "\u2699", "\u26A1", "\u2699" };
+    private static final String[] RENDERER_LABELS = { "3D:CPU", "3D:GPU" };
 
     private void cycleRendererMode() {
         String current = PreferenceManager.getDefaultSharedPreferences(this)
-                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_AUTO);
+                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_CPU);
         int idx = 0;
         for (int i = 0; i < RENDERER_MODES.length; i++) {
             if (RENDERER_MODES[i].equals(current)) { idx = i; break; }
@@ -1377,7 +1375,7 @@ public class ExperimentActivity extends Activity {
     private void updateRendererModeLabel() {
         if (rendererModeBtn == null) return;
         String current = PreferenceManager.getDefaultSharedPreferences(this)
-                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_AUTO);
+                .getString(AndroidDisplaySurface.PREF_RENDERER_MODE, AndroidDisplaySurface.MODE_CPU);
         int idx = 0;
         for (int i = 0; i < RENDERER_MODES.length; i++) {
             if (RENDERER_MODES[i].equals(current)) { idx = i; break; }

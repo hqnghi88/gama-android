@@ -136,6 +136,10 @@ public final class GpuDisplayRenderer {
     // Window surface mode (TextureView) — no readback
     private volatile Surface windowSurface;
     private boolean useWindowMode = false;
+    /** Lock for thread-safe surface handoff from UI thread to GL thread. */
+    public static final Object surfaceLock = new Object();
+    /** Pending surface from TextureView, picked up by GL thread. */
+    static volatile Surface pendingWindowSurface;
 
     // Texture cache
     private final Map<Bitmap, Integer> texCache = new HashMap<>();
