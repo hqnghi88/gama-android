@@ -140,6 +140,8 @@ public final class GpuDisplayRenderer {
     private static final float[] IDENTITY4 = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
     private int renderW, renderH;
+    private int eglRenderW, eglRenderH; // actual GL surface size (may be scaled down)
+    private static final float RENDER_SCALE = 0.5f; // render at 50% resolution, upscale on readback
     private boolean initialized = false;
 
     // Texture cache: Bitmap identity → GL texture name
@@ -189,6 +191,9 @@ public final class GpuDisplayRenderer {
     // ── EGL / GL init ──────────────────────────────────────────────────
 
     private void initEgl() {
+        eglRenderW = Math.max(1, (int)(renderW * RENDER_SCALE));
+        eglRenderH = Math.max(1, (int)(renderH * RENDER_SCALE));
+
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) throw new RuntimeException("eglGetDisplay failed");
         int[] vers = new int[2];
@@ -210,7 +215,7 @@ public final class GpuDisplayRenderer {
         EGL14.eglChooseConfig(eglDisplay, cfgAttribs, 0, configs, 0, 1, numConfigs, 0);
         if (numConfigs[0] == 0) throw new RuntimeException("eglChooseConfig failed");
 
-        int[] pbAttribs = { EGL14.EGL_WIDTH, renderW, EGL14.EGL_HEIGHT, renderH, EGL14.EGL_NONE };
+        int[] pbAttribs = { EGL14.EGL_WIDTH, eglRenderW, EGL14.EGL_HEIGHT, eglRenderH, EGL14.EGL_NONE };
         eglSurface = EGL14.eglCreatePbufferSurface(eglDisplay, configs[0], pbAttribs, 0);
         if (eglSurface == EGL14.EGL_NO_SURFACE) throw new RuntimeException("eglCreatePbufferSurface failed");
 
@@ -221,7 +226,7 @@ public final class GpuDisplayRenderer {
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext))
             throw new RuntimeException("eglMakeCurrent failed");
 
-        intBuf = new int[renderW * renderH];
+        intBuf = new int[eglRenderW * eglRenderH];
     }
 
     private void destroyEgl() {
@@ -309,14 +314,14 @@ public final class GpuDisplayRenderer {
     }
 
     // ── Per-frame render ───────────────────────────────────────────────
-
     private void renderFrame(GpuSnapshot snap, Bitmap targetBitmap) {
         try {
             if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return;
 
             List<AndroidScene3D.Prim> prims = snap.prims;
             int w = snap.viewW, h = snap.viewH;
-            GLES20.glViewport(0, 0, w, h);
+            int gw = eglRenderW, gh = eglRenderH;
+            GLES20.glViewport(0, 0, gw, gh);
             GLES20.glEnable(GLES20.GL_DEPTH_TEST);
             GLES20.glDepthFunc(GLES20.GL_LEQUAL);
 
@@ -326,18 +331,9 @@ public final class GpuDisplayRenderer {
             GLES20.glClearColor(bgR, bgG, bgB, 1f);
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
-            float[] mvp = new float[16];
-            mat4Mul(mvp, snap.proj, snap.view);
-
-            float[] vv = snap.view;
-            float cvx = -(vv[0]*vv[12] + vv[1]*vv[13] + vv[2]*vv[14]);
-            float cvy = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
-            float cvz = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
-
             int totalPrims = prims.size();
-            float zStep = totalPrims > 1 ? 2.0f / totalPrims : 0f;
 
-            // ── Phase 1: Collect batch data ──
+            // ── Phase 1: Collect batch data (world-space vertices) ──
             int INIT_CAP = Math.max(4096, totalPrims * 6 * 12);
             float[] solidBuf = new float[INIT_CAP];
             int solidVerts = 0;
@@ -347,7 +343,6 @@ public final class GpuDisplayRenderer {
 
             for (int pi = 0; pi < totalPrims; pi++) {
                 AndroidScene3D.Prim p = prims.get(pi);
-                float zOffset = 1.0f - pi * zStep;
 
                 if (p.kind == AndroidScene3D.POLY && p.texture == null) {
                     int nv = p.v.length / 3;
@@ -358,42 +353,19 @@ public final class GpuDisplayRenderer {
 
                     int fill = p.fill;
                     if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
-                    int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
-                    float r = ((litFill >> 16) & 0xFF) / 255f;
-                    float g = ((litFill >> 8) & 0xFF) / 255f;
-                    float b = (litFill & 0xFF) / 255f;
-                    float a = ((litFill >>> 24) & 0xFF) / 255f;
-
+                    float r = ((fill >> 16) & 0xFF) / 255f;
+                    float g = ((fill >> 8) & 0xFF) / 255f;
+                    float b = (fill & 0xFF) / 255f;
+                    float a = ((fill >>> 24) & 0xFF) / 255f;
                     if (a < 0.004f) {
                         lineVerts = appendBorderLines(lineBuf, lineVerts, p);
                         continue;
                     }
 
-                    // Project to NDC
-                    float[] ndcX = new float[nv];
-                    float[] ndcY = new float[nv];
-                    boolean behindCamera = false;
-                    for (int i = 0; i < nv; i++) {
-                        float wx = p.v[i * 3], wy = p.v[i * 3 + 1], wz = p.v[i * 3 + 2];
-                        float vx = vv[0]*wx + vv[4]*wy + vv[8]*wz + vv[12];
-                        float vy = vv[1]*wx + vv[5]*wy + vv[9]*wz + vv[13];
-                        float vz = vv[2]*wx + vv[6]*wy + vv[10]*wz + vv[14];
-                        float vw = vv[3]*wx + vv[7]*wy + vv[11]*wz + vv[15];
-                        float[] pp = snap.proj;
-                        float px = pp[0]*vx + pp[4]*vy + pp[8]*vz + pp[12]*vw;
-                        float py = pp[1]*vx + pp[5]*vy + pp[9]*vz + pp[13]*vw;
-                        float pw = pp[3]*vx + pp[7]*vy + pp[11]*vz + pp[15]*vw;
-                        if (pw <= 0.001f) { behindCamera = true; break; }
-                        ndcX[i] = px / pw;
-                        ndcY[i] = py / pw;
-                    }
-                    if (behindCamera) {
-                        lineVerts = appendBorderLines(lineBuf, lineVerts, p);
-                        continue;
-                    }
+                    float pnx = p.lnx, pny = p.lny, pnz = p.lnz;
+                    if (pnx == 0 && pny == 0 && pnz == 0) { pnx = 0; pny = 0; pnz = 1; }
 
                     if (nv <= 4) {
-                        // Convex: fan-triangulate into batch buffer (no stencil needed)
                         int triCount = nv - 2;
                         int needed = solidVerts + triCount * 3;
                         if (needed * 12 > solidBuf.length) {
@@ -406,72 +378,87 @@ public final class GpuDisplayRenderer {
                             for (int k = 0; k < 3; k++) {
                                 int vi = idx[k];
                                 int si = solidVerts * 12;
-                                solidBuf[si] = ndcX[vi]; solidBuf[si + 1] = ndcY[vi]; solidBuf[si + 2] = zOffset;
+                                solidBuf[si] = p.v[vi * 3]; solidBuf[si + 1] = p.v[vi * 3 + 1]; solidBuf[si + 2] = p.v[vi * 3 + 2];
                                 solidBuf[si + 3] = r; solidBuf[si + 4] = g; solidBuf[si + 5] = b; solidBuf[si + 6] = a;
                                 solidBuf[si + 7] = 0; solidBuf[si + 8] = 0;
-                                solidBuf[si + 9] = 0; solidBuf[si + 10] = 0; solidBuf[si + 11] = 1;
+                                solidBuf[si + 9] = pnx; solidBuf[si + 10] = pny; solidBuf[si + 11] = pnz;
                                 solidVerts++;
                             }
                         }
                     } else {
-                        // Concave: per-prim stencil
-                        drawSingleSolidPrim(p, pi, totalPrims, snap, mvp, IDENTITY4, cvx, cvy, cvz, zOffset);
+                        drawSingleSolidPrim(p, pi, totalPrims, snap);
                     }
 
                     lineVerts = appendBorderLines(lineBuf, lineVerts, p);
 
                 } else if (p.kind == AndroidScene3D.POLY && p.texture != null) {
-                    drawTexturedPrim(p, snap, IDENTITY4, new float[]{1,0,0, 0,1,0, 0,0,1}, true, zOffset);
+                    drawTexturedPrim(p, snap, IDENTITY4, new float[]{1,0,0, 0,1,0, 0,0,1}, true);
                 } else if (p.kind == AndroidScene3D.BILLBOARD) {
-                    drawBillboard(p, snap, IDENTITY4, new float[]{1,0,0, 0,1,0, 0,0,1}, zOffset);
+                    drawBillboard(p, snap, IDENTITY4, new float[]{1,0,0, 0,1,0, 0,0,1});
                 } else if (p.kind == AndroidScene3D.LINE) {
                     lineVerts = appendLineVerts(lineBuf, lineVerts, p);
                 }
             }
 
-            // ── Phase 2: Draw batched convex solids (single VBO + draw call) ──
+            // ── Phase 2: Draw batched convex solids (GPU MVP + lighting) ──
             if (solidVerts > 0) {
-                drawSolidBatch(solidBuf, solidVerts);
+                drawSolidBatch(solidBuf, solidVerts, snap);
             }
 
-            // ── Phase 3: Draw batched lines/borders (single VBO + draw call) ──
+            // ── Phase 3: Draw batched lines/borders ──
             if (lineVerts > 0) {
+                float[] mvp = new float[16];
+                mat4Mul(mvp, snap.proj, snap.view);
                 drawLineBatch(lineBuf, lineVerts, mvp);
             }
 
             int glErr = GLES20.glGetError();
             if (glErr != GLES20.GL_NO_ERROR) Log.e(TAG, "GL error: 0x" + Integer.toHexString(glErr));
 
-            // ── Readback → Bitmap ──
-            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
+            // ── Readback at reduced resolution ──
+            GLES20.glReadPixels(0, 0, gw, gh, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE,
                     IntBuffer.wrap(intBuf));
-            int[] row = new int[w];
-            for (int y = 0; y < h / 2; y++) {
-                int topOff = y * w, botOff = (h - 1 - y) * w;
-                for (int x = 0; x < w; x++) {
+
+            // Decode ARGB from reduced-res buffer, flip Y
+            int[] smallBuf = new int[gw * gh];
+            int[] row = new int[gw];
+            for (int y = 0; y < gh / 2; y++) {
+                int topOff = y * gw, botOff = (gh - 1 - y) * gw;
+                for (int x = 0; x < gw; x++) {
                     int rgba = intBuf[topOff + x];
                     row[x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
                             | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
                 }
-                for (int x = 0; x < w; x++) {
+                for (int x = 0; x < gw; x++) {
                     int rgba = intBuf[botOff + x];
                     intBuf[topOff + x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
                             | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
                 }
-                for (int x = 0; x < w; x++) {
+                for (int x = 0; x < gw; x++) {
                     intBuf[botOff + x] = row[x];
                 }
             }
-            if ((h & 1) == 1) {
-                int mid = (h / 2) * w;
-                for (int x = 0; x < w; x++) {
+            if ((gh & 1) == 1) {
+                int mid = (gh / 2) * gw;
+                for (int x = 0; x < gw; x++) {
                     int rgba = intBuf[mid + x];
                     intBuf[mid + x] = ((rgba & 0xFF) << 16) | (((rgba >> 8) & 0xFF) << 8)
                             | ((rgba >> 16) & 0xFF) | (rgba & 0xFF000000);
                 }
             }
-            targetBitmap.eraseColor(0);
-            targetBitmap.setPixels(intBuf, 0, w, 0, 0, w, h);
+            System.arraycopy(intBuf, 0, smallBuf, 0, gw * gh);
+
+            // Upscale to target bitmap if scaled
+            if (gw == w && gh == h) {
+                targetBitmap.eraseColor(0);
+                targetBitmap.setPixels(smallBuf, 0, gw, 0, 0, gw, gh);
+            } else {
+                Bitmap smallBmp = Bitmap.createBitmap(gw, gh, Bitmap.Config.ARGB_8888);
+                smallBmp.setPixels(smallBuf, 0, gw, 0, 0, gw, gh);
+                Canvas c = new Canvas(targetBitmap);
+                c.drawBitmap(smallBmp, null, new android.graphics.Rect(0, 0, w, h), null);
+                smallBmp.recycle();
+            }
 
             drawTextPrims(snap, targetBitmap);
 
@@ -560,46 +547,20 @@ public final class GpuDisplayRenderer {
      * under perspective projection.
      */
     private void drawSingleSolidPrim(AndroidScene3D.Prim p, int sortIdx, int totalPrims,
-                                     GpuSnapshot snap, float[] mvp, float[] modelMatrix,
-                                     float cvx, float cvy, float cvz, float zOffset) {
+                                     GpuSnapshot snap) {
         int nv = p.v.length / 3;
         if (nv < 3) return;
 
         int fill = p.fill;
         if (fill == 0) fill = p.border != 0 ? p.border : 0xFFFFFFFF;
-        int litFill = cpuLitColor(fill, p.lnx, p.lny, p.lnz, snap.lights, snap.ambR, snap.ambG, snap.ambB, cvx, cvy, cvz);
-        float r = ((litFill >> 16) & 0xFF) / 255f;
-        float g = ((litFill >> 8) & 0xFF) / 255f;
-        float b = (litFill & 0xFF) / 255f;
-        float a = ((litFill >>> 24) & 0xFF) / 255f;
+        float r = ((fill >> 16) & 0xFF) / 255f;
+        float g = ((fill >> 8) & 0xFF) / 255f;
+        float b = (fill & 0xFF) / 255f;
+        float a = ((fill >>> 24) & 0xFF) / 255f;
         if (a < 0.004f) return;
 
-        // ── Project all vertices to 2D NDC on the CPU (matching CPU renderer) ──
-        float[] ndcX = new float[nv];
-        float[] ndcY = new float[nv];
-        float[] viewZArr = new float[nv];
-        boolean behindCamera = false;
-        for (int i = 0; i < nv; i++) {
-            float wx = p.v[i * 3], wy = p.v[i * 3 + 1], wz = p.v[i * 3 + 2];
-            float[] vv = snap.view;
-            float vx = vv[0]*wx + vv[4]*wy + vv[8]*wz + vv[12];
-            float vy = vv[1]*wx + vv[5]*wy + vv[9]*wz + vv[13];
-            float vz = vv[2]*wx + vv[6]*wy + vv[10]*wz + vv[14];
-            float vw = vv[3]*wx + vv[7]*wy + vv[11]*wz + vv[15];
-            float[] pp = snap.proj;
-            float px = pp[0]*vx + pp[4]*vy + pp[8]*vz + pp[12]*vw;
-            float py = pp[1]*vx + pp[5]*vy + pp[9]*vz + pp[13]*vw;
-            float pw = pp[3]*vx + pp[7]*vy + pp[11]*vz + pp[15]*vw;
-            if (pw <= 0.001f) { behindCamera = true; break; }
-            ndcX[i] = px / pw;
-            ndcY[i] = py / pw;
-            viewZArr[i] = vz;
-        }
-        if (behindCamera) return;
-
-        // ── Fan-triangulate the 2D NDC polygon ──
-        int triCount = Math.max(0, (nv - 2) * 3);
-        if (triCount == 0) return;
+        float pnx = p.lnx, pny = p.lny, pnz = p.lnz;
+        if (pnx == 0 && pny == 0 && pnz == 0) { pnx = 0; pny = 0; pnz = 1; }
 
         int pid = basicShader.getProgramID();
         basicShader.start();
@@ -608,30 +569,47 @@ public final class GpuDisplayRenderer {
         loc = GLES20.glGetUniformLocation(pid, "model");
         if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
         loc = GLES20.glGetUniformLocation(pid, "view");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.view, 0);
         loc = GLES20.glGetUniformLocation(pid, "projection");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.proj, 0);
         loc = GLES20.glGetUniformLocation(pid, "normalMatrix");
         if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
         basicShader.loadUseTexture(false);
-        basicShader.loadUseLighting(false);
-        basicShader.loadAmbientColor(1f, 1f, 1f);
+        basicShader.loadUseLighting(snap.lights.length > 0);
+        basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
+        if (snap.lights.length > 0) {
+            AndroidScene3D.GamaLight l = snap.lights[0];
+            if (l.type == 1) {
+                float far = 10000f;
+                basicShader.loadLightPosition(l.ldx * far, l.ldy * far, l.ldz * far);
+            } else {
+                basicShader.loadLightPosition(l.px, l.py, l.pz);
+            }
+            basicShader.loadLightColor(l.r, l.g, l.b);
+        } else {
+            basicShader.loadLightPosition(0, 0, 1);
+            basicShader.loadLightColor(1, 1, 1);
+        }
+        float[] vv = snap.view;
+        float camX = -(vv[0]*vv[12] + vv[1]*vv[13] + vv[2]*vv[14]);
+        float camY = -(vv[4]*vv[12] + vv[5]*vv[13] + vv[6]*vv[14]);
+        float camZ = -(vv[8]*vv[12] + vv[9]*vv[13] + vv[10]*vv[14]);
+        basicShader.loadViewPos(camX, camY, camZ);
+        basicShader.loadShininess(32f);
         loc = GLES20.glGetUniformLocation(pid, "texture1");
         if (loc >= 0) GLES20.glUniform1i(loc, 0);
 
+        int triCount = Math.max(0, (nv - 2) * 3);
         float[] buf = new float[triCount * 12];
         int si = 0;
         for (int ti = 1; ti + 1 < nv; ti++) {
-            int i0 = 0, i1 = ti, i2 = ti + 1;
-            int[] idx = {i0, i1, i2};
+            int[] idx = {0, ti, ti + 1};
             for (int k = 0; k < 3; k++) {
                 int vi = idx[k];
-                buf[si++] = ndcX[vi];
-                buf[si++] = ndcY[vi];
-                buf[si++] = zOffset;
+                buf[si++] = p.v[vi * 3]; buf[si++] = p.v[vi * 3 + 1]; buf[si++] = p.v[vi * 3 + 2];
                 buf[si++] = r; buf[si++] = g; buf[si++] = b; buf[si++] = a;
                 buf[si++] = 0; buf[si++] = 0;
-                buf[si++] = 0; buf[si++] = 0; buf[si++] = 1;
+                buf[si++] = pnx; buf[si++] = pny; buf[si++] = pnz;
             }
         }
 
@@ -657,19 +635,16 @@ public final class GpuDisplayRenderer {
         GLES20.glEnableVertexAttribArray(aNorm);
         GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
 
-        // ── Stencil-based even-odd fill (matches Canvas.drawPath) ──
         GLES20.glEnable(GLES20.GL_STENCIL_TEST);
         GLES20.glStencilMask(0xFF);
         GLES20.glClearStencil(0);
         GLES20.glClear(GLES20.GL_STENCIL_BUFFER_BIT);
 
-        // Pass 1: Increment stencil for each fragment coverage (count overlaps)
         GLES20.glColorMask(false, false, false, false);
         GLES20.glStencilFunc(GLES20.GL_ALWAYS, 0, 0xFF);
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_INCR_WRAP);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, triCount);
 
-        // Pass 2: Draw color only where coverage count is odd (even-odd rule)
         GLES20.glColorMask(true, true, true, true);
         GLES20.glStencilFunc(GLES20.GL_EQUAL, 1, 1);
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_KEEP);
@@ -683,7 +658,7 @@ public final class GpuDisplayRenderer {
         GLES20.glDisableVertexAttribArray(3);
     }
 
-    private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate, float zOffset) {
+    private void drawTexturedPrim(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, boolean fanTriangulate) {
         int nv = p.v.length / 3;
         if (nv == 0) return;
         int triCount = fanTriangulate ? Math.max(0, (nv - 2) * 3) : nv;
@@ -842,7 +817,7 @@ public final class GpuDisplayRenderer {
         return texId;
     }
 
-    private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix, float zOffset) {
+    private void drawBillboard(AndroidScene3D.Prim p, GpuSnapshot snap, float[] modelMatrix, float[] normalMatrix) {
         // Expand billboard into a textured quad using camera right/up from the view matrix
         float cx = p.v[0], cy = p.v[1], cz = p.v[2];
         // Camera right = view matrix row 0 (mvp columns are transposed; view[0,4,8] are right x,y,z)
@@ -873,7 +848,7 @@ public final class GpuDisplayRenderer {
         quad.texture = p.texture;
         quad.tint = p.tint;
         quad.lnx = -snap.view[8]; quad.lny = -snap.view[9]; quad.lnz = -snap.view[10]; // camera forward as normal
-        drawTexturedPrim(quad, snap, modelMatrix, normalMatrix, false, zOffset);
+        drawTexturedPrim(quad, snap, modelMatrix, normalMatrix, false);
     }
 
     // ── Line batch draw ────────────────────────────────────────────────
@@ -904,7 +879,7 @@ public final class GpuDisplayRenderer {
 
     // ── Batched solid draw (convex prims, no stencil) ──────────────
 
-    private void drawSolidBatch(float[] buf, int vertCount) {
+    private void drawSolidBatch(float[] buf, int vertCount, GpuSnapshot snap) {
         int pid = basicShader.getProgramID();
         basicShader.start();
 
@@ -912,14 +887,33 @@ public final class GpuDisplayRenderer {
         loc = GLES20.glGetUniformLocation(pid, "model");
         if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
         loc = GLES20.glGetUniformLocation(pid, "view");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.view, 0);
         loc = GLES20.glGetUniformLocation(pid, "projection");
-        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, IDENTITY4, 0);
+        if (loc >= 0) GLES20.glUniformMatrix4fv(loc, 1, false, snap.proj, 0);
         loc = GLES20.glGetUniformLocation(pid, "normalMatrix");
         if (loc >= 0) GLES20.glUniformMatrix3fv(loc, 1, false, new float[]{1,0,0, 0,1,0, 0,0,1}, 0);
         basicShader.loadUseTexture(false);
-        basicShader.loadUseLighting(false);
-        basicShader.loadAmbientColor(1f, 1f, 1f);
+        basicShader.loadUseLighting(snap.lights.length > 0);
+        basicShader.loadAmbientColor(snap.ambR, snap.ambG, snap.ambB);
+        if (snap.lights.length > 0) {
+            AndroidScene3D.GamaLight l = snap.lights[0];
+            if (l.type == 1) {
+                float far = 10000f;
+                basicShader.loadLightPosition(l.ldx * far, l.ldy * far, l.ldz * far);
+            } else {
+                basicShader.loadLightPosition(l.px, l.py, l.pz);
+            }
+            basicShader.loadLightColor(l.r, l.g, l.b);
+        } else {
+            basicShader.loadLightPosition(0, 0, 1);
+            basicShader.loadLightColor(1, 1, 1);
+        }
+        float[] v = snap.view;
+        float camX = -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14]);
+        float camY = -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14]);
+        float camZ = -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14]);
+        basicShader.loadViewPos(camX, camY, camZ);
+        basicShader.loadShininess(32f);
         loc = GLES20.glGetUniformLocation(pid, "texture1");
         if (loc >= 0) GLES20.glUniform1i(loc, 0);
 
@@ -1026,66 +1020,6 @@ public final class GpuDisplayRenderer {
         float sx = (px / pw + 1f) / 2f * snap.viewW;
         float sy = (1f - py / pw) / 2f * snap.viewH;
         return new float[]{ sx, sy };
-    }
-
-    // ── CPU-side lighting (matches AndroidScene3D.litColor) ───────────
-
-    private static final int LT_DIR = 1, LT_SPOT = 3;
-    private static final float SPEC_SHINE = 14f;
-    private static final float SPEC_INTENSITY = 1.0f;
-
-    /** Bake lighting into a vertex color, matching AndroidScene3D.litColor(). */
-    private static int cpuLitColor(int argb, float nx, float ny, float nz,
-            AndroidScene3D.GamaLight[] lights, float ambR, float ambG, float ambB,
-            float camX, float camY, float camZ) {
-        if (nx == 0 && ny == 0 && nz == 0) return argb;
-        float fr = ambR, fg = ambG, fb = ambB;
-        int a = (argb >>> 24) & 0xFF;
-        int ri = (argb >>> 16) & 0xFF, gi = (argb >>> 8) & 0xFF, bi = argb & 0xFF;
-        for (AndroidScene3D.GamaLight l : lights) {
-            if (!l.active) continue;
-            float lx, ly, lz, atten = 1f;
-            if (l.type == LT_DIR) {
-                lx = l.ldx; ly = l.ldy; lz = l.ldz;
-            } else {
-                float ovx = l.px, ovy = l.py, ovz = l.pz;
-                float d = (float) Math.sqrt(ovx * ovx + ovy * ovy + ovz * ovz);
-                if (d < 1e-6f) { lx = 0; ly = 0; lz = 1; }
-                else { lx = ovx / d; ly = ovy / d; lz = ovz / d; }
-                if (l.type == LT_SPOT) {
-                    float dot = -(lx * l.ldx + ly * l.ldy + lz * l.ldz);
-                    if (dot < l.cosSpot) continue;
-                }
-                atten = Math.min(1f, 1f / (l.ca + l.la * d + l.qa * d * d));
-            }
-            float nd = nx * lx + ny * ly + nz * lz;
-            if (nd < 0) {
-                if (l.type == LT_SPOT) continue;
-                nd = -nd;
-            }
-            float dl = Math.min(1f, nd * atten);
-            fr += l.r * dl;
-            fg += l.g * dl;
-            fb += l.b * dl;
-            float hx = lx + camX, hy = ly + camY, hz = lz + camZ;
-            float hl = (float) Math.sqrt(hx * hx + hy * hy + hz * hz);
-            if (hl > 1e-6f) {
-                float dh = (nx * hx + ny * hy + nz * hz) / hl;
-                if (dh > 0) {
-                    float spec = (float) Math.pow(dh, SPEC_SHINE) * SPEC_INTENSITY;
-                    fr += l.r * spec;
-                    fg += l.g * spec;
-                    fb += l.b * spec;
-                }
-            }
-        }
-        if (fr > 1f) fr = 1f;
-        if (fg > 1f) fg = 1f;
-        if (fb > 1f) fb = 1f;
-        int rr = Math.round(ri * fr); if (rr > 255) rr = 255;
-        int gg = Math.round(gi * fg); if (gg > 255) gg = 255;
-        int bb = Math.round(bi * fb); if (bb > 255) bb = 255;
-        return (a << 24) | (rr << 16) | (gg << 8) | bb;
     }
 
     // ── Matrix utility ─────────────────────────────────────────────────
