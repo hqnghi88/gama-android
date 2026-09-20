@@ -16,6 +16,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
 import android.view.View;
+import android.view.TextureView;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
@@ -161,6 +162,9 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     // GPU 3D renderer state (lazy-initialized on first 3D frame).
     private GpuDisplayRenderer gpuRenderer;
     private volatile boolean gpuRendererFailed = false;
+    // TextureView for direct GL rendering (no readback).
+    private TextureView glTextureView;
+    private boolean glTextureViewAttached = false;
 
     public AndroidDisplaySurface(Context context, LayeredDisplayOutput output) {
         super(context);
@@ -409,7 +413,13 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     }
 
     private void renderFrame(Canvas canvas) {
-        canvas.drawColor(bgPaint.getColor());
+        // In GPU window mode, draw transparent bg so TextureView shows through
+        boolean gpuWindow = gpuRenderer != null && gpuRenderer.isWindowMode();
+        if (gpuWindow) {
+            canvas.drawColor(0, android.graphics.PorterDuff.Mode.CLEAR);
+        } else {
+            canvas.drawColor(bgPaint.getColor());
+        }
 
         if (androidGraphics == null) {
             androidGraphics = new AndroidDisplayGraphics();
@@ -1667,8 +1677,16 @@ public class AndroidDisplaySurface extends View implements OpenGL {
     public void submitGpuFrame(GpuSnapshot snap) {
         if (snap == null) return;
         try {
+            // Lazily create GPU renderer and TextureView
             if (gpuRenderer == null) {
                 gpuRenderer = new GpuDisplayRenderer();
+                ensureGlTextureView();
+                // If TextureView surface is available, use window mode (no readback)
+                if (glTextureView != null && glTextureView.isAvailable()) {
+                    android.view.Surface surface = new android.view.Surface(glTextureView.getSurfaceTexture());
+                    gpuRenderer.setWindowSurface(surface);
+                    Log.i(TAG, "GPU renderer using TextureView window surface");
+                }
                 gpuRenderer.init(snap.viewW, snap.viewH);
                 if (!gpuRenderer.isInitialized()) {
                     onGpuFallback("GL init failed (EGL/shader)");
@@ -1676,16 +1694,89 @@ public class AndroidDisplaySurface extends View implements OpenGL {
                     gpuRenderer = null;
                     return;
                 }
-                Log.i(TAG, "GPU renderer initialized: " + snap.viewW + "x" + snap.viewH);
+                Log.i(TAG, "GPU renderer initialized: " + snap.viewW + "x" + snap.viewH
+                        + " window=" + gpuRenderer.isWindowMode());
             }
-            ensureBuffers(snap.viewW, snap.viewH);
-            Bitmap target = frameBuffers[workIndex];
-            if (target == null) return;
-            gpuRenderer.renderSync(snap, target);
+            // If we have a TextureView surface, render directly to it (no bitmap)
+            if (gpuRenderer.isWindowMode()) {
+                gpuRenderer.renderSync(snap, null);
+                // Composite text overlay on the work bitmap for onDraw
+                ensureBuffers(snap.viewW, snap.viewH);
+                Bitmap target = frameBuffers[workIndex];
+                if (target != null) {
+                    target.eraseColor(0);
+                    Bitmap textOverlay = gpuRenderer.getTextOverlayBitmap();
+                    if (textOverlay != null) {
+                        new Canvas(target).drawBitmap(textOverlay, 0, 0, null);
+                    }
+                }
+            } else {
+                // Pbuffer fallback: render to bitmap
+                ensureBuffers(snap.viewW, snap.viewH);
+                Bitmap target = frameBuffers[workIndex];
+                if (target == null) return;
+                gpuRenderer.renderSync(snap, target);
+            }
         } catch (Throwable t) {
             onGpuFallback("exception in renderSync: " + t.getClass().getSimpleName()
                     + ": " + t.getMessage());
             if (gpuRenderer != null) { gpuRenderer.shutdown(); gpuRenderer = null; }
+        }
+    }
+
+    /**
+     * Ensures the TextureView exists and is attached to the display container.
+     * Called lazily on first GPU frame. Runs on the SIM thread but posts
+     * view operations to the UI thread.
+     */
+    private void ensureGlTextureView() {
+        if (glTextureViewAttached || disposed) return;
+        if (glTextureView == null) {
+            glTextureView = new TextureView(getContext());
+            glTextureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                @Override public void onSurfaceTextureAvailable(android.graphics.SurfaceTexture st, int w, int h) {
+                    Log.i(TAG, "TextureView surface available: " + w + "x" + h);
+                    // If renderer already exists, recreate with window surface
+                    if (gpuRenderer != null) {
+                        android.view.Surface surface = new android.view.Surface(st);
+                        gpuRenderer.setWindowSurface(surface);
+                        // Need to recreate EGL with window surface — shutdown and reinit
+                        gpuRenderer.shutdown();
+                        gpuRenderer = null;
+                    }
+                }
+                @Override public void onSurfaceTextureSizeChanged(android.graphics.SurfaceTexture st, int w, int h) {
+                    Log.i(TAG, "TextureView surface size changed: " + w + "x" + h);
+                    // Surface recreated on resize — need reinit
+                    if (gpuRenderer != null) {
+                        gpuRenderer.shutdown();
+                        gpuRenderer = null;
+                    }
+                }
+                @Override public boolean onSurfaceTextureDestroyed(android.graphics.SurfaceTexture st) {
+                    Log.i(TAG, "TextureView surface destroyed");
+                    if (gpuRenderer != null) {
+                        gpuRenderer.setWindowSurface(null);
+                    }
+                    return true;
+                }
+                @Override public void onSurfaceTextureUpdated(android.graphics.SurfaceTexture st) {}
+            });
+        }
+        // Add TextureView to the parent FrameLayout (behind this View)
+        try {
+            ViewGroup parent = (ViewGroup) getParent();
+            if (parent != null && glTextureView.getParent() == null) {
+                FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+                flp.gravity = Gravity.CENTER;
+                parent.addView(glTextureView, 0, flp);
+                glTextureViewAttached = true;
+                glTextureView.setAlpha(1f);
+                Log.i(TAG, "TextureView added to display container (behind surface)");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to add TextureView: " + t);
         }
     }
 
@@ -1696,6 +1787,11 @@ public class AndroidDisplaySurface extends View implements OpenGL {
      */
     private void teardownSurfaceAndUnbind() {
         disposed = true;
+        // Remove TextureView
+        if (glTextureView != null && glTextureView.getParent() != null) {
+            ((ViewGroup) glTextureView.getParent()).removeView(glTextureView);
+        }
+        if (gpuRenderer != null) { gpuRenderer.shutdown(); gpuRenderer = null; }
         if (layerManager != null) {
             try { layerManager.dispose(); } catch (Throwable ignored) {}
         }
