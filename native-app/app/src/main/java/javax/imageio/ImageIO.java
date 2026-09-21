@@ -85,4 +85,20 @@ public class ImageIO {
         return formatName != null
                 && ("jpg".equalsIgnoreCase(formatName) || "jpeg".equalsIgnoreCase(formatName));
     }
+
+    public static BufferedImage read(File input) throws IOException {
+        if (input == null) return null;
+        ImageReader reader = new AndroidImageReader();
+        reader.setInput(new FileImageInputStream(input));
+        return reader.read(0);
+    }
+
+    public static BufferedImage read(InputStream input) throws IOException {
+        if (input == null) return null;
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = input.read(buf)) != -1) bos.write(buf, 0, n);
+        return AndroidImageReader.fromBytes(bos.toByteArray());
+    }
 }

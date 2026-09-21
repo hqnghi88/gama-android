@@ -133,6 +133,26 @@ public class AndroidImageReader extends ImageReader {
         return 1;
     }
 
+    public static BufferedImage fromBytes(byte[] raw) throws IOException {
+        byte[] decodedBytes = stripGammaChunk(raw);
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        Bitmap bitmap = decodedBytes != null
+                ? BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length, opts)
+                : BitmapFactory.decodeByteArray(raw, 0, raw.length, opts);
+        if (bitmap == null) {
+            throw new IOException("Failed to decode image bytes");
+        }
+        int w = bitmap.getWidth();
+        int h = bitmap.getHeight();
+        int[] pixels = new int[w * h];
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h);
+        bitmap.recycle();
+        BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, w, h, pixels, 0, w);
+        return image;
+    }
+
     private void notifyImageStarted() {
         for (IIOReadProgressListener l : listeners) {
             l.imageStarted(this, 0);

@@ -218,7 +218,8 @@ tasks.register('patchGamaJars') {
             ['charts/AwtFontMetricsPatcher', 'AwtFontMetricsPatcher', [file("${libsDir}/awt-stubs.jar")]],
             ['gml/XtSDSAXPropertyPatcher', 'XtSDSAXPropertyPatcher', ["${libsDir}/gt-xsd-core-33.4.jar"]],
             ['gml/XSDPluginBaseURLPatcher', 'XSDPluginBaseURLPatcher', ["${libsDir}/org.eclipse.xsd.jar"]],
-            ['runtime/WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]]
+            ['runtime/WorldGlobalPatcher', 'WorldGlobalPatcher', [gamaCoreJar]],
+            ['scope/ErrorEchoPatcher', 'ErrorEchoPatcher', [gamaApiJar]]
         ]
         patchers.each { javaPath, cls, args ->
             def outDir = file("$buildDir/tmp/${javaPath.replace('/', '_')}")

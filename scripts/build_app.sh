@@ -163,20 +163,28 @@ echo "sdk.dir=$SDK_DIR" > "$APP_DIR/local.properties"
 # 3. GAMA jars (app/libs) — either provided, fetched, or assumed complete
 # --------------------------------------------------------------------------
 restore_from_dir() {
-  # Bundle layout: libs/{pristine/*.jar, *.jar} and optionally assets/*.
+  # Bundle layouts, in priority order:
+  #   <src>/app/libs/{pristine/*.jar, *.jar}   (GitHub release asset, roots at app/)
+  #   <src>/libs/{pristine/*.jar, *.jar}       (legacy / local bundle)
+  #   <src> = the libs dir itself
+  # Assets (if any) are looked up under <src>/app/assets and <src>/assets.
   local src="$1"
-  local LB="$src/libs"
-  [[ -d "$LB" ]] || LB="$src"
+  local LB=""
+  for cand in "$src/app/libs" "$src/libs" "$src"; do
+    [[ -d "$cand/pristine" ]] && { LB="$cand"; break; }
+  done
+  [[ -n "$LB" ]] || { echo "ERROR: no libs/ with pristine/ found in $src" >&2; exit 1; }
+  local AS=""
+  [[ -d "$src/app/assets" ]] && AS="$src/app/assets"
+  [[ -z "$AS" && -d "$src/assets" ]] && AS="$src/assets"
   mkdir -p "$LIBS_DIR"
-  if [[ -d "$LB/pristine" ]]; then
-    cp -R "$LB"/pristine "$LIBS_DIR/" 2>/dev/null || true
-    # pristine gama jars are also copied to the top level so build_extension.sh
-    # (which compiles before Gradle's pristine restore) can resolve the GAMA
-    # API/annotations. Gradle's patchGamaJars restore is then idempotent.
-    for j in "$LIBS_DIR"/pristine/*.jar; do
-      [[ -e "$j" ]] && cp "$j" "$LIBS_DIR/"
-    done
-  fi
+  cp -R "$LB"/pristine "$LIBS_DIR/" 2>/dev/null || true
+  # pristine gama jars are also copied to the top level so build_extension.sh
+  # (which compiles before Gradle's pristine restore) can resolve the GAMA
+  # API/annotations. Gradle's patchGamaJars restore is then idempotent.
+  for j in "$LIBS_DIR"/pristine/*.jar; do
+    [[ -e "$j" ]] && cp "$j" "$LIBS_DIR/"
+  done
   for j in "$LB"/*.jar; do
     [[ -e "$j" ]] && cp "$j" "$LIBS_DIR/"
   done
@@ -186,10 +194,10 @@ restore_from_dir() {
     echo "ERROR: deps bundle at $src is incomplete (pristine jars: $n < 30)" >&2
     exit 1
   fi
-  if [[ -d "$src/assets" ]]; then
+  if [[ -n "$AS" ]]; then
     mkdir -p "$APP_DIR/app/src/main/assets"
-    cp -R "$src"/assets/. "$APP_DIR/app/src/main/assets/" 2>/dev/null || true
-    echo "   assets: restored $src/assets/*"
+    cp -R "$AS"/. "$APP_DIR/app/src/main/assets/" 2>/dev/null || true
+    echo "   assets: restored $AS/*"
   fi
   echo "   jars:   restored $(ls "$LIBS_DIR"/*.jar | wc -l | tr -d ' ') jars from $src"
 }

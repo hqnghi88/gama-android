@@ -2292,13 +2292,58 @@ public class ExperimentActivity extends Activity {
             if (originalErr == null) originalErr = System.err;
             final PrintStream origErr = originalErr;
             final PrintStream origOut = originalOut;
+            final StringBuilder errBuf = new StringBuilder();
+            final StringBuilder outBuf = new StringBuilder();
+            final Object bufLock = new Object();
             System.setErr(new PrintStream(new java.io.OutputStream() {
-                @Override public void write(int b) { origErr.write(b); }
-                @Override public void write(byte[] b, int off, int len) { origErr.write(b, off, len); }
+                @Override public void write(int b) {
+                    origErr.write(b);
+                    synchronized (bufLock) {
+                        errBuf.append((char) b);
+                        if (b == '\n') {
+                            Log.i(TAG, "[stderr] " + errBuf.toString().trim());
+                            errBuf.setLength(0);
+                        }
+                    }
+                }
+                @Override public void write(byte[] b, int off, int len) {
+                    origErr.write(b, off, len);
+                    synchronized (bufLock) {
+                        errBuf.append(new String(b, off, len));
+                        String s = errBuf.toString();
+                        if (s.indexOf('\n') >= 0) {
+                            int i = s.lastIndexOf('\n');
+                            if (i > 0) Log.i(TAG, "[stderr] " + s.substring(0, i).trim());
+                            errBuf.setLength(0);
+                            errBuf.append(s.substring(i + 1));
+                        }
+                    }
+                }
             }, true));
             System.setOut(new PrintStream(new java.io.OutputStream() {
-                @Override public void write(int b) { origOut.write(b); }
-                @Override public void write(byte[] b, int off, int len) { origOut.write(b, off, len); }
+                @Override public void write(int b) {
+                    origOut.write(b);
+                    synchronized (bufLock) {
+                        outBuf.append((char) b);
+                        if (b == '\n') {
+                            Log.i(TAG, "[stdout] " + outBuf.toString().trim());
+                            outBuf.setLength(0);
+                        }
+                    }
+                }
+                @Override public void write(byte[] b, int off, int len) {
+                    origOut.write(b, off, len);
+                    synchronized (bufLock) {
+                        outBuf.append(new String(b, off, len));
+                        String s = outBuf.toString();
+                        if (s.indexOf('\n') >= 0) {
+                            int i = s.lastIndexOf('\n');
+                            if (i > 0) Log.i(TAG, "[stdout] " + s.substring(0, i).trim());
+                            outBuf.setLength(0);
+                            outBuf.append(s.substring(i + 1));
+                        }
+                    }
+                }
             }, true));
         } catch (Exception ignored) { }
     }
@@ -2309,30 +2354,33 @@ public class ExperimentActivity extends Activity {
         final int[] lastCycle = {-1};
         final long[] lastInvalidate = {0};
 
+        final long[] lastCycleChangeAt = {System.currentTimeMillis()};
+        final boolean[] stallLogged = {false};
         statePollRunnable = () -> {
             if (!isRunning) return;
             try {
-                if (aliveField != null) {
-                    boolean alive = aliveField.getBoolean(controller);
-                    if (!alive) {
-                        // A reload transiently shows alive==false while it swaps the
-                        // old simulation out for the new one. Don't treat that as
-                        // "experiment finished": keep polling until the new sim is up
-                        // (or, if this isn't a reload, do the normal finish handling).
-                        if (reloading) return; // reschedule below; keep waiting
-                        handler.post(() -> {
-                            toolbarTitle.setText(modelName + " (finished)");
-                            cycleText.setText("Completed");
-                            setTransportIcon(playPauseBtn, R.drawable.ic_play);
-                            stepBtn.setAlpha(0.45f);
-                        });
-                        isRunning = false;
-                        return;
-                    }
-                    // Once the reloaded simulation is alive again, clear the reload flag.
-                    if (reloading) reloading = false;
+                boolean alive = true;
+                if (aliveField != null) alive = aliveField.getBoolean(controller);
+                if (!alive) {
+                    // A reload transiently shows alive==false while it swaps the
+                    // old simulation out for the new one. Don't treat that as
+                    // "experiment finished": keep polling until the new sim is up
+                    // (or, if this isn't a reload, do the normal finish handling).
+                    if (reloading) return; // reschedule below; keep waiting
+                    handler.post(() -> {
+                        toolbarTitle.setText(modelName + " (finished)");
+                        cycleText.setText("Completed");
+                        setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                        stepBtn.setAlpha(0.45f);
+                    });
+                    isRunning = false;
+                    return;
                 }
+                // Once the reloaded simulation is alive again, clear the reload flag.
+                if (reloading) reloading = false;
+            } catch (Exception e) { Log.w(TAG, "POLL alive err: " + e.getMessage()); }
 
+            try {
                 int cycleCount = -1;
                 try {
                     if (scopeField != null && getClockMethod != null && getCycleMethod != null) {
@@ -2346,6 +2394,31 @@ public class ExperimentActivity extends Activity {
 
                 boolean changed = cycleCount >= 0 && cycleCount != lastCycle[0];
                 if (cycleCount >= 0) lastCycle[0] = cycleCount;
+                long nowL = System.currentTimeMillis();
+                if (changed) {
+                    lastCycleChangeAt[0] = nowL;
+                    stallLogged[0] = false;
+                }
+                final Object fctrl = controller;
+                if (cycleCount >= 0 && !changed && !stallLogged[0]
+                        && nowL - lastCycleChangeAt[0] > 1200) {
+                    stallLogged[0] = true;
+                    logStallDiagnostics(fctrl);
+                    stallBurst(fctrl, 0);
+                    if (isControllerPaused(fctrl) && !isPaused) {
+                        isPaused = true;
+                        handler.post(() -> {
+                            setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                            stepBtn.setAlpha(0.45f);
+                        });
+                    }
+                }
+
+                int beat = 0;
+                if (cycleCount >= 0 && !changed && ++beat % 200 == 0
+                        && nowL - lastCycleChangeAt[0] > 600) {
+                    Log.i(TAG, "BEAT cycle=" + cycleCount + " dt=" + (nowL - lastCycleChangeAt[0]));
+                }
 
                 long elapsed = System.currentTimeMillis() - startTime;
                 long min = (elapsed / 1000) / 60;
@@ -2455,6 +2528,124 @@ public class ExperimentActivity extends Activity {
             if (deeper != null) return deeper;
         }
         return null;
+    }
+
+    private static String describeVal(Object v) {
+        if (v == null) return "null";
+        if (v instanceof Throwable t) {
+            StringBuilder sb = new StringBuilder(t.getClass().getSimpleName()).append(": ").append(t.getMessage());
+            Throwable c = t.getCause();
+            if (c != null) sb.append(" | cause: ").append(c.getClass().getSimpleName()).append(": ").append(c.getMessage());
+            StackTraceElement[] st = t.getStackTrace();
+            int n = 0;
+            for (StackTraceElement e : st) {
+                if (n >= 8) break;
+                String cl = e.getClassName();
+                if (cl.startsWith("gaml.") || cl.startsWith("gama.") || cl.startsWith("msi.") || cl.startsWith("java.")) {
+                    sb.append(" | ").append(cl).append(".").append(e.getMethodName()).append("(").append(e.getLineNumber()).append(")");
+                    n++;
+                }
+            }
+            return sb.toString();
+        }
+        if (v instanceof Iterable) {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Object o : (Iterable<?>) v) {
+                if (!first) sb.append(" | ");
+                first = false;
+                sb.append(o instanceof Throwable ? describeVal(o) : String.valueOf(o));
+            }
+            return sb.append("]").toString();
+        }
+        return String.valueOf(v);
+    }
+
+    private void logStallDiagnostics(Object controller) {
+        try {
+            Object scope = scopeField != null ? scopeField.get(controller) : null;
+            boolean alive = aliveField != null && (boolean) aliveField.getBoolean(controller);
+            StringBuilder sb = new StringBuilder("STALLDIAG alive=" + alive);
+            try {
+                java.lang.reflect.Field pf = controller.getClass().getSuperclass().getDeclaredField("paused");
+                pf.setAccessible(true);
+                sb.append(" controller.paused=").append(pf.getBoolean(controller));
+            } catch (Throwable ignored) {}
+            if (scope != null) {
+                sb.append(" scope=").append(scope.getClass().getSimpleName());
+                try { sb.append(" interrupted=").append(((gama.api.runtime.scope.IScope) scope).interrupted()); } catch (Throwable ignored) {}
+                try { sb.append(" closed=").append(((gama.api.runtime.scope.IScope) scope).isClosed()); } catch (Throwable ignored) {}
+                try {
+                    Object sym = scope.getClass().getMethod("getCurrentSymbol").invoke(scope);
+                    sb.append(" sym=").append(sym);
+                } catch (Throwable ignored) {}
+                try {
+                    java.lang.reflect.Field f = scope.getClass().getDeclaredField("flowStatus");
+                    f.setAccessible(true);
+                    sb.append(" flow=").append(f.get(scope));
+                } catch (Throwable ignored) {}
+                for (java.lang.reflect.Method m : scope.getClass().getMethods()) {
+                    String n = m.getName().toLowerCase();
+                    if ((n.contains("error") || n.contains("exception"))
+                            && m.getParameterCount() == 0 && m.getReturnType() != void.class) {
+                        try {
+                            Object v = m.invoke(scope);
+                            sb.append(" ").append(m.getName()).append("=").append(describeVal(v));
+                        } catch (Throwable t) { /* skip */ }
+                    }
+                }
+            }
+            Log.i(TAG, sb.toString());
+            if (scope == null) return;
+            if (sb.indexOf("getCurrentError=") >= 0 && sb.indexOf("getCurrentError=null") < 0) {
+                int i = sb.indexOf("getCurrentError=");
+                String msg = sb.substring(i + "getCurrentError=".length());
+                int cut = msg.indexOf("reportErrors");
+                if (cut > 0) msg = msg.substring(0, cut).trim();
+                final String fmsg = msg;
+                handler.post(() -> {
+                    log("⚠ Simulation paused by error: " + fmsg);
+                    toolbarTitle.setText(modelName + " (error)");
+                });
+            }
+            Object agent = null;
+            try { agent = scope.getClass().getMethod("getAgent").invoke(scope); } catch (Throwable ignored) {}
+            if (agent != null) {
+                Log.i(TAG, "STALLDIAG agent=" + agent.getClass().getSimpleName());
+                for (java.lang.reflect.Method m : agent.getClass().getMethods()) {
+                    String n = m.getName().toLowerCase();
+                    if ((n.contains("error") || n.contains("exception")) && m.getParameterCount() == 0) {
+                        try {
+                            Object v = m.invoke(agent);
+                            if (v != null) Log.i(TAG, "STALLDIAG agent." + m.getName() + " -> " + describeVal(v));
+                        } catch (Throwable t) { /* skip */ }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "STALLDIAG failed: " + t.getMessage());
+        }
+    }
+
+    /** Re-logs extended stall diagnostics ~3 more times over ~1.5s so transient
+     *  scope state (errors, flow, interrupt) that clears right after the failed
+     *  step can still be observed. */
+    private void stallBurst(final Object controller, final int tick) {
+        if (destroyed || tick >= 3) return;
+        handler.postDelayed(() -> {
+            logStallDiagnostics(controller);
+            stallBurst(controller, tick + 1);
+        }, 500);
+    }
+
+    /** True when the engine's controller thinks the experiment is paused,
+     *  even if the app didn't initiate it (e.g. a GAML runtime error). */
+    private boolean isControllerPaused(Object controller) {
+        try {
+            java.lang.reflect.Field pf = controller.getClass().getSuperclass().getDeclaredField("paused");
+            pf.setAccessible(true);
+            return pf.getBoolean(controller);
+        } catch (Throwable t) { return false; }
     }
 
     private void cacheReflectionFields(Object controller) {

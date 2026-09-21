@@ -91,6 +91,7 @@ public class SensorBridge {
     private final SensorManager sensorManager;
     private final Context context;
     private volatile Bridge bridge;
+    private volatile boolean bridgeAttempted;
     private final SensorEventListener listener = new SensorEventListener() {
         @Override
         public void onSensorChanged(SensorEvent event) {
@@ -200,6 +201,8 @@ public class SensorBridge {
     private void publish() {
         Bridge b = bridge;
         if (b == null) {
+            if (bridgeAttempted) return;
+            bridgeAttempted = true;
             b = Bridge.forLoader(PluginManager.classLoaderOf(EXTENSION));
             bridge = b;
             if (b == null) return;
@@ -221,6 +224,7 @@ public class SensorBridge {
         } catch (Throwable t) {
             Log.w(TAG, "publish failed: " + t);
             bridge = null;
+            bridgeAttempted = false;
         }
     }
 }

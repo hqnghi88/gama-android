@@ -984,10 +984,33 @@ public class AndroidDisplaySurface extends View implements OpenGL {
         return image;
     }
 
+    private void lapLogScope() {
+        try {
+            gama.api.runtime.scope.IScope es = output != null ? output.getScope() : null;
+            if (es == null) return;
+            Object err = es.getCurrentError();
+            if (err != null) {
+                android.util.Log.w("ANDROID_DISPLAY", "LAP scope.error=" + err);
+            }
+            if (es.interrupted()) {
+                android.util.Log.w("ANDROID_DISPLAY", "LAP scope.interrupted=TRUE");
+            }
+            try {
+                java.lang.reflect.Field f = es.getClass().getDeclaredField("flowStatus");
+                f.setAccessible(true);
+                Object fs = f.get(es);
+                if (fs != null && !"FlowStatus.NORMAL".equals(fs.toString())) {
+                    android.util.Log.w("ANDROID_DISPLAY", "LAP scope.flowStatus=" + fs);
+                }
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
+    }
+
     @Override
     public void updateDisplay(boolean force, GeneralSynchronizer synchronizer) {
         try {
             if (!disposed) {
+                lapLogScope();
                 // Called by GAMA's output scheduler on the SIM thread at the end
                 // of each cycle. Rate-limit to MIN_SNAPSHOT_INTERVAL_NS so fast
                 // simulations are not throttled by per-cycle painting.
