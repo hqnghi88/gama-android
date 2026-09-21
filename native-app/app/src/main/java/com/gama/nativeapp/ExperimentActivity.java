@@ -157,6 +157,9 @@ public class ExperimentActivity extends Activity {
     private Object currentExpPlan;
     private volatile Object currentController;
     private Runnable statePollRunnable;
+    // Time of the last auto-resume, so a self-paused engine is nudged back to
+    // running without hammering the controller (rate-limited to once per 5s).
+    private long lastAutoResumeAt = 0;
     private Runnable clockUpdateRunnable;
     private Runnable pendingHideLoading;
     // Dynamic content of the Params tab, rebuilt when an experiment opens
@@ -2406,11 +2409,33 @@ public class ExperimentActivity extends Activity {
                     logStallDiagnostics(fctrl);
                     stallBurst(fctrl, 0);
                     if (isControllerPaused(fctrl) && !isPaused) {
-                        isPaused = true;
-                        handler.post(() -> {
-                            setTransportIcon(playPauseBtn, R.drawable.ic_play);
-                            stepBtn.setAlpha(0.45f);
-                        });
+                        // The engine paused itself (e.g. a step that returned
+                        // failed / hit a display-sync stall) without a user
+                        // request. Resume it so a self-paused engine does not
+                        // leave displays permanently blank. Rate-limited and
+                        // skipped while a reload is swapping the simulation.
+                        boolean resumedNow = false;
+                        if (!reloading && nowL - lastAutoResumeAt > 5000) {
+                            lastAutoResumeAt = nowL;
+                            lastCycleChangeAt[0] = nowL;
+                            final Object c = fctrl;
+                            resumedNow = true;
+                            POLL_EXECUTOR.execute(() -> {
+                                try {
+                                    c.getClass().getMethod("processStart", boolean.class).invoke(c, true);
+                                    Log.i(TAG, "auto-resumed self-paused experiment");
+                                } catch (Exception e) {
+                                    Log.w(TAG, "auto-resume failed", e);
+                                }
+                            });
+                        }
+                        if (!resumedNow) {
+                            isPaused = true;
+                            handler.post(() -> {
+                                setTransportIcon(playPauseBtn, R.drawable.ic_play);
+                                stepBtn.setAlpha(0.45f);
+                            });
+                        }
                     }
                 }
 

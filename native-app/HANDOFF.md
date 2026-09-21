@@ -1317,3 +1317,41 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
 - awt-stubs.jar is gitignored and IS in the native-app-deps seed -> the seed was REBUILT
   and re-uploaded (asset on tag `native-app-deps`, release 374958155) so CI releases carry
   the jar edits.
+
+### Session 19f: "blank displays" — GPU-render sync deadlock + self-pause fixes
+- Reported after the release: "now run it and it shows blank displays". Diagnosis on device:
+  the two buttons "Show vector/icon emojis" are GAMA display TABS (model's
+  `display "Show vector emojis" type: 3d` / `display "Show icon emojis" type: 3d`), not
+  toggles. The display region under them stayed uniform gray (232,232,232 = container bg),
+  i.e. NO frame was ever presented — not even the model's `background: #black`.
+- Two independent causes found:
+  1. **GPU-render sync deadlock (the real blank-out):** with the GPU renderer in window
+     (TextureView) mode, `GpuDisplayRenderer.renderSync()` made the SIMULATION thread block
+     on a `CountDownLatch` until the GL thread finished rasterizing the frame, and that GL
+     thread runs the emulator's software GL (GFXSTREAM) — each frame of 436 prims took
+     minutes (`glGetAttribLocation` churn, `0x501 index >= CODEC_MAX_VERTEX_ATTRIBUTES`
+     floods in logcat). The sim wedged inside cycle 1, never completing its first step, so
+     the display never got a frame. Thread dump proved it: "Thread of Simulation 0" parked
+     in `GpuDisplayRenderer.renderSync -> CountDownLatch.await`.
+  2. **Self-pause:** the engine's controller occasionally sits at
+     `DefaultExperimentController.step:597` -> `lock.acquire()` with `paused=true` (a step
+     that returns failed, no exception, no log). Display stops updating -> blank. Pause/Play
+     was the only manual workaround.
+- Fixes (both in app source, no jars touched -> deps seed unchanged):
+  - `GpuDisplayRenderer.renderSync()` is now fire-and-forget ("latest-wins"): it hands the
+    latest snapshot to the GL thread and returns immediately; the sim thread NEVER blocks on
+    the display renderer. Removed the `pendingLatch` mechanism. GL thread keeps rendering at
+    its own pace (window: eglSwapBuffers; pbuffer: readback fills targetBitmap lagging a
+    frame or two). See AGENTS pitfall-adjacent note: slow GL can no longer freeze the model.
+  - `ExperimentActivity.startStatePolling()` auto-resumes a self-paused (non-user) engine:
+    when the controller reports `paused` but `isPaused` (user intent) is false, it invokes
+    `processStart(true)` on POLL_EXECUTOR (rate-limited to 1/5s, skipped while `reloading`).
+    The old code only flipped the toolbar icon to Play; now the sim actually restarts.
+- Verified on emulator-5554: after the reboot the sim no longer deadlocks on the display —
+  GPU renders stream continuously (`GPU render: prims=436 ... window=true`, ~100ms cadence),
+  the display presents a real frame (region turned from gray-232 to white/black content), and
+  the sim thread shows healthy RUNNABLE compute (`ExecutionScope.execute -> AspectStatement
+  -> ShapeDrawer -> ConvexHull`). Remaining slowness is model-inherent: the vector aspect
+  recomputes JTS convex hulls of emoji SVG geometry every cycle in software, so cycle 1 can
+  take many minutes on the emulator; the icon (bitmap) tab is the fast path.
+- This build is `build_app32`; APK already reinstalled on emulator-5554 for further checks.

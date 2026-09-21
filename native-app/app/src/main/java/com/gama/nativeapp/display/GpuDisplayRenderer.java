@@ -38,8 +38,10 @@ import gama.ui.display.opengl4.renderer.gl.Gles2GLWrapper;
  *       reads back via glReadPixels, writes to a Bitmap. Used when no window
  *       surface is available.</li>
  * </ul>
- * Thread model: the simulation thread calls {@link #renderSync} which blocks
- * until the GL thread finishes rendering.
+ * Thread model: the simulation thread calls {@link #renderSync} with the
+ * latest snapshot and returns immediately ("latest-wins"); the GL thread
+ * renders at its own pace. The simulation never blocks on the display, so a
+ * slow GL implementation cannot wedge the simulation thread.
  */
 public final class GpuDisplayRenderer {
 
@@ -116,7 +118,6 @@ public final class GpuDisplayRenderer {
     // Sync state
     private GpuSnapshot pendingSnap;
     private Bitmap pendingTarget;
-    private java.util.concurrent.CountDownLatch pendingLatch;
     private java.util.concurrent.CountDownLatch initLatch = new java.util.concurrent.CountDownLatch(1);
 
     // GL resources (owned by GL thread)
@@ -179,19 +180,19 @@ public final class GpuDisplayRenderer {
     public boolean isInitialized() { return initialized; }
 
     /**
-     * Renders the given snapshot synchronously.
+     * Handles the given snapshot to the GL thread asynchronously ("latest-wins").
      * In window mode: renders directly to the TextureView surface, no bitmap needed.
      * In pbuffer mode: renders to pbuffer, reads back to targetBitmap.
+     * Never blocks the caller: if the GL thread is still rendering the previous
+     * frame, this replaces the pending work so the simulation can keep running.
      */
     public void renderSync(GpuSnapshot snap, Bitmap targetBitmap) {
         if (!initialized || snap == null || snap.prims.isEmpty()) return;
         synchronized (this) {
             pendingSnap = snap;
             pendingTarget = targetBitmap;
-            pendingLatch = new java.util.concurrent.CountDownLatch(1);
             notify();
         }
-        try { pendingLatch.await(); } catch (InterruptedException ignored) {}
     }
 
     public void shutdown() {
@@ -1116,7 +1117,6 @@ public final class GpuDisplayRenderer {
                             + " window=" + useWindowMode);
                     renderFrame(snap, target);
                 }
-                if (pendingLatch != null) pendingLatch.countDown();
             }
             destroyEgl();
         }
