@@ -1355,3 +1355,39 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   recomputes JTS convex hulls of emoji SVG geometry every cycle in software, so cycle 1 can
   take many minutes on the emulator; the icon (bitmap) tab is the fast path.
 - This build is `build_app32`; APK already reinstalled on emulator-5554 for further checks.
+### Session 19g: Emoji.gaml still blank (GPU) — engine hull cache, prim-list race, verdict
+- Follow-up to 19f: user reported "Emojis.gaml still shows blank display (gpu)". On device,
+  pressing Play resumed a *grind* (cycles stayed 0 while the vector aspect drew), and a NEW
+  crash appeared: `java.lang.IndexOutOfBoundsException: Index 103 out of bounds for length 0`
+  in `GpuDisplayRenderer.drawAllPrims:492`.
+- Three causes found and fixed:
+  1. **Engine: `GamaCoordinateSequenceFactory.pointsOf` re-computed `geometry.convexHull()`
+     on every draw.** Emoji `shape`s are JTS GeometryCollections (per-SVG subpaths), and the
+     hull of a giant coordinate set was recomputed EVERY cycle x 200 agents (minutes per
+     cycle). Patched in `mygama` (`gama/gama.api/.../GamaCoordinateSequenceFactory.java`):
+     hull is now cached per geometry (synchronized WeakHashMap keyed by the collection).
+     Since the hull only feeds `getCenter()` + winding (the drawn geometry is `gg`), the
+     behavior is identical. Recompiled against `mygama/gama.api/target/classes` with JDK 25
+     (v69) for the pristine jar and JDK 21 (v65) for the libs jar; patched BOTH
+     `libs/gama.api_*.jar` and `libs/pristine/gama.api_*.jar` because `patchGamaJars`
+     restores root from pristine before patching. Verified the change ships in the APK
+     (`classes16.dex` contains `HULL_CACHE`).
+  2. **App: prim-list race from the 19f decoupling.** With the sim no longer blocking, the
+     sim thread could `clear()`/rebuild `AndroidScene3D.prims` while the GL thread iterated
+     the SAME list handed over in `captureGpuFrame` (`new GpuSnapshot(prims, ...)`) between
+     `size()` and `get(103)` -> index crash every frame on the emulator. Fixed by copying the
+     list at capture time (`new java.util.ArrayList<>(prims)`).
+  3. **Emulator GL texture limit (environmental, documented):** `texImage2D` fails with
+     `0x501` on GFXSTREAM software GL for every texture upload (failed textures are never
+     cached, so the flood repeats every frame). Textured icon prims render invisible on the
+     emulator's GPU path; the untextured vector display renders fine. CPU path unaffected.
+- Verified on emulator-5554 (build_app33, CPU path): first cycle completes in <40 s (hull
+  cache), both display tabs show the emoji glyphs. The emoji SVGs are MONOCHROME gray glyphs
+  (e.g. `emoji_u0023.svg` = `#757575`->`#504f4f` gradient) — so a "colorful" look was never
+  in the model; gray-on-white IS correct rendering. The "blank" the user saw was the
+  paused-at-load white frame (see 19f), not a rendering failure.
+- Verdict / user-facing guidance: run the icon tab or the vector tab, press Play; emojis
+  render on CPU (~30 s first cycle) and on GPU (vector tab; icon textures need a real GPU
+  device, the emulator's software GL cannot upload them).
+- Build: `build_app33`. Engine jar change MUST be re-bundled into the `native-app-deps`
+  release tarball before this is shippable to fresh clones (see next-steps workflow below).

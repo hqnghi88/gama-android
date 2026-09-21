@@ -1226,7 +1226,10 @@ public class AndroidScene3D {
             p.depth = view[2] * wx + view[6] * wy + view[10] * wz + view[14];
         }
 
-        return new GpuSnapshot(prims, view, proj, rw, rh,
+        // Copy the prim list: the GL thread may still be rendering the previous
+        // frame while the sim thread clears and rebuilds `prims` for the next
+        // one. A shallow copy keeps each snapshot's list stable and exclusive.
+        return new GpuSnapshot(new java.util.ArrayList<>(prims), view, proj, rw, rh,
                 bgColor, (float) near, (float) far, ambR, ambG, ambB, lights);
     }
 
