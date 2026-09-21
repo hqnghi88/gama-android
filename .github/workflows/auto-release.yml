@@ -29,7 +29,19 @@ jobs:
           distribution: 'temurin'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          SDK=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}
+          CT=$(ls -d $SDK/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$CT" ]; then
+            mkdir -p "$SDK/cmdline-tools"
+            curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/ct.zip
+            unzip -q /tmp/ct.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            CT="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "sdkmanager: $CT"
+          yes | "$CT" --sdk_root="$SDK" --licenses >/dev/null 2>&1 || true
+          "$CT" --sdk_root="$SDK" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Cache GAMA deps
         id: cache-deps
