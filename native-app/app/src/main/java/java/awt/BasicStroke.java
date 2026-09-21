@@ -34,4 +34,8 @@ public class BasicStroke implements Stroke {
     public float getMiterLimit() { return miterLimit; }
     public float[] getDashArray() { return dash; }
     public float getDashPhase() { return 0f; }
+
+    public Shape createStrokedShape(Shape p) {
+        return p;
+    }
 }

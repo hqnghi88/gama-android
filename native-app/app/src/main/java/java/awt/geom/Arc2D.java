@@ -74,7 +74,7 @@ public abstract class Arc2D implements Shape {
 
 
     public static class Double extends Arc2D {
-        protected double x, y, width, height, start, extent;
+        public double x, y, width, height, start, extent;
 
         public Double() { super(OPEN); }
 

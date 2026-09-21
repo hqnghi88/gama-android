@@ -1287,3 +1287,33 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
 - Uncommitted changes at end of session: ModelNavigatorActivity (+extract/addPluginModels, routing
   fix), PluginManager (all() + plugin_ strip), plugins/demo/resources/ (new GAML source). Commit
   message suggestion: "Show installed plugins' models in the app Library".
+
+### Session 19e: Emoji.gaml compiles + runs — jsvg `java.awt` compatibility fixes
+- Reported: "Emoji.gaml has currently errors". Was `Compilation FAILED (5 errors)`:
+  `'draw' cannot draw objects of type image` + 2x `Redefinition of shape from built-in
+  species agent` + 2x `Redefinition of location from built-in species agent`. The 4
+  redefinition diagnostics are `.info()`-level (`GamlModelBuilder.compile` returns null
+  because of the real error, and the app lists all diagnostics). Real cause: no draw
+  delegate registered for GamaImageType (id 5030) on Android — OSGi `gama.draw` extension
+  points don't exist, so `GamaNativeBootstrap` manually registers delegates and
+  `ImageDrawer` (gama.extension.image) was missing. Fix: register `ImageDrawer` before
+  `AssetDrawer`. Emoji then compiled and init ran, surfacing runtime jsvg gaps (all fixed
+  as app source + `zip -d` of the jar duplicate, per the AlphaComposite precedent):
+  - `Arc2D$Double.x/y/width/height` changed `protected -> public` (jsvg does bytecode
+    field access); `Ellipse2D.Float` added; `RoundRectangle2D` (+Double/Float), new source
+    (jar stub removed via `zip -d`).
+  - New `java/awt/RadialGradientPaint.java` + `LinearGradientPaint.java` (full JDK ctors,
+    incl. the 8-arg radial / 7-arg linear with CycleMethod+ColorSpaceType+AffineTransform
+    that jsvg calls); `RadialGradientPaint*.class`/`LinearGradientPaint*.class` removed
+    from awt-stubs.jar.
+  - `java.awt.Stroke` gained `createStrokedShape(Shape)`; `BasicStroke` implements it
+    (returns the input shape) — needed by `GamaShapeSVGOutput` (SVG writer).
+  - New `IllegalPathStateException`, `NoninvertibleTransformException` (jsvg geometry).
+- Verified on emulator-5554: Emoji.gaml compiles (title "Emojis", no "(error)"), global
+  init creates ~200 emoji agents each loading a `svg_file` (slow — software rasterization),
+  then steps run (cycles advance; observed burst 1 -> 404). Recurring display-barrier
+  stall at step boundaries (sim threads parked in `gama.api.runtime.GeneralSynchronizer.acquire`)
+  is the PRE-EXISTING app freeze (Pause/Play unblocks; no GAML error involved).
+- awt-stubs.jar is gitignored and IS in the native-app-deps seed -> the seed was REBUILT
+  and re-uploaded (asset on tag `native-app-deps`, release 374958155) so CI releases carry
+  the jar edits.

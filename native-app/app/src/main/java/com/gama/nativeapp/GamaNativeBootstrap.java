@@ -484,6 +484,7 @@ public class GamaNativeBootstrap {
             Method addDelegate = registryClass.getMethod("addDelegate", drawDelegateIface);
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.ShapeDrawer").getDeclaredConstructor().newInstance());
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.TextDrawer").getDeclaredConstructor().newInstance());
+            addDelegate.invoke(null, Class.forName("gama.extension.image.display.ImageDrawer").getDeclaredConstructor().newInstance());
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AssetDrawer").getDeclaredConstructor().newInstance());
             addDelegate.invoke(null, Class.forName("gama.gaml.statements.draw.AspectDrawer").getDeclaredConstructor().newInstance());
 
