@@ -85,10 +85,10 @@ public class BufferedImage extends Image implements Transparency, RenderedImage 
     public Graphics getGraphics() { return createGraphics(); }
 
     public Graphics2D createGraphics() {
-        if (androidBitmap != null) {
-            return new CanvasGraphics2D(androidBitmap, this);
+        if (androidBitmap == null) {
+            androidBitmap = Bitmap.createBitmap(width > 0 ? width : 1, height > 0 ? height : 1, Bitmap.Config.ARGB_8888);
         }
-        return new Graphics2D();
+        return new CanvasGraphics2D(androidBitmap, this);
     }
 
     public void markGraphicsDrawn() { graphicsDrawn = true; }
