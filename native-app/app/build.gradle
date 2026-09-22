@@ -121,6 +121,8 @@ tasks.register('patchGamaJars') {
 
         // 2) Strip classes that break D8 on Android.
         def patchedClasses = ['gama/gaml/descriptions/SkillDescription.class',
+            'java/awt/Graphics2D.class',
+            'java/awt/Graphics2D$SimpleComposite.class',
             'java/awt/geom/Line2D.class',
             'java/awt/geom/Line2D$Double.class',
             'java/awt/geom/Line2D$Float.class',

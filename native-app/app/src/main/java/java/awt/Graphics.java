@@ -28,6 +28,9 @@ public abstract class Graphics {
     public void fill3DRect(int x, int y, int width, int height, boolean raised) {}
     public boolean drawImage(java.awt.Image img, int x, int y, java.awt.image.ImageObserver observer) { return false; }
     public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, java.awt.image.ImageObserver observer) { return false; }
+    public boolean drawImage(java.awt.Image img, int x, int y, int width, int height, int dx1, int dy1, int dx2, int dy2, java.awt.image.ImageObserver observer) {
+        return false;
+    }
     public abstract java.awt.FontMetrics getFontMetrics(Font f);
     public java.awt.FontMetrics getFontMetrics() { return getFontMetrics(getFont()); }
     public Rectangle getClipBounds() { return new Rectangle(); }

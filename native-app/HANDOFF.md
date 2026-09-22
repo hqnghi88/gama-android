@@ -1425,3 +1425,44 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   threads in the thread dump, no compile logs. Reproduces ~50% on cold `am start` into a live
   process; force-stop first (or launch via Library->model selection) is reliable. Worth wiring
   `startCompilation` to re-run if compile hasn't started within a timeout.
+### Session 19i: ImageManipulation.gaml runtime errors FIXED — Graphics2D/AffineTransform shims
+- Symptom: `Image Manipulation.gaml` (Images/models) failed in its global init with repeated
+  `NoSuchMethodError: No virtual method drawImage(Ljava/awt/Image;Ljava/awt/geom/AffineTransform;
+  Ljava/awt/image/ImageObserver;)Z in class Ljava/awt/Graphics2D`, from
+  `gama.extension.image.ImageHelper.rotate` ← `ImageOperators.horizontalFlip/verticalFlip`.
+- Root cause: `java.awt.Graphics2D` came from `libs/awt-stubs.jar` and was missing that
+  overload (plus the 9-arg src-rect `drawImage` used by `cropped_to` via a `Graphics` ref).
+  The `java.awt.image.*` filters (ConvolveOp/Kernel/RescaleOp/ColorConvertOp) and
+  BufferedImage already existed in app source with the exact signatures the engine needs.
+- Fix 1 (own Graphics2D): new app-source `java/awt/Graphics2D.java` declaring the full
+  standard API (drawImage x7 incl. AffineTransform + 9-arg + BufferedImageOp, drawString x4,
+  setTransform/rotate/translate/scale/shear, clip, composite/paint/stroke, compat images).
+  Only methods whose parameter/return types exist in app source are declared
+  (NO `getFontRenderContext` — `java.awt.font.*` lives only in the jar, not the app compile
+  classpath). Bodies are safe no-ops; concrete work happens in `CanvasGraphics2D`.
+  Stripped `java/awt/Graphics2D.class` + `java/awt/Graphics2D$SimpleComposite.class` via the
+  `patchGamaJars` `patchedClasses` list (build.gradle) so the jar copy can't shadow/duplicate.
+- Fix 2 (Graphics): added the 9-arg `drawImage(Image, dx1,dy1,dx2,dy2, sx1,sy1,sx2,sy2, IO)`
+  to `java/awt/Graphics.java` (typed-`Graphics` call sites) and implemented it in
+  `CanvasGraphics2D` (src-rect crop scaled to dst-rect via Bitmap.createBitmap + Matrix).
+  `@Override` added to the AffineTransform drawImage.
+- Fix 3 (stateful AffineTransform): the stub ignored ALL state, so even a present
+  `quadrantRotate` would have been a no-op (rotations/flips would silently not apply).
+  Rewrote `java/awt/geom/AffineTransform.java` as a real matrix (m00..m12), with true
+  translate/rotate/scale/shear/quadrantRotate(int[,x,y])/pre-/concatenate/getType/inverse/
+  `getMatrix(double[])`. Added `quadrantRotate` (engine calls `tx.quadrantRotate(1|2|3)`
+  for `rotated_by 90/180/270`). `CanvasGraphics2D.drawImage(Image, AffineTransform, IO)` now
+  builds an android.graphics.Matrix from the 6 AWT values (full affine — rotation, negative
+  scale flips, translation) instead of the old translate+scale approximation.
+- Fix 4 (alpha composites): `blend()` and `tinted_with(color,ratio)` call
+  `AlphaComposite.SrcOver/SrcAtop.derive(alpha)`. Paints now track composite alpha
+  (`applyCompositeAlpha()` on setComposite/setColor) so overlay alpha is honored.
+- Verified on emulator: model compiles clean (`ImageManipulation`, no "(error)" title),
+  1 cycle completes (~00:21), `create_agent` init (horizontal/vertical_filp, rotated_by 180/90/
+  -33, blend 0.5, `*0.5/*0.2/*0.1*10`, darker/brighter 0.5, tinted_with x2, grayscale,
+  scale/crop/clipboard) runs with ZERO `NoSuchMethodError`/`NoClassDefFound`/
+  `GamaRuntimeException` in logcat, and the Display tab shows real image content
+  (70.9k/288k sampled non-black px, 68 distinct quantized colors).
+- Deps tarball note: jar contents unchanged since the 19h staging (the Graphics2D strip is a
+  BUILD-time `patchGamaJars` op over the already-staged original jars), so the re-staged
+  `native-app-deps.tar.gz` from 19h is still valid — no re-stage needed.

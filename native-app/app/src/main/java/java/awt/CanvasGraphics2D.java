@@ -30,7 +30,21 @@ public class CanvasGraphics2D extends Graphics2D {
     private Font currentFont = Font.DIALOG;
     private float strokeWidth = 1f;
     private boolean antialias = true;
-    private java.awt.Composite composite;
+    private java.awt.Composite composite = java.awt.AlphaComposite.SrcOver;
+    private int compositeAlpha = 255;
+
+    private void applyCompositeAlpha() {
+        int a = 255;
+        if (composite instanceof java.awt.AlphaComposite ac) {
+            float alpha = ac.getAlpha();
+            a = alpha >= 1f ? 255 : Math.max(0, Math.round(alpha * 255f));
+        }
+        compositeAlpha = a;
+        fillPaint.setAlpha(a);
+        strokePaint.setAlpha(a);
+        textPaint.setAlpha(a);
+        nnPaint.setAlpha(a);
+    }
 
     public CanvasGraphics2D(Bitmap bitmap) {
         this(bitmap, null);
@@ -75,6 +89,7 @@ public class CanvasGraphics2D extends Graphics2D {
         fillPaint.setColor(toArgb(c));
         strokePaint.setColor(toArgb(c));
         textPaint.setColor(toArgb(c));
+        applyCompositeAlpha();
     }
 
     @Override
@@ -154,7 +169,8 @@ public class CanvasGraphics2D extends Graphics2D {
     @Override
     public void setComposite(java.awt.Composite comp) { 
         trace("setComposite:" + (comp != null ? comp.getClass().getSimpleName() : "null"));
-        this.composite = comp; 
+        this.composite = comp;
+        applyCompositeAlpha();
     }
 
     public java.awt.Composite getComposite() { trace("getComposite"); return composite; }
@@ -523,14 +539,40 @@ public class CanvasGraphics2D extends Graphics2D {
         return drawImage(img, x, y, width, height, observer);
     }
 
+    @Override
     public boolean drawImage(java.awt.Image img, AffineTransform xform, java.awt.image.ImageObserver observer) {
         markDrawn();
         Bitmap src = toBitmap(img);
         if (src == null) return false;
         Matrix m = new Matrix();
-        m.postTranslate((float) xform.getTranslateX(), (float) xform.getTranslateY());
-        m.postScale((float) xform.getScaleX(), (float) xform.getScaleY());
+        if (xform != null) {
+            float[] f = new float[9];
+            double[] d = new double[6];
+            xform.getMatrix(d);
+            f[0] = (float) d[0]; f[1] = (float) d[2]; f[2] = (float) d[4];
+            f[3] = (float) d[1]; f[4] = (float) d[3]; f[5] = (float) d[5];
+            f[6] = 0; f[7] = 0; f[8] = 1;
+            m.setValues(f);
+        }
         canvas.drawBitmap(src, m, nnPaint);
+        return true;
+    }
+
+    @Override
+    public boolean drawImage(java.awt.Image img, int dx1, int dy1, int dx2, int dy2,
+            int sx1, int sy1, int sx2, int sy2, java.awt.image.ImageObserver observer) {
+        markDrawn();
+        Bitmap src = toBitmap(img);
+        if (src == null) return false;
+        int dw = Math.max(1, dx2 - dx1);
+        int dh = Math.max(1, dy2 - dy1);
+        int sw = Math.max(1, Math.min(src.getWidth() - sx1, sx2 - sx1));
+        int sh = Math.max(1, Math.min(src.getHeight() - sy1, sy2 - sy1));
+        Matrix m = new Matrix();
+        m.postScale(dw / (float) sw, dh / (float) sh);
+        m.postTranslate(dx1, dy1);
+        Bitmap crop = Bitmap.createBitmap(src, Math.max(0, sx1), Math.max(0, sy1), sw, sh);
+        canvas.drawBitmap(crop, m, nnPaint);
         return true;
     }
 
