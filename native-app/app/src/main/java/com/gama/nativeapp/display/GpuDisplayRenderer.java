@@ -303,7 +303,20 @@ public final class GpuDisplayRenderer {
     private void initShaders() {
         basicShader = new BasicShader(new Gles2GLWrapper());
         int bsErr = GLES20.glGetError();
-        Log.i(TAG, "BasicShader created: programID=" + basicShader.getProgramID() + " glErr=0x" + Integer.toHexString(bsErr));
+        int pid = basicShader.getProgramID();
+        Log.i(TAG, "BasicShader created: programID=" + pid + " glErr=0x" + Integer.toHexString(bsErr));
+        if (pid != 0) {
+            int[] linkStatus = new int[1];
+            GLES20.glGetProgramiv(pid, GLES20.GL_LINK_STATUS, linkStatus, 0);
+            int aPos = GLES20.glGetAttribLocation(pid, "aPos");
+            int aCol = GLES20.glGetAttribLocation(pid, "aColor");
+            int aTex = GLES20.glGetAttribLocation(pid, "aTexCoord");
+            int aNorm = GLES20.glGetAttribLocation(pid, "aNormal");
+            Log.i(TAG, "BasicShader link=" + linkStatus[0] + " aPos=" + aPos + " aCol=" + aCol
+                    + " aTex=" + aTex + " aNorm=" + aNorm);
+        } else {
+            Log.e(TAG, "BasicShader programID == 0: shaders likely failed to compile");
+        }
 
         String lineVert =
             "attribute vec3 aPos;\n" +
@@ -638,16 +651,22 @@ public final class GpuDisplayRenderer {
         int aTex = GLES20.glGetAttribLocation(pid, "aTexCoord");
         int aNorm = GLES20.glGetAttribLocation(pid, "aNormal");
 
-        GLES20.glEnableVertexAttribArray(aPos);
-        GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
-        GLES20.glEnableVertexAttribArray(aCol);
-        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        if (aPos >= 0) {
+            GLES20.glEnableVertexAttribArray(aPos);
+            GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
+        }
+        if (aCol >= 0) {
+            GLES20.glEnableVertexAttribArray(aCol);
+            GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        }
         if (aTex >= 0) {
             GLES20.glEnableVertexAttribArray(aTex);
             GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, stride, 7 * 4);
         }
-        GLES20.glEnableVertexAttribArray(aNorm);
-        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        if (aNorm >= 0) {
+            GLES20.glEnableVertexAttribArray(aNorm);
+            GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        }
 
         GLES20.glEnable(GLES20.GL_STENCIL_TEST);
         GLES20.glStencilMask(0xFF);
@@ -762,16 +781,22 @@ public final class GpuDisplayRenderer {
         int aTex = GLES20.glGetAttribLocation(pid, "aTexCoord");
         int aNorm = GLES20.glGetAttribLocation(pid, "aNormal");
 
-        GLES20.glEnableVertexAttribArray(aPos);
-        GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
-        GLES20.glEnableVertexAttribArray(aCol);
-        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        if (aPos >= 0) {
+            GLES20.glEnableVertexAttribArray(aPos);
+            GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
+        }
+        if (aCol >= 0) {
+            GLES20.glEnableVertexAttribArray(aCol);
+            GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        }
         if (aTex >= 0) {
             GLES20.glEnableVertexAttribArray(aTex);
             GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, stride, 7 * 4);
         }
-        GLES20.glEnableVertexAttribArray(aNorm);
-        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        if (aNorm >= 0) {
+            GLES20.glEnableVertexAttribArray(aNorm);
+            GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        }
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         int texId = getOrCreateTexture(p.texture);
@@ -783,10 +808,10 @@ public final class GpuDisplayRenderer {
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, triCount);
 
-        GLES20.glDisableVertexAttribArray(aPos);
-        GLES20.glDisableVertexAttribArray(aCol);
+        if (aPos >= 0) GLES20.glDisableVertexAttribArray(aPos);
+        if (aCol >= 0) GLES20.glDisableVertexAttribArray(aCol);
         if (aTex >= 0) GLES20.glDisableVertexAttribArray(aTex);
-        GLES20.glDisableVertexAttribArray(aNorm);
+        if (aNorm >= 0) GLES20.glDisableVertexAttribArray(aNorm);
     }
 
     private int getOrCreateTexture(Object texObj) {
@@ -882,8 +907,8 @@ public final class GpuDisplayRenderer {
 
         GLES20.glDrawArrays(GLES20.GL_LINES, 0, vertCount);
 
-        GLES20.glDisableVertexAttribArray(aPos);
-        GLES20.glDisableVertexAttribArray(aCol);
+        if (aPos >= 0) GLES20.glDisableVertexAttribArray(aPos);
+        if (aCol >= 0) GLES20.glDisableVertexAttribArray(aCol);
     }
 
     // ── Batched solid draw (GPU MVP + lighting) ───────────────────
@@ -937,23 +962,29 @@ public final class GpuDisplayRenderer {
         int aTex = GLES20.glGetAttribLocation(pid, "aTexCoord");
         int aNorm = GLES20.glGetAttribLocation(pid, "aNormal");
 
-        GLES20.glEnableVertexAttribArray(aPos);
-        GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
-        GLES20.glEnableVertexAttribArray(aCol);
-        GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        if (aPos >= 0) {
+            GLES20.glEnableVertexAttribArray(aPos);
+            GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, stride, 0);
+        }
+        if (aCol >= 0) {
+            GLES20.glEnableVertexAttribArray(aCol);
+            GLES20.glVertexAttribPointer(aCol, 4, GLES20.GL_FLOAT, false, stride, 3 * 4);
+        }
         if (aTex >= 0) {
             GLES20.glEnableVertexAttribArray(aTex);
             GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, stride, 7 * 4);
         }
-        GLES20.glEnableVertexAttribArray(aNorm);
-        GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        if (aNorm >= 0) {
+            GLES20.glEnableVertexAttribArray(aNorm);
+            GLES20.glVertexAttribPointer(aNorm, 3, GLES20.GL_FLOAT, false, stride, 9 * 4);
+        }
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, vertCount);
 
-        GLES20.glDisableVertexAttribArray(aPos);
-        GLES20.glDisableVertexAttribArray(aCol);
+        if (aPos >= 0) GLES20.glDisableVertexAttribArray(aPos);
+        if (aCol >= 0) GLES20.glDisableVertexAttribArray(aCol);
         if (aTex >= 0) GLES20.glDisableVertexAttribArray(aTex);
-        GLES20.glDisableVertexAttribArray(aNorm);
+        if (aNorm >= 0) GLES20.glDisableVertexAttribArray(aNorm);
     }
 
     // ── Append helpers ─────────────────────────────────────────────

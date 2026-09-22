@@ -15,6 +15,7 @@ import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.ScaleGestureDetector;
+import android.view.Surface;
 import android.view.View;
 import android.view.TextureView;
 import android.view.ViewGroup;
@@ -1696,15 +1697,15 @@ public class AndroidDisplaySurface extends View implements OpenGL {
             }
             // Check for a new window surface (e.g., TextureView became available after init)
             synchronized (GpuDisplayRenderer.surfaceLock) {
-                if (GpuDisplayRenderer.pendingWindowSurface != null && !gpuRenderer.isWindowMode()) {
-                    gpuRenderer.setWindowSurface(GpuDisplayRenderer.pendingWindowSurface);
+                Surface pending = GpuDisplayRenderer.pendingWindowSurface;
+                if (pending != null && (gpuRenderer == null || !gpuRenderer.isWindowMode())) {
                     GpuDisplayRenderer.pendingWindowSurface = null;
-                    // Reinit with window surface
-                    gpuRenderer.shutdown();
+                    if (gpuRenderer != null) gpuRenderer.shutdown();
                     gpuRenderer = new GpuDisplayRenderer();
-                    gpuRenderer.setWindowSurface(GpuDisplayRenderer.pendingWindowSurface != null
-                            ? GpuDisplayRenderer.pendingWindowSurface : null);
+                    gpuRenderer.setWindowSurface(pending);
                     gpuRenderer.init(snap.viewW, snap.viewH);
+                    Log.i(TAG, "GPU renderer switched to TextureView window mode: "
+                            + snap.viewW + "x" + snap.viewH);
                 }
             }
             // If we have a TextureView surface, render directly to it (no bitmap)

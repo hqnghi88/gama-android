@@ -1391,3 +1391,37 @@ is expressed in that local space (`location {16384.68,51385.78,15210.9}` / `targ
   device, the emulator's software GL cannot upload them).
 - Build: `build_app33`. Engine jar change MUST be re-bundled into the `native-app-deps`
   release tarball before this is shippable to fresh clones (see next-steps workflow below).
+### Session 19h: GPU blank FIXED — GLES2 shaders + TextureView window-mode handoff
+- Root cause of the blank GPU display: the engine's `BasicShader` ships GL4 shading source
+  (`gama/ui/display/opengl4/renderer/shaders/glsl/basic.vert`/`basic.frag`, `#version 410
+  core`), and `Gles2GLWrapper.glShaderSource` feeds that text RAW into `GLES20.glShaderSource`.
+  The program never compiled/linked on GLES2, so every draw failed (sticky `GL error: 0x501`),
+  nothing rasterized, and only the surface clear color (white) was presented.
+- Fix 1 (jar): replaced both shader resources with GLES2 versions (`#version 100`,
+  `attribute`/`varying`, `texture2D`, `highp`, `fragNormal = normalize(mat3(model) * aNormal)`)
+  in BOTH `libs/gama.ui.display.opengl4_0.0.0.202609201547.jar` and
+  `libs/pristine/gama.ui.display.opengl4_0.0.0.202609201547.jar`. Same attribute/uniform names
+  (aPos/aColor/aTexCoord/aNormal; model/view/projection/texture1/useTexture/useLighting/
+  ambientColor/lightPosition/lightColor/viewPos/shininess). CAUTION: reloaded with `jar -cf`
+  (default manifest); the engine jar classloader still resolves+loads it fine, but if future
+  tampering needs the original MANIFEST headers, rebuild from a pristine copy.
+- Fix 2 (app): `AndroidDisplaySurface.submitGpuFrame` window-surface handoff nulled the
+  pending surface BEFORE re-reading it, so the reborn renderer got `null` and stayed in pbuffer
+  mode forever (the TextureView window path never engaged). Rewrote it to capture the pending
+  surface, null it, then `setWindowSurface(pending)` on the new renderer; added null-safety so
+  a renderer nulled by the surface callback can't NPE the check. New `android.view.Surface`
+  import.
+- Fix 3 (diagnostics/robustness, part of this commit): `GpuDisplayRenderer.initShaders` now
+  logs programID, link status and aPos/aCol/aTex/aNorm locations; every
+  enable/vertexAttribPointer/disable call is guarded `>= 0`.
+- Verified on emulator-5554 with the GLES2 device in GPU mode:
+  `BasicShader created: programID=3 glErr=0x0`, `BasicShader link=1 aPos=0 aCol=1 aTex=2
+  aNorm=3` (matches AGENTS pitfall #3 layout), then `GPU render: prims=439 ... window=true`
+  streaming every ~1.1s with NO `0x501` floods. Screencap census of the display region:
+  364 distinct colors / 82k+ colorful pixels; vector + icon displays show colored glyph
+  content (e.g. rows 540-1980 show R/G/B clusters). The blank-white GPU display is resolved.
+- KNOWN REMAINING INFRA FLAKE (not a display bug): `ExperimentActivity` intermittently fails
+  to progress past `GamaNativeBootstrap.initialize` — title stays "GAMA", 0 cycles, no engine
+  threads in the thread dump, no compile logs. Reproduces ~50% on cold `am start` into a live
+  process; force-stop first (or launch via Library->model selection) is reliable. Worth wiring
+  `startCompilation` to re-run if compile hasn't started within a timeout.
